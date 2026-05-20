@@ -269,6 +269,16 @@ if(HRX_ENABLE_IREE_XRT_LITE)
   target_link_libraries(hrx-npu-matmul PRIVATE hrx)
   set_target_properties(hrx-npu-matmul PROPERTIES
       INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+
+  # hrx-ll-run — configurable PDIR dispatch harness (generalizes the matmul).
+  add_executable(hrx-ll-run tools/hrx_ll_run.c)
+  target_include_directories(hrx-ll-run PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(hrx-ll-run PRIVATE hrx)
+  set_target_properties(hrx-ll-run PROPERTIES
+      INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+  install(TARGETS hrx-ll-run
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 #===------------------------------------------------------------------------===#
