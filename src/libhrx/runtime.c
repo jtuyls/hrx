@@ -25,6 +25,16 @@
 #include "iree/hal/drivers/amdgpu/registration/driver_module.h"
 #endif
 
+#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
+#include "iree-amd-aie/driver/xrt-lite/api.h"
+#include "iree-amd-aie/driver/xrt-lite/registration/driver_module.h"
+#endif
+
+// Any GPU-class accelerator driver is available (AMDGPU and/or NPU xrt-lite).
+#if defined(HRX_HAS_IREE_AMDGPU_DRIVER) || defined(HRX_HAS_IREE_XRT_LITE_DRIVER)
+#define HRX_HAS_GPU_DRIVER 1
+#endif
+
 //===----------------------------------------------------------------------===//
 // Global singletons
 //===----------------------------------------------------------------------===//
@@ -393,24 +403,89 @@ hrx_create_iree_amdgpu_driver(iree_allocator_t alloc,
 }
 #endif
 
+#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
+// Reads a positive int32 from an environment variable, falling back to
+// default_value when unset/empty/invalid.
+static int32_t hrx_getenv_int32(const char *name, int32_t default_value) {
+  const char *value = getenv(name);
+  if (!value || !value[0])
+    return default_value;
+  long parsed = strtol(value, NULL, 10);
+  if (parsed <= 0)
+    return default_value;
+  return (int32_t)parsed;
+}
+
+// Creates the xrt-lite (AMD NPU) HAL driver.
+//
+// We register the driver module (mirroring the amdgpu path so the driver name
+// is discoverable in the default registry), but we create the driver directly
+// via iree_hal_xrt_lite_driver_create with explicit device params. The
+// registration factory derives n_core_rows/n_core_cols from IREE CLI flags
+// (FLAG_xrt_lite_n_core_rows/cols) which default to 0 and are rejected with
+// FAILED_PRECONDITION; HRX has no CLI flag parser, so we must supply the AIE
+// array geometry ourselves. Defaults match the known-good npu4 1x4 config and
+// can be overridden via HRX_XRT_LITE_N_CORE_ROWS / HRX_XRT_LITE_N_CORE_COLS.
+static hrx_status_t
+hrx_create_iree_xrt_lite_driver(iree_allocator_t alloc,
+                                iree_hal_driver_t **out_driver) {
+  iree_status_t status = iree_hal_xrt_lite_driver_module_register(
+      iree_hal_driver_registry_default());
+  if (iree_status_is_already_exists(status)) {
+    iree_status_ignore(status);
+    status = iree_ok_status();
+  }
+  hrx_debug_print_iree_status("xrt-lite driver module register", status);
+  if (!iree_status_is_ok(status)) {
+    return hrx_status_from_iree(status);
+  }
+
+  struct iree_hal_xrt_lite_driver_options driver_options;
+  iree_hal_xrt_lite_driver_options_initialize(&driver_options);
+  struct iree_hal_xrt_lite_device_params device_params;
+  iree_hal_xrt_lite_device_options_initialize(&device_params);
+  device_params.n_core_rows = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_ROWS", 4);
+  device_params.n_core_cols = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_COLS", 1);
+  driver_options.device_params = device_params;
+
+  if (hrx_gpu_debug_enabled()) {
+    fprintf(stderr,
+            "hrx gpu debug: creating xrt-lite driver (n_core_rows=%d, "
+            "n_core_cols=%d)\n",
+            device_params.n_core_rows, device_params.n_core_cols);
+  }
+
+  iree_hal_driver_t *driver = NULL;
+  status = iree_hal_xrt_lite_driver_create(
+      iree_make_cstring_view("xrt-lite"), &driver_options, &device_params,
+      alloc, &driver);
+  hrx_debug_print_iree_status("xrt-lite driver create", status);
+  if (!iree_status_is_ok(status)) {
+    return hrx_status_from_iree(status);
+  }
+
+  *out_driver = driver;
+  return hrx_ok_status();
+}
+#endif // HRX_HAS_IREE_XRT_LITE_DRIVER
+
 static hrx_status_t hrx_create_gpu_driver(iree_allocator_t alloc,
                                           iree_hal_driver_t **out_driver) {
   const char *driver_name = hrx_get_gpu_driver_name();
+#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
+  if (strcmp(driver_name, "xrt-lite") == 0) {
+    return hrx_create_iree_xrt_lite_driver(alloc, out_driver);
+  }
+#endif
 #ifdef HRX_HAS_IREE_AMDGPU_DRIVER
   if (strcmp(driver_name, "amdgpu") == 0) {
     return hrx_create_iree_amdgpu_driver(alloc, out_driver);
   }
-  char message[128];
-  snprintf(message, sizeof(message),
-           "unknown HRX_GPU_DRIVER '%s' (expected 'amdgpu')", driver_name);
-  return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
-#else
-  char message[96];
-  snprintf(message, sizeof(message),
-           "unknown HRX_GPU_DRIVER '%s' (built without AMDGPU support)",
-           driver_name);
-  return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
 #endif
+  char message[160];
+  snprintf(message, sizeof(message),
+           "unknown or unsupported HRX_GPU_DRIVER '%s'", driver_name);
+  return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
 }
 
 //===----------------------------------------------------------------------===//
@@ -526,11 +601,19 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
                            "GPU accelerator already initialized");
   }
 
-#ifndef HRX_HAS_IREE_AMDGPU_DRIVER
+#ifndef HRX_HAS_GPU_DRIVER
   return hrx_make_status(
       HRX_STATUS_UNAVAILABLE,
-      "no GPU driver available (built without AMDGPU support)");
+      "no GPU driver available (built without AMDGPU or xrt-lite support)");
 #else
+  // The amdgpu driver reports a pseudo-device with an empty path at ordinal 0
+  // (representing all visible GPUs as one logical device) followed by one entry
+  // per physical device; HRX exposes only the physical devices. Other drivers
+  // (e.g. xrt-lite for the NPU) report a single real device with no path, which
+  // must NOT be filtered out.
+  const bool driver_uses_path_filter =
+      (strcmp(hrx_get_gpu_driver_name(), "amdgpu") == 0);
+
   hrx_status_t status = hrx_ensure_shared_state();
   if (!hrx_status_is_ok(status))
     return status;
@@ -568,12 +651,11 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
             (size_t)device_info_count);
   }
 
-  // IREE AMDGPU reports a pseudo-device with an empty path at ordinal 0 that
-  // represents all visible GPUs as one logical device, then one entry per
-  // physical device. HRX exposes physical devices to callers.
+  // Count the devices HRX will expose. For amdgpu, skip the empty-path
+  // pseudo-device; for other drivers every reported entry is a real device.
   int physical_count = 0;
   for (iree_host_size_t i = 0; i < device_info_count; ++i) {
-    if (device_infos[i].path.size == 0)
+    if (driver_uses_path_filter && device_infos[i].path.size == 0)
       continue;
     physical_count++;
   }
@@ -609,7 +691,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
   int created_count = 0;
   for (iree_host_size_t info_index = 0;
        info_index < device_info_count && created_count < count; ++info_index) {
-    if (device_infos[info_index].path.size == 0)
+    if (driver_uses_path_filter && device_infos[info_index].path.size == 0)
       continue;
 
     iree_hal_device_t *hal_device = NULL;
@@ -685,7 +767,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
   g_gpu.device_count = created_count;
   g_gpu.initialized = true;
   return hrx_ok_status();
-#endif // HRX_HAS_IREE_AMDGPU_DRIVER
+#endif // HRX_HAS_GPU_DRIVER
 }
 
 hrx_status_t hrx_gpu_shutdown(void) {

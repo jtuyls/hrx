@@ -50,9 +50,27 @@ if(HRX_ENABLE_IREE_AMDGPU)
       iree_hal_drivers_amdgpu_registration_registration
   )
 endif()
+if(HRX_ENABLE_IREE_XRT_LITE)
+  # Registration lib pulls in the xrt-lite driver + shim transitively and
+  # exports the iree-amd-aie/ include root, so runtime.c can include
+  # the driver_module.h and api.h headers.
+  #
+  # driver_module.c declares its device-geometry options via IREE_FLAG, whose
+  # static initializers call iree_flag_register (defined in
+  # iree_base_tooling_flags), so we must link that lib even though HRX creates
+  # the driver directly rather than parsing CLI flags.
+  target_link_libraries(hrx PRIVATE
+      iree-amd-aie::driver::xrt-lite::registration
+      iree-amd-aie::driver::xrt-lite
+      iree_base_tooling_flags
+  )
+endif()
 target_compile_definitions(hrx PRIVATE HRX_BUILDING_SHARED)
 if(HRX_ENABLE_IREE_AMDGPU)
   target_compile_definitions(hrx PRIVATE HRX_HAS_IREE_AMDGPU_DRIVER)
+endif()
+if(HRX_ENABLE_IREE_XRT_LITE)
+  target_compile_definitions(hrx PRIVATE HRX_HAS_IREE_XRT_LITE_DRIVER)
 endif()
 set_target_properties(hrx PROPERTIES
     OUTPUT_NAME hrx
