@@ -94,14 +94,24 @@ void hrx_device_retain(hrx_device_t device) {
 }
 
 void hrx_device_release(hrx_device_t device) {
+  // hrx_device_retain() retains hal_device once per reference, so its release
+  // is balanced on every call. The device group, however, is owned solely by
+  // the device wrapper (it is created once in hrx_gpu_initialize and never
+  // retained per hrx_device_retain), so it must be released exactly once, on
+  // the final reference. Releasing it on every call frees the group while
+  // buffers/semaphores still hold device references, producing a
+  // use-after-free when the next hrx_device_release touches the group
+  // (observed as a "corrupted double-linked list" abort at shutdown).
   iree_hal_device_t *hal_device = device->hal_device;
-  iree_hal_device_group_t *hal_device_group = device->hal_device_group;
   if (iree_atomic_ref_count_dec(&device->ref_count) == 1) {
+    iree_hal_device_group_t *hal_device_group = device->hal_device_group;
     iree_hal_allocator_release(device->allocator.hal_allocator);
     device->allocator.hal_allocator = NULL;
     device->hal_device = NULL;
     device->hal_device_group = NULL;
+    iree_hal_device_release(hal_device);
+    iree_hal_device_group_release(hal_device_group);
+    return;
   }
   iree_hal_device_release(hal_device);
-  iree_hal_device_group_release(hal_device_group);
 }
