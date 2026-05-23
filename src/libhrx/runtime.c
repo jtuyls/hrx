@@ -446,13 +446,18 @@ hrx_create_iree_xrt_lite_driver(iree_allocator_t alloc,
   iree_hal_xrt_lite_device_options_initialize(&device_params);
   device_params.n_core_rows = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_ROWS", 4);
   device_params.n_core_cols = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_COLS", 1);
+  // Opt-in ERT_CMD_CHAIN batching: a graph block's dispatches (recorded into one
+  // command buffer by the HRX graph executor) are accumulated and flushed as one
+  // chain per hw queue. Off by default to preserve the proven per-command path.
+  device_params.cmd_chain = hrx_getenv_int32("HRX_XRT_LITE_CMD_CHAIN", 0);
   driver_options.device_params = device_params;
 
   if (hrx_gpu_debug_enabled()) {
     fprintf(stderr,
             "hrx gpu debug: creating xrt-lite driver (n_core_rows=%d, "
-            "n_core_cols=%d)\n",
-            device_params.n_core_rows, device_params.n_core_cols);
+            "n_core_cols=%d, cmd_chain=%d)\n",
+            device_params.n_core_rows, device_params.n_core_cols,
+            device_params.cmd_chain);
   }
 
   iree_hal_driver_t *driver = NULL;
