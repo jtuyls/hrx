@@ -24,7 +24,9 @@ set(HRX_IREE_SOURCE_DIR
 option(HRX_ENABLE_IREE_AMDGPU
     "Enable IREE's built-in AMDGPU HAL driver" ON)
 option(HRX_ENABLE_IREE_XRT_LITE
-    "Enable the iree-amd-aie xrt-lite external HAL driver (AMD NPU)" OFF)
+    "Enable the iree-amd-aie amdxdna external HAL driver (AMD NPU; legacy option name)" OFF)
+option(HRX_ENABLE_IREE_AMDXDNA
+    "Enable the iree-amd-aie amdxdna external HAL driver (AMD NPU)" OFF)
 option(HRX_ENABLE_TRACY
     "Build with IREE Tracy tracing integration" OFF)
 option(HRX_BUILD_CTS
@@ -57,7 +59,7 @@ set(IREE_ERROR_ON_MISSING_SUBMODULES OFF)
 set(IREE_VISIBILITY_HIDDEN OFF)
 # Prefer the vendored mimalloc allocator, but only when its source submodule is
 # actually present in the embedded IREE tree. Some IREE checkouts (e.g. the
-# iree-amd-aie third_party/iree tree used for the NPU xrt-lite driver) do not
+# iree-amd-aie third_party/iree tree used for the NPU driver) do not
 # init the mimalloc/libbacktrace submodules; in that case fall back to the libc
 # allocator so configuration still succeeds. A caller-provided
 # -DIREE_ALLOCATOR_SYSTEM is respected if set.
@@ -148,28 +150,28 @@ set(IREE_HAL_DRIVER_LOCAL_SYNC ON)
 set(IREE_HAL_DRIVER_LOCAL_TASK ON)
 set(IREE_HAL_DRIVER_REMOTE ON)
 
-# xrt-lite external HAL driver (AMD NPU via iree-amd-aie plugin).
+# amdxdna external HAL driver (AMD NPU via iree-amd-aie plugin).
 #
 # The driver is provided as an out-of-tree IREE plugin. It is wired into the
 # embedded IREE build through the standard cache variables, which the caller is
 # expected to pass on the cmake command line:
-#   -DIREE_EXTERNAL_HAL_DRIVERS=xrt-lite
+#   -DIREE_EXTERNAL_HAL_DRIVERS=amdxdna
 #   -DIREE_CMAKE_PLUGIN_PATHS=/path/to/iree-amd-aie
 # We do NOT clobber those cache vars here (they are set before this
 # add_subdirectory); we only validate that they are present so the build fails
 # early with an actionable message rather than deep inside IREE.
-if(HRX_ENABLE_IREE_XRT_LITE)
-  if(NOT IREE_EXTERNAL_HAL_DRIVERS MATCHES "xrt-lite")
+if(HRX_ENABLE_IREE_XRT_LITE OR HRX_ENABLE_IREE_AMDXDNA)
+  if(NOT IREE_EXTERNAL_HAL_DRIVERS MATCHES "amdxdna")
     message(FATAL_ERROR
-      "HRX_ENABLE_IREE_XRT_LITE=ON requires "
-      "-DIREE_EXTERNAL_HAL_DRIVERS=xrt-lite (got '${IREE_EXTERNAL_HAL_DRIVERS}')")
+      "HRX_ENABLE_IREE_AMDXDNA=ON requires "
+      "-DIREE_EXTERNAL_HAL_DRIVERS=amdxdna (got '${IREE_EXTERNAL_HAL_DRIVERS}')")
   endif()
   if(NOT IREE_CMAKE_PLUGIN_PATHS)
     message(FATAL_ERROR
-      "HRX_ENABLE_IREE_XRT_LITE=ON requires -DIREE_CMAKE_PLUGIN_PATHS=<iree-amd-aie>")
+      "HRX_ENABLE_IREE_AMDXDNA=ON requires -DIREE_CMAKE_PLUGIN_PATHS=<iree-amd-aie>")
   endif()
   message(STATUS
-    "hrx-runtime: xrt-lite external HAL driver ENABLED "
+    "hrx-runtime: amdxdna external HAL driver ENABLED "
     "(plugins: ${IREE_CMAKE_PLUGIN_PATHS})")
 endif()
 
@@ -259,10 +261,10 @@ install(TARGETS hrx-info
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 #===------------------------------------------------------------------------===#
-# hrx-npu-matmul — end-to-end NPU validation harness (xrt-lite only)
+# hrx-npu-matmul — end-to-end NPU validation harness (amdxdna)
 #===------------------------------------------------------------------------===#
 
-if(HRX_ENABLE_IREE_XRT_LITE)
+if(HRX_ENABLE_IREE_XRT_LITE OR HRX_ENABLE_IREE_AMDXDNA)
   add_executable(hrx-npu-matmul tools/hrx_npu_matmul.c)
   target_include_directories(hrx-npu-matmul PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include)

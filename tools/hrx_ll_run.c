@@ -10,7 +10,8 @@
 // Drives the AMD NPU through libhrx (no IREE VM / vmfb):
 //   1. HRX_GPU_DRIVER=xrt-lite -> create + enumerate the NPU device.
 //   2. Load the PDIR executable from disk.
-//   3. Allocate one DEVICE_LOCAL|HOST_VISIBLE buffer per binding, upload inputs.
+//   3. Allocate one DEVICE_LOCAL|HOST_VISIBLE buffer per binding, upload
+//   inputs.
 //   4. Dispatch entry |ordinal| with workgroup |wg| (default 1x1x1).
 //   5. Read back and dump output buffers.
 //
@@ -19,8 +20,10 @@
 // HRX/xrt-lite shutdown heap bug).
 //
 // Usage:
-//   HRX_GPU_DRIVER=xrt-lite HRX_XRT_LITE_N_CORE_ROWS=4 HRX_XRT_LITE_N_CORE_COLS=1 \
+//   HRX_GPU_DRIVER=xrt-lite HRX_XRT_LITE_N_CORE_ROWS=4
+//   HRX_XRT_LITE_N_CORE_COLS=1 \
 //     hrx-ll-run --pdi=<exe.amdaie-pdi-fb> \
+//       --constant=u32:123 \
 //       --binding=in:i32:4096:fill=1 \
 //       --binding=in:i32:4096:fill=2 \
 //       --binding=out:i32:1024:dump=out0.bin \
@@ -36,6 +39,12 @@
 //              dump=<path>    write raw output bytes to file (out only)
 //     (in bindings default to fill=0; out bindings default to dumping nothing)
 //
+// Constants:
+//   --constant=<u32> or --constant=u32:<u32>
+//     Append one 32-bit dispatch constant. The xrt-lite HAL can patch
+//     amdaie.npu.write32 values marked as 0xA1EC0000 | constant_index from
+//     this block.
+//
 // Returns 0 on success, non-zero otherwise.
 
 #include <stdint.h>
@@ -47,6 +56,7 @@
 #include "hrx_runtime.h"
 
 #define MAX_BINDINGS 32
+#define MAX_CONSTANT_WORDS 256
 
 #define CHECK_OK(expr, label)                                                  \
   do {                                                                         \
@@ -76,7 +86,8 @@ typedef struct {
 } binding_spec_t;
 
 static size_t dtype_size(const char *dtype) {
-  if (!strcmp(dtype, "i8") || !strcmp(dtype, "u8")) return 1;
+  if (!strcmp(dtype, "i8") || !strcmp(dtype, "u8"))
+    return 1;
   if (!strcmp(dtype, "i16") || !strcmp(dtype, "u16") || !strcmp(dtype, "f16"))
     return 2;
   if (!strcmp(dtype, "i32") || !strcmp(dtype, "u32") || !strcmp(dtype, "f32"))
@@ -99,7 +110,8 @@ static int parse_binding(const char *spec, binding_spec_t *out) {
   char *count = strtok_r(NULL, ":", &save);
   char *source = strtok_r(NULL, "", &save); // rest of string (may contain '=')
   if (!kind || !dtype || !count) {
-    fprintf(stderr, "bad --binding=%s (need kind:dtype:count[:source])\n", spec);
+    fprintf(stderr, "bad --binding=%s (need kind:dtype:count[:source])\n",
+            spec);
     return 1;
   }
 
@@ -157,11 +169,20 @@ static void fill_host(void *dst, const binding_spec_t *b) {
   for (size_t i = 0; i < b->count; ++i) {
     void *e = (char *)dst + i * b->elem_size;
     switch (b->elem_size) {
-    case 1: *(int8_t *)e = (int8_t)b->fill_value; break;
-    case 2: *(int16_t *)e = (int16_t)b->fill_value; break;
-    case 4: *(int32_t *)e = (int32_t)b->fill_value; break;
-    case 8: *(int64_t *)e = (int64_t)b->fill_value; break;
-    default: break;
+    case 1:
+      *(int8_t *)e = (int8_t)b->fill_value;
+      break;
+    case 2:
+      *(int16_t *)e = (int16_t)b->fill_value;
+      break;
+    case 4:
+      *(int32_t *)e = (int32_t)b->fill_value;
+      break;
+    case 8:
+      *(int64_t *)e = (int64_t)b->fill_value;
+      break;
+    default:
+      break;
     }
   }
 }
@@ -174,10 +195,18 @@ static void preview_output(int idx, const binding_spec_t *b, const void *data) {
     const void *e = (const char *)data + i * b->elem_size;
     long long v = 0;
     switch (b->elem_size) {
-    case 1: v = *(const int8_t *)e; break;
-    case 2: v = *(const int16_t *)e; break;
-    case 4: v = *(const int32_t *)e; break;
-    case 8: v = *(const int64_t *)e; break;
+    case 1:
+      v = *(const int8_t *)e;
+      break;
+    case 2:
+      v = *(const int16_t *)e;
+      break;
+    case 4:
+      v = *(const int32_t *)e;
+      break;
+    case 8:
+      v = *(const int64_t *)e;
+      break;
     }
     printf(" %lld", v);
   }
@@ -186,7 +215,8 @@ static void preview_output(int idx, const binding_spec_t *b, const void *data) {
 
 static int run_once(const char *exe_path, uint32_t ordinal,
                     const uint32_t wg[3], const binding_spec_t *bindings,
-                    int binding_count, int iter, int verbose) {
+                    int binding_count, const uint32_t *constants,
+                    int constant_count, int iter, int verbose) {
   int device_count = 0;
   CHECK_OK(hrx_gpu_device_count(&device_count), "hrx_gpu_device_count");
   if (device_count < 1) {
@@ -198,9 +228,9 @@ static int run_once(const char *exe_path, uint32_t ordinal,
   CHECK_OK(hrx_gpu_device_get(0, &device), "hrx_gpu_device_get");
 
   hrx_executable_t executable = NULL;
-  CHECK_OK(hrx_executable_load_file(device, exe_path, "amdaie-pdi-fb",
-                                    &executable),
-           "hrx_executable_load_file");
+  CHECK_OK(
+      hrx_executable_load_file(device, exe_path, "amdaie-pdi-fb", &executable),
+      "hrx_executable_load_file");
 
   hrx_allocator_t allocator = hrx_device_allocator(device);
 
@@ -262,14 +292,16 @@ static int run_once(const char *exe_path, uint32_t ordinal,
 
   CHECK_OK(hrx_queue_dispatch(device, /*affinity=*/0, /*wait=*/NULL,
                               &signal_list, executable, ordinal, &config,
-                              /*constants=*/NULL, /*constants_size=*/0, refs,
+                              constants,
+                              (size_t)constant_count * sizeof(uint32_t), refs,
                               (size_t)binding_count, HRX_DISPATCH_FLAG_NONE),
            "hrx_queue_dispatch");
   CHECK_OK(hrx_semaphore_wait(sem, 1, UINT64_MAX), "semaphore_wait");
 
   // Read back + dump outputs.
   for (int i = 0; i < binding_count; ++i) {
-    if (bindings[i].kind != KIND_OUT) continue;
+    if (bindings[i].kind != KIND_OUT)
+      continue;
     size_t bytes = bindings[i].count * bindings[i].elem_size;
     void *host = malloc(bytes);
     if (!host) {
@@ -277,7 +309,8 @@ static int run_once(const char *exe_path, uint32_t ordinal,
       return 2;
     }
     CHECK_OK(hrx_synchronous_d2h(device, bufs[i], 0, host, bytes), "d2h");
-    if (verbose) preview_output(i, &bindings[i], host);
+    if (verbose)
+      preview_output(i, &bindings[i], host);
     if (bindings[i].source == SRC_DUMP) {
       FILE *f = fopen(bindings[i].path, "wb");
       if (!f) {
@@ -292,7 +325,8 @@ static int run_once(const char *exe_path, uint32_t ordinal,
         free(host);
         return 2;
       }
-      if (verbose) printf("  wrote %zu bytes to %s\n", bytes, bindings[i].path);
+      if (verbose)
+        printf("  wrote %zu bytes to %s\n", bytes, bindings[i].path);
     }
     free(host);
   }
@@ -301,11 +335,13 @@ static int run_once(const char *exe_path, uint32_t ordinal,
   // and every iter when --iters>1).
   hrx_semaphore_release(sem);
   for (int i = 0; i < binding_count; ++i) {
-    if (bufs[i]) hrx_buffer_release(bufs[i]);
+    if (bufs[i])
+      hrx_buffer_release(bufs[i]);
   }
   hrx_executable_release(executable);
 
-  if (verbose) printf("iter %d: dispatch OK\n", iter);
+  if (verbose)
+    printf("iter %d: dispatch OK\n", iter);
   return 0;
 }
 
@@ -316,6 +352,8 @@ int main(int argc, char **argv) {
   int iters = 1;
   binding_spec_t bindings[MAX_BINDINGS];
   int binding_count = 0;
+  uint32_t constants[MAX_CONSTANT_WORDS];
+  int constant_count = 0;
 
   for (int i = 1; i < argc; ++i) {
     const char *a = argv[i];
@@ -335,8 +373,18 @@ int main(int argc, char **argv) {
         fprintf(stderr, "too many bindings (max %d)\n", MAX_BINDINGS);
         return 64;
       }
-      if (parse_binding(a + 10, &bindings[binding_count]) != 0) return 64;
+      if (parse_binding(a + 10, &bindings[binding_count]) != 0)
+        return 64;
       binding_count++;
+    } else if (!strncmp(a, "--constant=", 11)) {
+      if (constant_count >= MAX_CONSTANT_WORDS) {
+        fprintf(stderr, "too many constants (max %d)\n", MAX_CONSTANT_WORDS);
+        return 64;
+      }
+      const char *value = a + 11;
+      if (!strncmp(value, "u32:", 4))
+        value += 4;
+      constants[constant_count++] = (uint32_t)strtoul(value, NULL, 0);
     } else {
       fprintf(stderr, "unknown arg: %s\n", a);
       return 64;
@@ -347,11 +395,12 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "usage: %s --pdi=<exe.amdaie-pdi-fb> "
             "--binding=<kind:dtype:count[:source]> ... "
-            "[--ordinal=N] [--wg=x,y,z] [--iters=N]\n",
+            "[--constant=u32:V] [--ordinal=N] [--wg=x,y,z] [--iters=N]\n",
             argv[0]);
     return 64;
   }
-  if (iters < 1) iters = 1;
+  if (iters < 1)
+    iters = 1;
 
   // Each iteration does a full gpu_initialize (creates the NPU device) ->
   // dispatch -> gpu_shutdown (destroys the device). Looping init/shutdown is
@@ -360,8 +409,8 @@ int main(int argc, char **argv) {
   int rc = 0;
   for (int it = 0; it < iters && rc == 0; ++it) {
     CHECK_OK(hrx_gpu_initialize(0), "hrx_gpu_initialize");
-    rc = run_once(exe_path, ordinal, wg, bindings, binding_count, it,
-                  /*verbose=*/1);
+    rc = run_once(exe_path, ordinal, wg, bindings, binding_count, constants,
+                  constant_count, it, /*verbose=*/1);
     // Always shut down (the whole point is to validate clean teardown).
     hrx_status_ignore(hrx_gpu_shutdown());
   }

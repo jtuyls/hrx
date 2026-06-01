@@ -25,13 +25,13 @@
 #include "iree/hal/drivers/amdgpu/registration/driver_module.h"
 #endif
 
-#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
-#include "iree-amd-aie/driver/xrt-lite/api.h"
-#include "iree-amd-aie/driver/xrt-lite/registration/driver_module.h"
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
+#include "iree-amd-aie/driver/amdxdna/api.h"
+#include "iree-amd-aie/driver/amdxdna/registration/driver_module.h"
 #endif
 
-// Any GPU-class accelerator driver is available (AMDGPU and/or NPU xrt-lite).
-#if defined(HRX_HAS_IREE_AMDGPU_DRIVER) || defined(HRX_HAS_IREE_XRT_LITE_DRIVER)
+// Any GPU-class accelerator driver is available (AMDGPU and/or NPU amdxdna).
+#if defined(HRX_HAS_IREE_AMDGPU_DRIVER) || defined(HRX_HAS_IREE_AMDXDNA_DRIVER)
 #define HRX_HAS_GPU_DRIVER 1
 #endif
 
@@ -280,8 +280,7 @@ hrx_profile_file_sink_create(const char *file_path,
   return status;
 }
 
-static iree_status_t
-hrx_get_profile_data_families(
+static iree_status_t hrx_get_profile_data_families(
     iree_hal_device_profiling_data_families_t *out_data_families) {
   IREE_ASSERT_ARGUMENT(out_data_families);
 
@@ -316,8 +315,7 @@ static iree_status_t hrx_device_profile_begin(hrx_device_s *device,
   }
 
   iree_hal_device_profiling_options_t options = {0};
-  IREE_RETURN_IF_ERROR(
-      hrx_get_profile_data_families(&options.data_families));
+  IREE_RETURN_IF_ERROR(hrx_get_profile_data_families(&options.data_families));
   options.sink = sink;
   iree_status_t status =
       iree_hal_device_profiling_begin(device->hal_device, &options);
@@ -403,7 +401,7 @@ hrx_create_iree_amdgpu_driver(iree_allocator_t alloc,
 }
 #endif
 
-#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
 // Reads a positive int32 from an environment variable, falling back to
 // default_value when unset/empty/invalid.
 static int32_t hrx_getenv_int32(const char *name, int32_t default_value) {
@@ -416,55 +414,68 @@ static int32_t hrx_getenv_int32(const char *name, int32_t default_value) {
   return (int32_t)parsed;
 }
 
-// Creates the xrt-lite (AMD NPU) HAL driver.
+static int32_t hrx_getenv_int32_compat(const char *preferred,
+                                       const char *legacy,
+                                       int32_t default_value) {
+  const char *value = getenv(preferred);
+  if (value && value[0])
+    return hrx_getenv_int32(preferred, default_value);
+  return hrx_getenv_int32(legacy, default_value);
+}
+
+// Creates the amdxdna (AMD NPU) HAL driver.
 //
 // We register the driver module (mirroring the amdgpu path so the driver name
 // is discoverable in the default registry), but we create the driver directly
-// via iree_hal_xrt_lite_driver_create with explicit device params. The
+// via iree_hal_amdxdna_driver_create with explicit device params. The
 // registration factory derives n_core_rows/n_core_cols from IREE CLI flags
-// (FLAG_xrt_lite_n_core_rows/cols) which default to 0 and are rejected with
+// (FLAG_amdxdna_n_core_rows/cols) which default to 0 and are rejected with
 // FAILED_PRECONDITION; HRX has no CLI flag parser, so we must supply the AIE
 // array geometry ourselves. Defaults match the known-good npu4 1x4 config and
-// can be overridden via HRX_XRT_LITE_N_CORE_ROWS / HRX_XRT_LITE_N_CORE_COLS.
+// can be overridden via HRX_AMDXDNA_N_CORE_ROWS / HRX_AMDXDNA_N_CORE_COLS.
 static hrx_status_t
-hrx_create_iree_xrt_lite_driver(iree_allocator_t alloc,
-                                iree_hal_driver_t **out_driver) {
-  iree_status_t status = iree_hal_xrt_lite_driver_module_register(
+hrx_create_iree_amdxdna_driver(iree_allocator_t alloc,
+                               iree_hal_driver_t **out_driver) {
+  iree_status_t status = iree_hal_amdxdna_driver_module_register(
       iree_hal_driver_registry_default());
   if (iree_status_is_already_exists(status)) {
     iree_status_ignore(status);
     status = iree_ok_status();
   }
-  hrx_debug_print_iree_status("xrt-lite driver module register", status);
+  hrx_debug_print_iree_status("amdxdna driver module register", status);
   if (!iree_status_is_ok(status)) {
     return hrx_status_from_iree(status);
   }
 
-  struct iree_hal_xrt_lite_driver_options driver_options;
-  iree_hal_xrt_lite_driver_options_initialize(&driver_options);
-  struct iree_hal_xrt_lite_device_params device_params;
-  iree_hal_xrt_lite_device_options_initialize(&device_params);
-  device_params.n_core_rows = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_ROWS", 4);
-  device_params.n_core_cols = hrx_getenv_int32("HRX_XRT_LITE_N_CORE_COLS", 1);
-  // Opt-in ERT_CMD_CHAIN batching: a graph block's dispatches (recorded into one
-  // command buffer by the HRX graph executor) are accumulated and flushed as one
-  // chain per hw queue. Off by default to preserve the proven per-command path.
-  device_params.cmd_chain = hrx_getenv_int32("HRX_XRT_LITE_CMD_CHAIN", 0);
+  struct iree_hal_amdxdna_driver_options driver_options;
+  iree_hal_amdxdna_driver_options_initialize(&driver_options);
+  struct iree_hal_amdxdna_device_params device_params;
+  iree_hal_amdxdna_device_options_initialize(&device_params);
+  device_params.n_core_rows = hrx_getenv_int32_compat(
+      "HRX_AMDXDNA_N_CORE_ROWS", "HRX_XRT_LITE_N_CORE_ROWS", 4);
+  device_params.n_core_cols = hrx_getenv_int32_compat(
+      "HRX_AMDXDNA_N_CORE_COLS", "HRX_XRT_LITE_N_CORE_COLS", 1);
+  // Opt-in ERT_CMD_CHAIN batching: a graph block's dispatches (recorded into
+  // one command buffer by the HRX graph executor) are accumulated and flushed
+  // as one chain per hw queue. Off by default to preserve the proven
+  // per-command path.
+  device_params.cmd_chain = hrx_getenv_int32_compat(
+      "HRX_AMDXDNA_CMD_CHAIN", "HRX_XRT_LITE_CMD_CHAIN", 0);
   driver_options.device_params = device_params;
 
   if (hrx_gpu_debug_enabled()) {
     fprintf(stderr,
-            "hrx gpu debug: creating xrt-lite driver (n_core_rows=%d, "
+            "hrx gpu debug: creating amdxdna driver (n_core_rows=%d, "
             "n_core_cols=%d, cmd_chain=%d)\n",
             device_params.n_core_rows, device_params.n_core_cols,
             device_params.cmd_chain);
   }
 
   iree_hal_driver_t *driver = NULL;
-  status = iree_hal_xrt_lite_driver_create(
-      iree_make_cstring_view("xrt-lite"), &driver_options, &device_params,
-      alloc, &driver);
-  hrx_debug_print_iree_status("xrt-lite driver create", status);
+  status = iree_hal_amdxdna_driver_create(iree_make_cstring_view("amdxdna"),
+                                          &driver_options, &device_params,
+                                          alloc, &driver);
+  hrx_debug_print_iree_status("amdxdna driver create", status);
   if (!iree_status_is_ok(status)) {
     return hrx_status_from_iree(status);
   }
@@ -472,14 +483,15 @@ hrx_create_iree_xrt_lite_driver(iree_allocator_t alloc,
   *out_driver = driver;
   return hrx_ok_status();
 }
-#endif // HRX_HAS_IREE_XRT_LITE_DRIVER
+#endif // HRX_HAS_IREE_AMDXDNA_DRIVER
 
 static hrx_status_t hrx_create_gpu_driver(iree_allocator_t alloc,
                                           iree_hal_driver_t **out_driver) {
   const char *driver_name = hrx_get_gpu_driver_name();
-#ifdef HRX_HAS_IREE_XRT_LITE_DRIVER
-  if (strcmp(driver_name, "xrt-lite") == 0) {
-    return hrx_create_iree_xrt_lite_driver(alloc, out_driver);
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
+  if (strcmp(driver_name, "amdxdna") == 0 ||
+      strcmp(driver_name, "xrt-lite") == 0) {
+    return hrx_create_iree_amdxdna_driver(alloc, out_driver);
   }
 #endif
 #ifdef HRX_HAS_IREE_AMDGPU_DRIVER
@@ -609,12 +621,12 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
 #ifndef HRX_HAS_GPU_DRIVER
   return hrx_make_status(
       HRX_STATUS_UNAVAILABLE,
-      "no GPU driver available (built without AMDGPU or xrt-lite support)");
+      "no GPU driver available (built without AMDGPU or amdxdna support)");
 #else
   // The amdgpu driver reports a pseudo-device with an empty path at ordinal 0
   // (representing all visible GPUs as one logical device) followed by one entry
   // per physical device; HRX exposes only the physical devices. Other drivers
-  // (e.g. xrt-lite for the NPU) report a single real device with no path, which
+  // (e.g. amdxdna for the NPU) report a single real device with no path, which
   // must NOT be filtered out.
   const bool driver_uses_path_filter =
       (strcmp(hrx_get_gpu_driver_name(), "amdgpu") == 0);
