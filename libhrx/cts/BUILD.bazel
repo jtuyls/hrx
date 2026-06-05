@@ -16,6 +16,11 @@ package(
 
 AMD_GPU_CTS_TAGS = ["runtime-resource=amd-gpu"]
 
+AMDGPU_TARGET_COMPATIBLE_WITH = select({
+    "//runtime/config/hal:driver_amdgpu": [],
+    "//conditions:default": ["@platforms//:incompatible"],
+})
+
 iree_amdgpu_binary_variants_embed_data(
     name = "amdgpu_executable_noop_kernels",
     testonly = True,
@@ -26,6 +31,7 @@ iree_amdgpu_binary_variants_embed_data(
     identifier = "hrx_cts_amdgpu_executable_noop_kernels",
     tags = ["manual"],
     target = "amdgcn-amd-amdhsa",
+    target_compatible_with = AMDGPU_TARGET_COMPATIBLE_WITH,
     target_selectors_flag = "//runtime/src/iree/hal/drivers/amdgpu:targets",
 )
 
@@ -112,6 +118,7 @@ hrx_cts_test(
     name = "executable",
     srcs = ["tests/executable/executable_test.cpp"],
     tags = AMD_GPU_CTS_TAGS,
+    target_compatible_with = AMDGPU_TARGET_COMPATIBLE_WITH,
     deps = [
         ":amdgpu_executable_noop_kernels",
         "//build_tools/amdgpu:target_map_h",

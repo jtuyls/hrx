@@ -9,6 +9,7 @@
 
 iree_add_all_subdirs()
 
+if(IREE_HAL_DRIVER_AMDGPU)
 iree_amdgpu_binary_variants_embed_data(
   NAME
     amdgpu_executable_noop_kernels
@@ -29,6 +30,7 @@ iree_amdgpu_binary_variants_embed_data(
   TESTONLY
   PUBLIC
 )
+endif()
 
 iree_cc_library(
   NAME
@@ -195,6 +197,7 @@ hrx_cc_test(
     "runtime-resource=amd-gpu"
 )
 
+if(IREE_HAL_DRIVER_AMDGPU)
 hrx_cc_test(
   NAME
     hrx_cts_executable
@@ -211,6 +214,7 @@ hrx_cc_test(
   LABELS
     "runtime-resource=amd-gpu"
 )
+endif()
 
 hrx_cc_test(
   NAME

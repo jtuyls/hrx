@@ -100,6 +100,7 @@ class HrxBuildFileFunctions(bazel_to_cmake_converter.BuildFileFunctions):
         defines = kwargs.get("defines")
         includes = kwargs.get("includes")
         tags = kwargs.get("tags")
+        target_compatible_with = kwargs.get("target_compatible_with")
         full_deps = (
             [
                 ":core",
@@ -131,6 +132,7 @@ class HrxBuildFileFunctions(bazel_to_cmake_converter.BuildFileFunctions):
         if platform_deps_block:
             self._converter.body += platform_deps_block
         labels_block = self._convert_string_list_block("LABELS", tags)
+        self._emit_platform_guard_begin(target_compatible_with)
         self._converter.body += (
             f"hrx_cc_test(\n"
             f"{name_block}"
@@ -143,6 +145,7 @@ class HrxBuildFileFunctions(bazel_to_cmake_converter.BuildFileFunctions):
             f"{labels_block}"
             f")\n\n"
         )
+        self._emit_platform_guard_end(target_compatible_with)
 
 
 def convert_unmatched_target(converter, target):

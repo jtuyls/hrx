@@ -7,6 +7,7 @@
 // driver-based creation via iree_hal_task_driver_create +
 // iree_hal_driver_create_default_device.
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,15 @@
 
 #ifdef HRX_HAS_IREE_AMDGPU_DRIVER
 #include "iree/hal/drivers/amdgpu/registration/driver_module.h"
+#endif
+
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
+#include "iree/hal/drivers/amdxdna/api.h"
+#include "iree/hal/drivers/amdxdna/registration/driver_module.h"
+#endif
+
+#if defined(HRX_HAS_IREE_AMDGPU_DRIVER) || defined(HRX_HAS_IREE_AMDXDNA_DRIVER)
+#define HRX_HAS_ACCELERATOR_DRIVER 1
 #endif
 
 //===----------------------------------------------------------------------===//
@@ -104,26 +114,32 @@ hrx_status_t hrx_ensure_shared_state(void) {
   return hrx_ok_status();
 }
 
-#ifdef HRX_HAS_IREE_AMDGPU_DRIVER
-static void hrx_set_gpu_architecture_from_hal(iree_hal_device_t* hal_device,
-                                              hrx_device_s* dev) {
+#ifdef HRX_HAS_ACCELERATOR_DRIVER
+// Sets dev->architecture from the most precise source available. Some drivers
+// expose a numeric target query (for example, amdgpu reports hal.device/gfxip);
+// backends without one fall back to their advertised device name.
+static void hrx_set_device_architecture(
+    iree_hal_device_t* hal_device, const iree_hal_device_info_t* device_info,
+    hrx_device_s* dev) {
   int64_t gfxip = 0;
   iree_status_t status = iree_hal_device_query_i64(
       hal_device, iree_make_cstring_view("hal.device"),
       iree_make_cstring_view("gfxip"), &gfxip);
-  if (!iree_status_is_ok(status)) {
-    iree_status_ignore(status);
-    snprintf(dev->architecture, sizeof(dev->architecture), "unknown");
+  if (iree_status_is_ok(status)) {
+    snprintf(dev->architecture, sizeof(dev->architecture), "gfx%d%d%d",
+             (int)((gfxip >> 16) & 0xff), (int)((gfxip >> 8) & 0xff),
+             (int)(gfxip & 0xff));
     return;
   }
-
-  int major = (int)((gfxip >> 16) & 0xff);
-  int minor = (int)((gfxip >> 8) & 0xff);
-  int stepping = (int)(gfxip & 0xff);
-  snprintf(dev->architecture, sizeof(dev->architecture), "gfx%d%d%d", major,
-           minor, stepping);
+  iree_status_ignore(status);
+  iree_host_size_t arch_len = device_info->name.size;
+  if (arch_len >= sizeof(dev->architecture)) {
+    arch_len = sizeof(dev->architecture) - 1;
+  }
+  memcpy(dev->architecture, device_info->name.data, arch_len);
+  dev->architecture[arch_len] = '\0';
 }
-#endif  // HRX_HAS_IREE_AMDGPU_DRIVER
+#endif  // HRX_HAS_ACCELERATOR_DRIVER
 
 static void hrx_release_shared_state(void) {
   if (!g_shared.shared_initialized) return;
@@ -239,11 +255,6 @@ static hrx_status_t hrx_create_local_task_device(
   *out_driver = driver;
   *out_hal_device = hal_device;
   return hrx_ok_status();
-}
-
-static const char* hrx_get_gpu_driver_name(void) {
-  const char* value = getenv("HRX_GPU_DRIVER");
-  return (value && value[0]) ? value : "amdgpu";
 }
 
 static bool hrx_gpu_debug_enabled(void) {
@@ -398,25 +409,71 @@ static hrx_status_t hrx_create_iree_amdgpu_driver(
 }
 #endif
 
-static hrx_status_t hrx_create_gpu_driver(iree_allocator_t alloc,
-                                          iree_hal_driver_t** out_driver) {
-  const char* driver_name = hrx_get_gpu_driver_name();
-#ifdef HRX_HAS_IREE_AMDGPU_DRIVER
-  if (strcmp(driver_name, "amdgpu") == 0) {
-    return hrx_create_iree_amdgpu_driver(alloc, out_driver);
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
+static hrx_status_t hrx_create_iree_amdxdna_driver(
+    iree_allocator_t alloc, iree_hal_driver_t** out_driver) {
+  iree_status_t status = iree_hal_amdxdna_driver_module_register(
+      iree_hal_driver_registry_default());
+  if (iree_status_is_already_exists(status)) {
+    iree_status_ignore(status);
+    status = iree_ok_status();
   }
-  char message[128];
-  snprintf(message, sizeof(message),
-           "unknown HRX_GPU_DRIVER '%s' (expected 'amdgpu')", driver_name);
-  return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
-#else
-  char message[96];
-  snprintf(message, sizeof(message),
-           "unknown HRX_GPU_DRIVER '%s' (built without AMDGPU support)",
-           driver_name);
-  return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
-#endif
+  hrx_debug_print_iree_status("amdxdna driver module register", status);
+  if (!iree_status_is_ok(status)) {
+    return hrx_status_from_iree(status);
+  }
+
+  struct iree_hal_amdxdna_driver_options driver_options;
+  iree_hal_amdxdna_driver_options_initialize(&driver_options);
+
+  iree_hal_driver_t* driver = NULL;
+  status = iree_hal_amdxdna_driver_create(iree_make_cstring_view("amdxdna"),
+                                          &driver_options, alloc, &driver);
+  hrx_debug_print_iree_status("amdxdna driver create", status);
+  if (!iree_status_is_ok(status)) {
+    return hrx_status_from_iree(status);
+  }
+
+  *out_driver = driver;
+  return hrx_ok_status();
 }
+#endif  // HRX_HAS_IREE_AMDXDNA_DRIVER
+
+#ifdef HRX_HAS_ACCELERATOR_DRIVER
+// Declarative registry of the accelerator drivers this build supports, mapping
+// HRX_GPU_DRIVER names to their create functions. Table order is the default
+// preference when HRX_GPU_DRIVER is unset.
+typedef struct hrx_accelerator_driver_t {
+  const char* name;
+  hrx_status_t (*create)(iree_allocator_t alloc,
+                         iree_hal_driver_t** out_driver);
+} hrx_accelerator_driver_t;
+
+static const hrx_accelerator_driver_t kAcceleratorDrivers[] = {
+#ifdef HRX_HAS_IREE_AMDGPU_DRIVER
+    {"amdgpu", hrx_create_iree_amdgpu_driver},
+#endif
+#ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
+    {"amdxdna", hrx_create_iree_amdxdna_driver},
+#endif
+};
+
+// Resolves the accelerator driver to use: HRX_GPU_DRIVER if set, otherwise the
+// first compiled-in driver (table order = preference). Returns NULL if the
+// requested driver is unknown or unsupported in this build.
+static const hrx_accelerator_driver_t* hrx_resolve_accelerator_driver(void) {
+  const char* name = getenv("HRX_GPU_DRIVER");
+  if (!name || !name[0]) {
+    return IREE_ARRAYSIZE(kAcceleratorDrivers) ? &kAcceleratorDrivers[0] : NULL;
+  }
+  for (iree_host_size_t i = 0; i < IREE_ARRAYSIZE(kAcceleratorDrivers); ++i) {
+    if (strcmp(name, kAcceleratorDrivers[i].name) == 0) {
+      return &kAcceleratorDrivers[i];
+    }
+  }
+  return NULL;
+}
+#endif  // HRX_HAS_ACCELERATOR_DRIVER
 
 //===----------------------------------------------------------------------===//
 // CPU accelerator
@@ -535,24 +592,35 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
                            "GPU accelerator already initialized");
   }
 
-#ifndef HRX_HAS_IREE_AMDGPU_DRIVER
+#ifndef HRX_HAS_ACCELERATOR_DRIVER
   return hrx_make_status(
       HRX_STATUS_UNAVAILABLE,
-      "no GPU driver available (built without AMDGPU support)");
+      "no accelerator driver available (built without AMDGPU or AMD XDNA "
+      "support)");
 #else
+  const hrx_accelerator_driver_t* driver_desc =
+      hrx_resolve_accelerator_driver();
+  if (!driver_desc) {
+    const char* requested = getenv("HRX_GPU_DRIVER");
+    char message[160];
+    snprintf(message, sizeof(message),
+             "unknown or unsupported HRX_GPU_DRIVER '%s'",
+             requested ? requested : "");
+    return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
+  }
   hrx_status_t status = hrx_ensure_shared_state();
   if (!hrx_status_is_ok(status)) return status;
 
   iree_allocator_t alloc = g_shared.host_allocator;
 
   iree_hal_driver_t* driver = NULL;
-  status = hrx_create_gpu_driver(alloc, &driver);
+  status = driver_desc->create(alloc, &driver);
   if (!hrx_status_is_ok(status)) {
     hrx_release_shared_state();
     return status;
   }
 
-  // Enumerate available GPU devices.
+  // Enumerate available accelerator devices.
   iree_status_t iree_status = iree_ok_status();
   iree_host_size_t device_info_count = 0;
   iree_hal_device_info_t* device_infos = NULL;
@@ -569,16 +637,18 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
     iree_allocator_free(alloc, device_infos);
     iree_hal_driver_release(driver);
     hrx_release_shared_state();
-    return hrx_make_status(HRX_STATUS_UNAVAILABLE, "no GPU devices found");
+    return hrx_make_status(HRX_STATUS_UNAVAILABLE,
+                           "no accelerator devices found");
   }
   if (hrx_gpu_debug_enabled()) {
-    fprintf(stderr, "hrx gpu debug: found %zu available GPU device entries\n",
+    fprintf(stderr,
+            "hrx gpu debug: found %zu available accelerator device entries\n",
             (size_t)device_info_count);
   }
 
-  // IREE AMDGPU reports a pseudo-device with an empty path at ordinal 0 that
-  // represents all visible GPUs as one logical device, then one entry per
-  // physical device. HRX exposes physical devices to callers.
+  // HRX exposes concrete accelerator entries. The drivers used here report
+  // those with non-empty stable paths, while aggregate pseudo-devices such as
+  // amdgpu's all-GPUs ordinal use an empty path.
   int physical_count = 0;
   for (iree_host_size_t i = 0; i < device_info_count; ++i) {
     if (device_infos[i].path.size == 0) continue;
@@ -589,7 +659,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
     iree_hal_driver_release(driver);
     hrx_release_shared_state();
     return hrx_make_status(HRX_STATUS_UNAVAILABLE,
-                           "no physical GPU devices found");
+                           "no physical accelerator devices found");
   }
 
   int count =
@@ -665,7 +735,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
     memcpy(dev->name, device_infos[info_index].name.data, name_len);
     dev->name[name_len] = '\0';
 
-    hrx_set_gpu_architecture_from_hal(hal_device, dev);
+    hrx_set_device_architecture(hal_device, &device_infos[info_index], dev);
 
     iree_status = hrx_device_profile_begin(dev, profile_sink);
     hrx_debug_print_iree_status("begin device profiling", iree_status);
@@ -688,7 +758,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
   g_gpu.device_count = created_count;
   g_gpu.initialized = true;
   return hrx_ok_status();
-#endif  // HRX_HAS_IREE_AMDGPU_DRIVER
+#endif  // HRX_HAS_ACCELERATOR_DRIVER
 }
 
 hrx_status_t hrx_gpu_shutdown(void) {

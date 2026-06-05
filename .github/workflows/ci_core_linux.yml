@@ -53,6 +53,16 @@ jobs:
             run_tests: true
             ctest_exclude_regex: ""
             package: true
+          - variant: AMDXDNA Host
+            sanitizer: none
+            assertions: false
+            run_tests: true
+            ctest_exclude_regex: ""
+            cmake_options: |
+              -DIREE_HAL_DRIVER_AMDGPU=OFF
+              -DIREE_HAL_DRIVER_AMDXDNA=ON
+              -DLIBHRX_BUILD_PASSTHROUGH=OFF
+            package: false
           - variant: ASAN
             sanitizer: asan
             assertions: true
@@ -99,6 +109,7 @@ jobs:
       ctest_label_exclude_regex: "runtime-resource="
       cmake_options: |
         -DIREE_HAL_AMDGPU_TARGETS=gfx942;gfx1151;gfx1201
+        ${{ matrix.cmake_options }}
       package: ${{ matrix.package }}
 
   gpu_linux:

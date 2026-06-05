@@ -1,0 +1,216 @@
+# Copyright (c) 2024 Advanced Micro Devices, Inc. All Rights Reserved.
+# Copyright 2026 The IREE Authors
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "amdxdna HAL backend is only implemented for Linux KMQ")
+endif()
+
+iree_add_all_subdirs()
+
+set(IREE_HAL_AMDXDNA_NATIVE_SRCS
+  native.h
+)
+set(IREE_HAL_AMDXDNA_NATIVE_DEPS
+  iree::hal::drivers::amdxdna::shim::linux::kmq::shim-xdna
+)
+list(APPEND IREE_HAL_AMDXDNA_NATIVE_SRCS
+  native_linux_kmq.cc
+)
+
+iree_cc_library(
+  NAME
+    amdxdna
+  SRCS
+    allocator.cc
+    allocator.h
+    api.h
+    async_queue.cc
+    async_queue.h
+    buffer.cc
+    buffer.h
+    direct_command_buffer.cc
+    direct_command_buffer.h
+    direct_command_buffer_internal.h
+    device.cc
+    device_internal.h
+    driver.cc
+    event.cc
+    event.h
+    executable.cc
+    executable.h
+    executable_internal.h
+    ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
+    nop_executable_cache.cc
+    nop_executable_cache.h
+    semaphore.cc
+    semaphore.h
+    util.h
+  DEPS
+    iree::async
+    iree::async::util::proactor_pool
+    iree::base
+    iree::base::core_headers
+    iree::hal::memory::cpu_slab_provider
+    iree::hal::memory::passthrough_pool
+    iree::hal::utils::deferred_command_buffer
+    iree::hal::utils::file_transfer
+    iree::hal::utils::files
+    iree::hal::utils::queue_emulation
+    iree::hal::utils::queue_host_call_emulation
+    iree::hal::utils::resource_set
+    iree::base::internal::flatcc::parsing
+    iree::schemas::pdi_executable_def_c_fbs
+    ${IREE_HAL_AMDXDNA_NATIVE_DEPS}
+  PUBLIC
+)
+
+set(_AMDXDNA_UNIT_TEST_LABELS
+  "driver=amdxdna"
+)
+
+iree_cc_test(
+  NAME
+    allocator_test
+  SRCS
+    "allocator_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    async_queue_test
+  SRCS
+    "async_queue_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::async
+    iree::base
+    iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    buffer_test
+  SRCS
+    "buffer_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    direct_command_buffer_test
+  SRCS
+    "direct_command_buffer_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::base::internal::arena
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    driver_test
+  SRCS
+    "driver_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::async::util::proactor_pool
+    iree::base
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    event_test
+  SRCS
+    "event_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    executable_test
+  SRCS
+    "executable_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::base::internal::flatcc::building
+    iree::hal
+    iree::schemas::pdi_executable_def_c_fbs
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    nop_executable_cache_test
+  SRCS
+    "nop_executable_cache_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::base::internal::flatcc::building
+    iree::hal
+    iree::schemas::pdi_executable_def_c_fbs
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    semaphore_test
+  SRCS
+    "semaphore_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::async
+    iree::base
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
