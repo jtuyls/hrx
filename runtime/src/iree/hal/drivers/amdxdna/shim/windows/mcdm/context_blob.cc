@@ -114,8 +114,8 @@ bool ParseSections(const uint8_t* xclbin, size_t xclbin_size,
     section.name = CString(xclbin + record + 4, 16);
     section.offset = ReadU64(xclbin, record + 24);
     section.size = ReadU64(xclbin, record + 32);
-    if (!CheckRange(xclbin_size, section.offset, section.size,
-                    "AXLF section", out_error)) {
+    if (!CheckRange(xclbin_size, section.offset, section.size, "AXLF section",
+                    out_error)) {
       return false;
     }
     out_sections->push_back(section);
@@ -165,7 +165,8 @@ std::string NormalizeIpName(std::string name) {
 
 std::string DeriveKernelNameFromMetadata(
     const uint8_t* xclbin, const std::vector<AxlfSection>& sections) {
-  const AxlfSection* section = FindFirstSection(sections, kBuildMetadataSection);
+  const AxlfSection* section =
+      FindFirstSection(sections, kBuildMetadataSection);
   if (!section) return "kernel";
   std::string json(reinterpret_cast<const char*>(xclbin + section->offset),
                    static_cast<size_t>(section->size));
@@ -220,9 +221,8 @@ bool ParseIpLayout(const uint8_t* xclbin, size_t xclbin_size,
   info->kernel_names.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     size_t record = records_offset + size_t{i} * kIpDataRecordSize;
-    std::string name =
-        NormalizeIpName(CString(data + record + kIpDataNameOffset,
-                                kIpDataNameSize));
+    std::string name = NormalizeIpName(
+        CString(data + record + kIpDataNameOffset, kIpDataNameSize));
     if (!name.empty()) info->kernel_names.push_back(std::move(name));
   }
   return true;
@@ -312,7 +312,8 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
                                        std::vector<uint8_t>* out_blob,
                                        ContextBlobInfo* out_info,
                                        std::string* out_error) {
-  if (!xclbin || !out_blob) return Fail("invalid output/context arguments", out_error);
+  if (!xclbin || !out_blob)
+    return Fail("invalid output/context arguments", out_error);
   if (xclbin_size < 0x1B0) return Fail("xclbin is too small", out_error);
 
   std::vector<AxlfSection> sections;
@@ -322,9 +323,9 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
   if (!ParseIpLayout(xclbin, xclbin_size, sections, &info, out_error)) {
     return false;
   }
-  info.kernel_name =
-      info.kernel_names.empty() ? DeriveKernelNameFromMetadata(xclbin, sections)
-                                : info.kernel_names.front();
+  info.kernel_name = info.kernel_names.empty()
+                         ? DeriveKernelNameFromMetadata(xclbin, sections)
+                         : info.kernel_names.front();
   if (!ParseAiePartition(xclbin, xclbin_size, sections, &info, out_error)) {
     return false;
   }

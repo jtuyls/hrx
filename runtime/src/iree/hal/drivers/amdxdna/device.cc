@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "iree/async/frontier_tracker.h"
+#include "iree/async/notification.h"
+#include "iree/async/util/proactor_pool.h"
 #include "iree/hal/drivers/amdxdna/allocator.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/buffer.h"
@@ -24,9 +27,6 @@
 #include "iree/hal/drivers/amdxdna/nop_executable_cache.h"
 #include "iree/hal/drivers/amdxdna/semaphore.h"
 #include "iree/hal/drivers/amdxdna/util.h"
-#include "iree/async/frontier_tracker.h"
-#include "iree/async/notification.h"
-#include "iree/async/util/proactor_pool.h"
 #include "iree/hal/memory/cpu_slab_provider.h"
 #include "iree/hal/memory/passthrough_pool.h"
 #include "iree/hal/utils/deferred_command_buffer.h"
@@ -410,8 +410,8 @@ static iree_status_t iree_hal_amdxdna_validate_queue_execute_binding_table(
                             "NULL for %" PRIhsz " bindings",
                             binding_table.count);
   } else {
-    *out_binding_table = iree_hal_buffer_binding_table_t{
-        binding_count, binding_table.bindings};
+    *out_binding_table =
+        iree_hal_buffer_binding_table_t{binding_count, binding_table.bindings};
   }
   return iree_ok_status();
 }
@@ -445,8 +445,7 @@ static iree_status_t iree_hal_amdxdna_queue_execute_op_create(
   iree_hal_command_buffer_retain(command_buffer);
 
   iree_status_t status = iree_hal_amdxdna_create_binding_table_resource_set(
-      device, command_buffer, binding_table, flags,
-      &op->binding_resource_set);
+      device, command_buffer, binding_table, flags, &op->binding_resource_set);
   if (iree_status_is_ok(status) && binding_count > 0) {
     auto* bindings_copy = reinterpret_cast<iree_hal_buffer_binding_t*>(
         reinterpret_cast<uint8_t*>(op) +
@@ -488,8 +487,8 @@ static iree_status_t iree_hal_amdxdna_queue_execute_apply(
 
 static iree_status_t iree_hal_amdxdna_queue_execute_op_fn(void* user_data) {
   auto* op = reinterpret_cast<iree_hal_amdxdna_queue_execute_op_t*>(user_data);
-  return iree_hal_amdxdna_queue_execute_apply(
-      op->device, op->command_buffer, op->binding_table);
+  return iree_hal_amdxdna_queue_execute_apply(op->device, op->command_buffer,
+                                              op->binding_table);
 }
 
 static iree_status_t iree_hal_amdxdna_complete_queue_op(
@@ -542,8 +541,8 @@ static iree_status_t iree_hal_amdxdna_device_queue_execute(
       iree_status_is_ok(status) &&
       iree_hal_amdxdna_wait_list_is_ready(wait_semaphore_list);
   if (wait_list_ready) {
-    status = iree_hal_amdxdna_queue_execute_apply(
-        device, command_buffer, validated_binding_table);
+    status = iree_hal_amdxdna_queue_execute_apply(device, command_buffer,
+                                                  validated_binding_table);
     status = iree_hal_amdxdna_complete_queue_op(device, signal_semaphore_list,
                                                 status);
     signal_list_resolved = true;
@@ -1063,8 +1062,7 @@ static iree_status_t iree_hal_amdxdna_device_queue_dispatch(
     iree_hal_device_t* base_device, iree_hal_queue_affinity_t queue_affinity,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
-    iree_hal_executable_t* executable,
-    iree_hal_executable_function_t function,
+    iree_hal_executable_t* executable, iree_hal_executable_function_t function,
     const iree_hal_dispatch_config_t config, iree_const_byte_span_t constants,
     const iree_hal_buffer_ref_list_t bindings,
     iree_hal_dispatch_flags_t flags) {

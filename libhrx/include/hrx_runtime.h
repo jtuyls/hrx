@@ -282,9 +282,6 @@ typedef struct hrx_executable_export_info_t {
 typedef uint32_t hrx_gpu_initialize_flags_t;
 
 #define HRX_GPU_INITIALIZE_FLAG_NONE 0u
-// Allows a backend to batch compatible stream dispatches into native command
-// chains/runlists. Backends without a native batching path may ignore this.
-#define HRX_GPU_INITIALIZE_FLAG_COMMAND_CHAINING (1u << 0)
 
 HRX_API hrx_status_t hrx_gpu_initialize(uint32_t flags);
 HRX_API hrx_status_t hrx_gpu_shutdown(void);

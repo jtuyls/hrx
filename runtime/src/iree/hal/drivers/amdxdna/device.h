@@ -10,11 +10,11 @@
 #include <atomic>
 #include <cstdint>
 
+#include "iree/base/internal/arena.h"
+#include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/async_queue.h"
 #include "iree/hal/drivers/amdxdna/native.h"
-#include "iree/base/internal/arena.h"
-#include "iree/hal/api.h"
 
 struct iree_async_proactor_pool_t;
 struct iree_async_proactor_t;
@@ -67,8 +67,8 @@ struct iree_hal_amdxdna_device {
   // Implementation-private so HAL-facing code does not expose STL maps/locks.
   iree_hal_amdxdna_device_context_cache_t* pdi_context_cache;
   // Native parent-chain cache for module-style command chains.
-  // Implementation-private and device-owned so cached command BOs cannot outlive
-  // the native device/context they belong to.
+  // Implementation-private and device-owned so cached command BOs cannot
+  // outlive the native device/context they belong to.
   iree_hal_amdxdna_device_chain_command_cache_t* chain_command_cache;
   // Native single-dispatch cache for module-style commands.
   // This owns prepared command/control BOs keyed by the device-visible dispatch

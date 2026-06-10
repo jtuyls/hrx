@@ -177,14 +177,10 @@ int sync_drm_bo(const shim_xdna::pdev& dev, uint32_t boh,
 }
 
 bool is_driver_sync() {
-  static int drv_sync = -1;
-
-  if (drv_sync == -1) {
-    const char* value = std::getenv("IREE_HAL_AMDXDNA_FORCE_DRIVER_SYNC");
-    bool ds = value && value[0] && std::strcmp(value, "0") != 0;
-    drv_sync = ds ? 1 : 0;
-  }
-  return drv_sync == 1;
+  // Host-side BO sync is the production path. (The previous
+  // IREE_HAL_AMDXDNA_FORCE_DRIVER_SYNC env override has been removed; no runtime
+  // environment variables in the driver.)
+  return false;
 }
 
 }  // namespace

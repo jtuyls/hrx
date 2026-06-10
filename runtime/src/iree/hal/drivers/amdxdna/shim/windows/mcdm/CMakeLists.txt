@@ -19,15 +19,6 @@ iree_cc_library(
   PUBLIC
 )
 
-iree_cc_binary(
-  NAME
-    mcdm_probe
-  SRCS
-    mcdm_probe_main.cc
-  DEPS
-    ::kmt_api
-)
-
 iree_cc_test(
   NAME
     context_blob_test

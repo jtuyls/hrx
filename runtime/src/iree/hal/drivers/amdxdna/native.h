@@ -12,9 +12,9 @@
 #include <memory>
 #include <string>
 
-#include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
+#include "iree/hal/drivers/amdxdna/api.h"
 
 // Opaque, driver-private native resources. Platform implementations own the
 // concrete handles (Linux KMQ fd/ioctl/mmap objects today, another OS binding
@@ -24,6 +24,21 @@ struct iree_hal_amdxdna_native_buffer_t;
 struct iree_hal_amdxdna_native_context_t;
 struct iree_hal_amdxdna_native_queue_t;
 struct iree_hal_amdxdna_native_command_t;
+
+// Thread-safety contract (current single-worker baseline; the async evolution
+// is tracked in the native-DDI follow-ups doc):
+//   * Native device objects may be shared across HAL threads.
+//   * Context creation and cache lookup are synchronized by the owning HAL
+//     device. A native context/queue is a single submission lane unless caps
+//     advertise real multi-queue or async submit.
+//   * Native command objects are mutable while being built (`add_arg_*`,
+//     `bind_buffer`, `reset_bound_buffers`, `mark_*_dirty`, `prepare_chain`);
+//     once prepared they are submitted by one lane at a time. Build / rebind /
+//     dirty / prepare are preparation-time operations and must not race a
+//     native submit or wait on the same command.
+//   * Windows MCDM command-aperture staging is queue/context-owned mutable
+//     state; submits that touch the same context aperture must stay serialized
+//     until an XRT-style reusable instruction lifecycle is recovered.
 
 enum class iree_hal_amdxdna_native_power_mode_t : uint8_t {
   default_mode = 0,
@@ -260,6 +275,10 @@ iree_status_t iree_hal_amdxdna_native_command_bind_buffer(
     iree_hal_amdxdna_native_buffer_t* buffer, iree_device_size_t offset,
     iree_device_size_t size);
 
+// Clears a command's bound buffers so it can be rebound for reuse. Capability
+// gated: only callable on backends that advertise the PARTIAL_ELF dispatch
+// model (BO-table rebinding). Backends without it may return UNIMPLEMENTED, so
+// callers must not invoke it unless `dispatch_models & PARTIAL_ELF` is set.
 iree_status_t iree_hal_amdxdna_native_command_reset_bound_buffers(
     iree_hal_amdxdna_native_command_t* command);
 

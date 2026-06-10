@@ -45,14 +45,12 @@ void RecordPhase(PhaseStat& stat, uint64_t ns) {
   stat.count.fetch_add(1, std::memory_order_relaxed);
   stat.total_ns.fetch_add(ns, std::memory_order_relaxed);
   uint64_t min_ns = stat.min_ns.load(std::memory_order_relaxed);
-  while (ns < min_ns &&
-         !stat.min_ns.compare_exchange_weak(min_ns, ns,
-                                            std::memory_order_relaxed)) {
+  while (ns < min_ns && !stat.min_ns.compare_exchange_weak(
+                            min_ns, ns, std::memory_order_relaxed)) {
   }
   uint64_t max_ns = stat.max_ns.load(std::memory_order_relaxed);
-  while (ns > max_ns &&
-         !stat.max_ns.compare_exchange_weak(max_ns, ns,
-                                            std::memory_order_relaxed)) {
+  while (ns > max_ns && !stat.max_ns.compare_exchange_weak(
+                            max_ns, ns, std::memory_order_relaxed)) {
   }
 }
 
@@ -75,10 +73,10 @@ PathBPhaseStats& pathb_phase_stats() {
 struct PathBPhaseReporter {
   ~PathBPhaseReporter() {
     PathBPhaseStats& stats = pathb_phase_stats();
-    PhaseStat* phases[] = {&stats.total,     &stats.ensure_ring,
+    PhaseStat* phases[] = {&stats.total,         &stats.ensure_ring,
                            &stats.build_private, &stats.residency,
-                           &stats.submit,    &stats.wait,
-                           &stats.sync_exec, &stats.sync_ring};
+                           &stats.submit,        &stats.wait,
+                           &stats.sync_exec,     &stats.sync_ring};
     for (PhaseStat* phase : phases) {
       uint64_t count = phase->count.load(std::memory_order_relaxed);
       if (!count) continue;
@@ -143,29 +141,17 @@ uint32_t Flags32(const D3DKMT_CREATEALLOCATIONFLAGS& flags) {
   return value;
 }
 
-bool TraceQhdlEnabled() {
-  return false;
-}
+bool TraceQhdlEnabled() { return false; }
 
-bool PathBPhaseTimingEnabled() {
-  return false;
-}
+bool PathBPhaseTimingEnabled() { return false; }
 
-bool PathBCompletionPollFallbackEnabled() {
-  return false;
-}
+bool PathBCompletionPollFallbackEnabled() { return false; }
 
-bool TrustFenceCompletionEnabled() {
-  return true;
-}
+bool TrustFenceCompletionEnabled() { return true; }
 
-bool CcccCompletionSlotEnabled() {
-  return false;
-}
+bool CcccCompletionSlotEnabled() { return false; }
 
-bool XrtLockTouchEnabled() {
-  return false;
-}
+bool XrtLockTouchEnabled() { return false; }
 
 void InitializeCompletionSlot(uint8_t* slot_cpu) {
   if (CcccCompletionSlotEnabled()) {
@@ -335,36 +321,33 @@ BufferKindInfo GetBufferKindInfo(BufferKind kind) {
 }
 
 bool KmtApi::Load(std::string* out_error) {
-  enum_adapters3 = ResolveKmtProc<PFND3DKMT_ENUMADAPTERS3>(
-      "D3DKMTEnumAdapters3");
-  query_adapter_info = ResolveKmtProc<PFND3DKMT_QUERYADAPTERINFO>(
-      "D3DKMTQueryAdapterInfo");
+  enum_adapters3 =
+      ResolveKmtProc<PFND3DKMT_ENUMADAPTERS3>("D3DKMTEnumAdapters3");
+  query_adapter_info =
+      ResolveKmtProc<PFND3DKMT_QUERYADAPTERINFO>("D3DKMTQueryAdapterInfo");
   open_adapter_from_luid = ResolveKmtProc<PFND3DKMT_OPENADAPTERFROMLUID>(
       "D3DKMTOpenAdapterFromLuid");
-  close_adapter =
-      ResolveKmtProc<PFND3DKMT_CLOSEADAPTER>("D3DKMTCloseAdapter");
-  create_device =
-      ResolveKmtProc<PFND3DKMT_CREATEDEVICE>("D3DKMTCreateDevice");
+  close_adapter = ResolveKmtProc<PFND3DKMT_CLOSEADAPTER>("D3DKMTCloseAdapter");
+  create_device = ResolveKmtProc<PFND3DKMT_CREATEDEVICE>("D3DKMTCreateDevice");
   destroy_device =
       ResolveKmtProc<PFND3DKMT_DESTROYDEVICE>("D3DKMTDestroyDevice");
-  create_paging_queue = ResolveKmtProc<PFND3DKMT_CREATEPAGINGQUEUE>(
-      "D3DKMTCreatePagingQueue");
-  destroy_paging_queue = ResolveKmtProc<PFND3DKMT_DESTROYPAGINGQUEUE>(
-      "D3DKMTDestroyPagingQueue");
-  create_allocation2 = ResolveKmtProc<PFND3DKMT_CREATEALLOCATION2>(
-      "D3DKMTCreateAllocation2");
-  destroy_allocation2 = ResolveKmtProc<PFND3DKMT_DESTROYALLOCATION2>(
-      "D3DKMTDestroyAllocation2");
+  create_paging_queue =
+      ResolveKmtProc<PFND3DKMT_CREATEPAGINGQUEUE>("D3DKMTCreatePagingQueue");
+  destroy_paging_queue =
+      ResolveKmtProc<PFND3DKMT_DESTROYPAGINGQUEUE>("D3DKMTDestroyPagingQueue");
+  create_allocation2 =
+      ResolveKmtProc<PFND3DKMT_CREATEALLOCATION2>("D3DKMTCreateAllocation2");
+  destroy_allocation2 =
+      ResolveKmtProc<PFND3DKMT_DESTROYALLOCATION2>("D3DKMTDestroyAllocation2");
   map_gpu_virtual_address = ResolveKmtProc<PFND3DKMT_MAPGPUVIRTUALADDRESS>(
       "D3DKMTMapGpuVirtualAddress");
   free_gpu_virtual_address = ResolveKmtProc<PFND3DKMT_FREEGPUVIRTUALADDRESS>(
       "D3DKMTFreeGpuVirtualAddress");
-  make_resident =
-      ResolveKmtProc<PFND3DKMT_MAKERESIDENT>("D3DKMTMakeResident");
+  make_resident = ResolveKmtProc<PFND3DKMT_MAKERESIDENT>("D3DKMTMakeResident");
   lock2 = ResolveKmtProc<PFND3DKMT_LOCK2>("D3DKMTLock2");
   unlock2 = ResolveKmtProc<PFND3DKMT_UNLOCK2>("D3DKMTUnlock2");
-  invalidate_cache = ResolveKmtProc<PFND3DKMT_INVALIDATECACHE>(
-      "D3DKMTInvalidateCache");
+  invalidate_cache =
+      ResolveKmtProc<PFND3DKMT_INVALIDATECACHE>("D3DKMTInvalidateCache");
   create_context_virtual = ResolveKmtProc<PFND3DKMT_CREATECONTEXTVIRTUAL>(
       "D3DKMTCreateContextVirtual");
   destroy_context =
@@ -373,23 +356,20 @@ bool KmtApi::Load(std::string* out_error) {
       ResolveKmtProc<PFND3DKMT_CREATEHWQUEUE>("D3DKMTCreateHwQueue");
   destroy_hw_queue =
       ResolveKmtProc<PFND3DKMT_DESTROYHWQUEUE>("D3DKMTDestroyHwQueue");
-  wait_from_gpu =
-      ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU>(
-          "D3DKMTWaitForSynchronizationObjectFromGpu");
-  wait_from_cpu =
-      ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU>(
-          "D3DKMTWaitForSynchronizationObjectFromCpu");
-  submit_command_to_hw_queue =
-      ResolveKmtProc<PFND3DKMT_SUBMITCOMMANDTOHWQUEUE>(
-          "D3DKMTSubmitCommandToHwQueue");
+  wait_from_gpu = ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU>(
+      "D3DKMTWaitForSynchronizationObjectFromGpu");
+  wait_from_cpu = ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU>(
+      "D3DKMTWaitForSynchronizationObjectFromCpu");
+  submit_command_to_hw_queue = ResolveKmtProc<PFND3DKMT_SUBMITCOMMANDTOHWQUEUE>(
+      "D3DKMTSubmitCommandToHwQueue");
 
   if (enum_adapters3 && query_adapter_info && open_adapter_from_luid &&
       close_adapter && create_device && destroy_device && create_paging_queue &&
       destroy_paging_queue && create_allocation2 && destroy_allocation2 &&
       map_gpu_virtual_address && free_gpu_virtual_address && make_resident &&
       lock2 && unlock2 && invalidate_cache && create_context_virtual &&
-      destroy_context && create_hw_queue && destroy_hw_queue &&
-      wait_from_gpu && wait_from_cpu && submit_command_to_hw_queue) {
+      destroy_context && create_hw_queue && destroy_hw_queue && wait_from_gpu &&
+      wait_from_cpu && submit_command_to_hw_queue) {
     return true;
   }
 
@@ -449,8 +429,7 @@ bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter,
   return true;
 }
 
-bool CreateDevice(const KmtApi& api, const Adapter& adapter,
-                  Device* out_device,
+bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
                   std::string* out_error) {
   Device device = {};
   device.adapter = adapter.handle;
@@ -672,8 +651,8 @@ bool SyncCommandApertureCode(const KmtApi& api, const Device& device,
 }
 
 bool RefreshCommandApertureGpuMapping(const KmtApi& api, const Device& device,
-                                       CommandAperture* aperture,
-                                       std::string* out_error) {
+                                      CommandAperture* aperture,
+                                      std::string* out_error) {
   if (!aperture || !aperture->gpu_allocation) {
     if (out_error) {
       *out_error =
@@ -697,8 +676,7 @@ bool RefreshCommandApertureGpuMapping(const KmtApi& api, const Device& device,
     aperture->gpu_cpu_ptr = nullptr;
     aperture->code_cpu_ptr = nullptr;
   }
-  return LockCommandApertureGpuAfterBootstrap(api, device, aperture,
-                                              out_error);
+  return LockCommandApertureGpuAfterBootstrap(api, device, aperture, out_error);
 }
 
 bool RefreshBufferCpuMapping(const KmtApi& api, const Device& device,
@@ -822,19 +800,16 @@ bool CreateContext(const KmtApi& api, const Device& device,
   create_context.NodeOrdinal = 0;
   create_context.EngineAffinity = 1;
   create_context.Flags.HwQueueSupported = 1;
-  create_context.pPrivateDriverData =
-      const_cast<uint8_t*>(private_data.data());
-  create_context.PrivateDriverDataSize =
-      static_cast<UINT>(private_data.size());
+  create_context.pPrivateDriverData = const_cast<uint8_t*>(private_data.data());
+  create_context.PrivateDriverDataSize = static_cast<UINT>(private_data.size());
   create_context.ClientHint = D3DKMT_CLIENTHINT_VITIS;
   NTSTATUS status = api.create_context_virtual(&create_context);
   if (!CheckStatus("D3DKMTCreateContextVirtual", status, out_error)) {
     return false;
   }
   context.context = create_context.hContext;
-  if (private_data.size() >=
-      kContextCommandApertureCookieOffset +
-          sizeof(context.command_aperture_cookie)) {
+  if (private_data.size() >= kContextCommandApertureCookieOffset +
+                                 sizeof(context.command_aperture_cookie)) {
     std::memcpy(&context.command_aperture_cookie,
                 private_data.data() + kContextCommandApertureCookieOffset,
                 sizeof(context.command_aperture_cookie));
@@ -942,10 +917,10 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
   gpu_private.requested_size = kCommandApertureGpuVaSize;
   gpu_private.aligned_size = kCommandApertureGpuVaSize;
   gpu_private.reserved1 = 1;
-  gpu_private.private_type = GetBufferKindInfo(BufferKind::cacheable).private_type;
+  gpu_private.private_type =
+      GetBufferKindInfo(BufferKind::cacheable).private_type;
   gpu_private.policy = 2;
-  gpu_private.xcl_flags =
-      0x01000001u | (context.command_aperture_cookie << 16);
+  gpu_private.xcl_flags = 0x01000001u | (context.command_aperture_cookie << 16);
 
   D3DDDI_ALLOCATIONINFO2 gpu_info = {};
   gpu_info.pPrivateDriverData = &gpu_private;
@@ -1025,8 +1000,9 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
     }
   } else if (!WaitForPagingFenceCpu(api, device, resident.PagingFenceValue)) {
     if (out_error) {
-      *out_error = "D3DKMTWaitForSynchronizationObjectFromCpu(command "
-                   "aperture precreate) failed";
+      *out_error =
+          "D3DKMTWaitForSynchronizationObjectFromCpu(command "
+          "aperture precreate) failed";
     }
     DestroyCommandAperture(api, device, &aperture);
     return false;
@@ -1266,14 +1242,15 @@ bool WaitForHwQueueFenceCpu(const KmtApi& api, const Device& device,
 }
 
 bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
-                              Context* context, CommandAperture* aperture,
-                              const void* aperture_payload,
-                              size_t aperture_payload_size,
-                              std::string* out_error) {
+                             Context* context, CommandAperture* aperture,
+                             const void* aperture_payload,
+                             size_t aperture_payload_size,
+                             std::string* out_error) {
   if (!context || !context->hw_queue || !aperture ||
       !aperture->gpu_allocation || !aperture->allocation ||
       !aperture->cpu_ptr) {
-    if (out_error) *out_error = "SubmitAndWaitPathBSetup called before aperture setup";
+    if (out_error)
+      *out_error = "SubmitAndWaitPathBSetup called before aperture setup";
     return false;
   }
 
@@ -1301,11 +1278,13 @@ bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
   if (aperture_payload_size != 0) {
     if (!aperture_payload) {
       if (out_error) {
-        *out_error = "SubmitAndWaitPathBSetup called with null aperture payload";
+        *out_error =
+            "SubmitAndWaitPathBSetup called with null aperture payload";
       }
       return false;
     }
-    if (!aperture->gpu_cpu_ptr || aperture_payload_size > aperture->gpu_va_size) {
+    if (!aperture->gpu_cpu_ptr ||
+        aperture_payload_size > aperture->gpu_va_size) {
       if (out_error) {
         *out_error =
             "SubmitAndWaitPathBSetup aperture payload does not fit mapped "
@@ -1363,17 +1342,18 @@ bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
                    out_error)) {
     return false;
   }
-  return WaitForHwQueueFenceCpu(api, device, *context, fence_id,
-                                "D3DKMTWaitForSynchronizationObjectFromCpu(pathb setup5)",
-                                out_error);
+  return WaitForHwQueueFenceCpu(
+      api, device, *context, fence_id,
+      "D3DKMTWaitForSynchronizationObjectFromCpu(pathb setup5)", out_error);
 }
 
 bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
-                             Context* context,
-                             const CommandAperture& aperture, uint64_t offset,
-                             bool wait_for_cpu, std::string* out_error) {
+                             Context* context, const CommandAperture& aperture,
+                             uint64_t offset, bool wait_for_cpu,
+                             std::string* out_error) {
   if (!context || !context->hw_queue || !aperture.gpu_allocation) {
-    if (out_error) *out_error = "SubmitPathBApertureSync called before aperture setup";
+    if (out_error)
+      *out_error = "SubmitPathBApertureSync called before aperture setup";
     return false;
   }
   uint64_t sync_private[kSubmitPrivateQwords] = {};
@@ -1406,19 +1386,17 @@ bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
     return false;
   }
   if (!wait_for_cpu) return true;
-  return WaitForHwQueueFenceCpu(api, device, *context, fence_id,
-                                "D3DKMTWaitForSynchronizationObjectFromCpu(pathb sync9)",
-                                out_error);
+  return WaitForHwQueueFenceCpu(
+      api, device, *context, fence_id,
+      "D3DKMTWaitForSynchronizationObjectFromCpu(pathb sync9)", out_error);
 }
 
 bool SubmitAndWaitQhdlCommand(const KmtApi& api, const Device& device,
-                              Context* context,
-                              CommandControlBuffer* control,
+                              Context* context, CommandControlBuffer* control,
                               const Buffer& command_buffer,
                               uint32_t command_bytes, uint32_t command_state,
                               uint32_t command_allocation_tag,
-                              uint32_t* packet_header,
-                              std::string* out_error) {
+                              uint32_t* packet_header, std::string* out_error) {
   if (!context || !context->hw_queue) {
     if (out_error) {
       *out_error = "SubmitAndWaitQhdlCommand called without an HW queue";
@@ -1428,7 +1406,8 @@ bool SubmitAndWaitQhdlCommand(const KmtApi& api, const Device& device,
   if (!control || !control->allocation || !control->cpu_ptr ||
       control->size < kQhdlCompletionSlotSize * 2) {
     if (out_error) {
-      *out_error = "SubmitAndWaitQhdlCommand called without a command control buffer";
+      *out_error =
+          "SubmitAndWaitQhdlCommand called without a command control buffer";
     }
     return false;
   }
@@ -1474,15 +1453,14 @@ bool SubmitAndWaitQhdlCommand(const KmtApi& api, const Device& device,
   // packet byte count, +0x28..0x38 = the completion slot in the armed command
   // aperture, +0x68 = packet bytes.
   WriteU32(&private_data, 0x00, command_state);
-  WriteU64(&private_data, 0x08, command_allocation_tag
-                                ? command_allocation_tag
-                                : command_buffer.allocation);
+  WriteU64(&private_data, 0x08,
+           command_allocation_tag ? command_allocation_tag
+                                  : command_buffer.allocation);
   WriteU64(&private_data, 0x10, command_bytes);
   WriteU64(&private_data, 0x28, control->allocation);
   WriteU32(&private_data, 0x30, completion_offset);
   WriteU32(&private_data, 0x34, kQhdlCompletionSlotSize);
-  WriteU64(&private_data, 0x38,
-           reinterpret_cast<uint64_t>(completion_slot));
+  WriteU64(&private_data, 0x38, reinterpret_cast<uint64_t>(completion_slot));
   std::memcpy(private_data.data() + kQhdlSubmitPacketOffset, packet_header,
               command_bytes);
 
@@ -1562,11 +1540,13 @@ bool SubmitAndWaitBuffer(const KmtApi& api, const Device& device,
                          Context* context, const Buffer& buffer,
                          std::string* out_error) {
   if (!context || !context->hw_queue) {
-    if (out_error) *out_error = "SubmitAndWaitBuffer called without an HW queue";
+    if (out_error)
+      *out_error = "SubmitAndWaitBuffer called without an HW queue";
     return false;
   }
   if (!buffer.allocation || !buffer.gpu_va || buffer.size == 0) {
-    if (out_error) *out_error = "SubmitAndWaitBuffer called with invalid buffer";
+    if (out_error)
+      *out_error = "SubmitAndWaitBuffer called with invalid buffer";
     return false;
   }
 
@@ -1589,8 +1569,7 @@ bool SubmitAndWaitBuffer(const KmtApi& api, const Device& device,
   submit.PrivateDriverDataSize = sizeof(submit_private);
   submit.pPrivateDriverData = submit_private;
   NTSTATUS status = api.submit_command_to_hw_queue(&submit);
-  if (!CheckStatus("D3DKMTSubmitCommandToHwQueue(buffer)", status,
-                   out_error)) {
+  if (!CheckStatus("D3DKMTSubmitCommandToHwQueue(buffer)", status, out_error)) {
     return false;
   }
 
@@ -1737,15 +1716,15 @@ bool SubmitAndWaitCreateAie4Ctx(const KmtApi& api, const Device& device,
   submit.PrivateDriverDataSize = static_cast<UINT>(priv.size());
   submit.pPrivateDriverData = priv.data();
   if (TraceQhdlEnabled()) {
-    std::fprintf(stderr,
-                 "[amdxdna:mcdm] create_aie4_ctx: hwq=0x%08x fence=%llu "
-                 "ring_gpu=0x%llx slot_off=0x%x slot_cpu=0x%llx\n",
-                 static_cast<unsigned>(context->hw_queue),
-                 static_cast<unsigned long long>(fence_id),
-                 static_cast<unsigned long long>(ring.gpu_va),
-                 static_cast<unsigned>(slot_offset),
-                 static_cast<unsigned long long>(
-                     reinterpret_cast<uintptr_t>(slot_cpu)));
+    std::fprintf(
+        stderr,
+        "[amdxdna:mcdm] create_aie4_ctx: hwq=0x%08x fence=%llu "
+        "ring_gpu=0x%llx slot_off=0x%x slot_cpu=0x%llx\n",
+        static_cast<unsigned>(context->hw_queue),
+        static_cast<unsigned long long>(fence_id),
+        static_cast<unsigned long long>(ring.gpu_va),
+        static_cast<unsigned>(slot_offset),
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(slot_cpu)));
     std::fflush(stderr);
   }
   NTSTATUS status = api.submit_command_to_hw_queue(&submit);
@@ -1768,9 +1747,10 @@ bool SubmitAndWaitCreateAie4Ctx(const KmtApi& api, const Device& device,
   uint32_t slot_state = 0;
   std::memcpy(&slot_state, slot_cpu, sizeof(slot_state));
   if (TraceQhdlEnabled()) {
-    std::fprintf(stderr,
-                 "[amdxdna:mcdm] create_aie4_ctx completion: slot_state=0x%08x\n",
-                 slot_state);
+    std::fprintf(
+        stderr,
+        "[amdxdna:mcdm] create_aie4_ctx completion: slot_state=0x%08x\n",
+        slot_state);
     std::fflush(stderr);
   }
   return true;
@@ -1881,9 +1861,8 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
   }
 
   const bool xrt_lock_touch = XrtLockTouchEnabled();
-  if (xrt_lock_touch &&
-      !TouchBufferCpuMapping(api, device, exec_buffer, "pre-submit",
-                             out_error)) {
+  if (xrt_lock_touch && !TouchBufferCpuMapping(api, device, exec_buffer,
+                                               "pre-submit", out_error)) {
     return false;
   }
 
@@ -1892,8 +1871,8 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
   submit.hHwQueue = context->hw_queue;
   submit.HwQueueProgressFenceId = fence_id;
   submit.CommandBuffer = exec_buffer.gpu_va;
-  submit.CommandLength = static_cast<UINT>(exec_buffer.size +
-                                           kQhdlSubmitPacketOffset);
+  submit.CommandLength =
+      static_cast<UINT>(exec_buffer.size + kQhdlSubmitPacketOffset);
   submit.PrivateDriverDataSize = static_cast<UINT>(priv.size());
   submit.pPrivateDriverData = priv.data();
   if (TraceQhdlEnabled()) {
@@ -1912,13 +1891,13 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
                  static_cast<unsigned long long>(ring.gpu_va),
                  static_cast<unsigned long long>(ring.gpu_va + slot_offset));
     if (chain_info) {
-      std::fprintf(stderr,
-                   " chain_desc_va=0x%llx chain_desc_bytes=0x%x "
-                   "chain_count=%u first_child_opcode=%u",
-                   static_cast<unsigned long long>(
-                       chain_info->descriptor_gpu_va),
-                   chain_info->descriptor_bytes, chain_info->command_count,
-                   chain_info->first_child_opcode);
+      std::fprintf(
+          stderr,
+          " chain_desc_va=0x%llx chain_desc_bytes=0x%x "
+          "chain_count=%u first_child_opcode=%u",
+          static_cast<unsigned long long>(chain_info->descriptor_gpu_va),
+          chain_info->descriptor_bytes, chain_info->command_count,
+          chain_info->first_child_opcode);
     }
     std::fprintf(stderr, "\n");
     std::fflush(stderr);
@@ -1931,26 +1910,25 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
   if (!CheckStatus("D3DKMTSubmitCommandToHwQueue(pathb)", status, out_error)) {
     return false;
   }
-  if (xrt_lock_touch &&
-      !TouchBufferCpuMapping(api, device, exec_buffer, "post-submit",
-                             out_error)) {
+  if (xrt_lock_touch && !TouchBufferCpuMapping(api, device, exec_buffer,
+                                               "post-submit", out_error)) {
     return false;
   }
 
   phase_t0 = phase_timing ? NowNs() : 0;
-  if (!WaitForHwQueueFenceCpu(api, device, *context, fence_id,
-                              "D3DKMTWaitForSynchronizationObjectFromCpu(pathb)",
-                              out_error)) {
+  if (!WaitForHwQueueFenceCpu(
+          api, device, *context, fence_id,
+          "D3DKMTWaitForSynchronizationObjectFromCpu(pathb)", out_error)) {
     return false;
   }
   if (phase_timing) {
     RecordPhase(phases->wait, NowNs() - phase_t0);
   }
 
-  // XRT's qhdl wait path blocks in KMT and then mirrors the low ERT state nibble
-  // from the completion slot into the packet header. Do one cache-visible read
-  // from the explicit protocol locations here. A bounded poll remains available
-  // only as an opt-in bring-up diagnostic.
+  // XRT's qhdl wait path blocks in KMT and then mirrors the low ERT state
+  // nibble from the completion slot into the packet header. Do one
+  // cache-visible read from the explicit protocol locations here. A bounded
+  // poll remains available only as an opt-in bring-up diagnostic.
   uint32_t slot_state = 0;
   uint32_t packet_state = packet_header ? *packet_header : 0;
   const bool trust_fence_completion = TrustFenceCompletionEnabled();
@@ -1981,7 +1959,8 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
     sync_t0 = phase_timing ? NowNs() : 0;
     if (!SyncBuffer(api, device, ring, 0, ring.size, &ring_sync_err)) {
       if (out_error) {
-        *out_error = "pathb completion ring invalidate failed: " + ring_sync_err;
+        *out_error =
+            "pathb completion ring invalidate failed: " + ring_sync_err;
       }
       return false;
     }
@@ -2050,7 +2029,8 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
     return false;
   }
   if (!exec_buffer.allocation || !exec_buffer.gpu_va || exec_buffer.size == 0) {
-    if (out_error) *out_error = "SubmitPathB called with an invalid exec buffer";
+    if (out_error)
+      *out_error = "SubmitPathB called with an invalid exec buffer";
     return false;
   }
   if (ert_bytes == 0 ||
@@ -2114,9 +2094,8 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
   }
 
   const bool xrt_lock_touch = XrtLockTouchEnabled();
-  if (xrt_lock_touch &&
-      !TouchBufferCpuMapping(api, device, exec_buffer, "pre-submit",
-                             out_error)) {
+  if (xrt_lock_touch && !TouchBufferCpuMapping(api, device, exec_buffer,
+                                               "pre-submit", out_error)) {
     return false;
   }
 
@@ -2125,8 +2104,8 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
   submit.hHwQueue = context->hw_queue;
   submit.HwQueueProgressFenceId = fence_id;
   submit.CommandBuffer = exec_buffer.gpu_va;
-  submit.CommandLength = static_cast<UINT>(exec_buffer.size +
-                                           kQhdlSubmitPacketOffset);
+  submit.CommandLength =
+      static_cast<UINT>(exec_buffer.size + kQhdlSubmitPacketOffset);
   submit.PrivateDriverDataSize = static_cast<UINT>(priv.size());
   submit.pPrivateDriverData = priv.data();
   if (TraceQhdlEnabled()) {
@@ -2145,13 +2124,13 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
                  static_cast<unsigned long long>(ring.gpu_va),
                  static_cast<unsigned long long>(ring.gpu_va + slot_offset));
     if (chain_info) {
-      std::fprintf(stderr,
-                   " chain_desc_va=0x%llx chain_desc_bytes=0x%x "
-                   "chain_count=%u first_child_opcode=%u",
-                   static_cast<unsigned long long>(
-                       chain_info->descriptor_gpu_va),
-                   chain_info->descriptor_bytes, chain_info->command_count,
-                   chain_info->first_child_opcode);
+      std::fprintf(
+          stderr,
+          " chain_desc_va=0x%llx chain_desc_bytes=0x%x "
+          "chain_count=%u first_child_opcode=%u",
+          static_cast<unsigned long long>(chain_info->descriptor_gpu_va),
+          chain_info->descriptor_bytes, chain_info->command_count,
+          chain_info->first_child_opcode);
     }
     std::fprintf(stderr, "\n");
     std::fflush(stderr);
@@ -2161,9 +2140,8 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
                    out_error)) {
     return false;
   }
-  if (xrt_lock_touch &&
-      !TouchBufferCpuMapping(api, device, exec_buffer, "post-submit",
-                             out_error)) {
+  if (xrt_lock_touch && !TouchBufferCpuMapping(api, device, exec_buffer,
+                                               "post-submit", out_error)) {
     return false;
   }
 
@@ -2181,7 +2159,8 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          size_t pending_count, std::string* out_error) {
   if (!pending_count) return true;
   if (!context || !context->hw_queue) {
-    if (out_error) *out_error = "WaitForPathBSubmits called without an HW queue";
+    if (out_error)
+      *out_error = "WaitForPathBSubmits called without an HW queue";
     return false;
   }
   if (!pending) {
@@ -2210,9 +2189,8 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
       if (!SyncBuffer(api, device, p.exec_buffer, 0, p.exec_buffer.size,
                       &command_sync_err)) {
         if (out_error) {
-          *out_error =
-              "pathb batch command buffer invalidate failed: " +
-              command_sync_err;
+          *out_error = "pathb batch command buffer invalidate failed: " +
+                       command_sync_err;
         }
         return false;
       }
@@ -2223,8 +2201,7 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
       if (!SyncBuffer(api, device, p.ring, 0, p.ring.size, &ring_sync_err)) {
         if (out_error) {
           *out_error =
-              "pathb batch completion ring invalidate failed: " +
-              ring_sync_err;
+              "pathb batch completion ring invalidate failed: " + ring_sync_err;
         }
         return false;
       }
@@ -2245,7 +2222,8 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                    i, packet_state, slot_state);
       std::fflush(stderr);
     }
-    const uint32_t final_state = p.packet_header ? *p.packet_header : slot_state;
+    const uint32_t final_state =
+        p.packet_header ? *p.packet_header : slot_state;
     if ((final_state & 0xFu) < 4) {
       if (out_error) {
         std::ostringstream os;
@@ -2281,12 +2259,11 @@ bool SubmitAndWaitPathBChain(const KmtApi& api, const Device& device,
                                 out_error);
 }
 
-bool SubmitPathBChain(const KmtApi& api, const Device& device,
-                      Context* context, const Buffer& exec_buffer,
-                      const void* ert_packet, uint32_t ert_bytes,
+bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
+                      const Buffer& exec_buffer, const void* ert_packet,
+                      uint32_t ert_bytes,
                       const PathBChainSubmitInfo& chain_info,
-                      uint32_t* packet_header,
-                      PathBPendingSubmit* out_pending,
+                      uint32_t* packet_header, PathBPendingSubmit* out_pending,
                       std::string* out_error) {
   return SubmitPathBImplNoWait(api, device, context, exec_buffer, ert_packet,
                                ert_bytes, 6, &chain_info, packet_header,
@@ -2295,10 +2272,9 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device,
 
 void DestroyCommandAperture(const KmtApi& api, const Device& device,
                             CommandAperture* aperture) {
-  if (!aperture ||
-      (!aperture->allocation && !aperture->resource &&
-       !aperture->gpu_allocation && !aperture->gpu_resource &&
-       !aperture->cleanup_allocation)) {
+  if (!aperture || (!aperture->allocation && !aperture->resource &&
+                    !aperture->gpu_allocation && !aperture->gpu_resource &&
+                    !aperture->cleanup_allocation)) {
     return;
   }
   if (aperture->gpu_va) {
@@ -2352,9 +2328,9 @@ void DestroyCommandAperture(const KmtApi& api, const Device& device,
   if (aperture->resource || aperture->cleanup_allocation ||
       aperture->allocation) {
     D3DKMT_DESTROYALLOCATION2 destroy_command = {};
-    D3DKMT_HANDLE command_allocs[1] = {
-        aperture->cleanup_allocation ? aperture->cleanup_allocation
-                                     : aperture->allocation};
+    D3DKMT_HANDLE command_allocs[1] = {aperture->cleanup_allocation
+                                           ? aperture->cleanup_allocation
+                                           : aperture->allocation};
     destroy_command.hDevice = device.device;
     destroy_command.Flags.SynchronousDestroy = 1;
     if (aperture->cleanup_allocation) {

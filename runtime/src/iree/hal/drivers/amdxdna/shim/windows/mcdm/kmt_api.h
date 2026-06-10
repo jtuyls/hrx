@@ -9,10 +9,15 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+// clang-format off
+// Order-sensitive Windows SDK headers: windows.h must precede the D3DKMT
+// headers (d3dkmthk.h pulls d3dukmdt.h, which needs windows.h types). Do not
+// let clang-format sort these.
 #include <windows.h>
 #include <winternl.h>
 
 #include <d3dkmthk.h>
+// clang-format on
 
 #include <cstdint>
 #include <string>
@@ -122,7 +127,6 @@ struct Context {
   bool completion_ring_ready = false;
   uint32_t completion_ring_offset = 0;
   uint64_t next_command_id = 1;
-
 };
 
 struct CommandAperture {
@@ -168,8 +172,7 @@ struct PathBPendingSubmit {
 bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter,
                     std::string* out_error);
 
-bool CreateDevice(const KmtApi& api, const Adapter& adapter,
-                  Device* out_device,
+bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
                   std::string* out_error);
 
 void DestroyDevice(const KmtApi& api, Device* device);
@@ -220,19 +223,18 @@ bool SubmitAndWaitCommandAperture(const KmtApi& api, const Device& device,
                                   std::string* out_error);
 
 bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
-                              Context* context, CommandAperture* aperture,
-                              const void* aperture_payload,
-                              size_t aperture_payload_size,
-                              std::string* out_error);
+                             Context* context, CommandAperture* aperture,
+                             const void* aperture_payload,
+                             size_t aperture_payload_size,
+                             std::string* out_error);
 
 bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
-                             Context* context,
-                             const CommandAperture& aperture, uint64_t offset,
-                             bool wait_for_cpu, std::string* out_error);
+                             Context* context, const CommandAperture& aperture,
+                             uint64_t offset, bool wait_for_cpu,
+                             std::string* out_error);
 
 bool SubmitAndWaitQhdlCommand(const KmtApi& api, const Device& device,
-                              Context* context,
-                              CommandControlBuffer* control,
+                              Context* context, CommandControlBuffer* control,
                               const Buffer& command_buffer,
                               uint32_t command_bytes, uint32_t command_state,
                               uint32_t command_allocation_tag,
@@ -255,21 +257,21 @@ bool SubmitAndWaitPathB(const KmtApi& api, const Device& device,
                         std::string* out_error);
 
 // Path B parent ERT_CMD_CHAIN submit. This is the same completion protocol as
-// SubmitAndWaitPathB, but uses the recovered xrt_core opcode-6 private envelope:
-// +0x48 points at the aperture-resident child descriptor block, +0x50 carries
-// descriptor byte count, +0x54 child count, and +0x58 the first child ERT opcode.
+// SubmitAndWaitPathB, but uses the recovered xrt_core opcode-6 private
+// envelope: +0x48 points at the aperture-resident child descriptor block, +0x50
+// carries descriptor byte count, +0x54 child count, and +0x58 the first child
+// ERT opcode.
 bool SubmitAndWaitPathBChain(const KmtApi& api, const Device& device,
                              Context* context, const Buffer& exec_buffer,
                              const void* ert_packet, uint32_t ert_bytes,
                              const PathBChainSubmitInfo& chain_info,
                              uint32_t* packet_header, std::string* out_error);
 
-bool SubmitPathBChain(const KmtApi& api, const Device& device,
-                      Context* context, const Buffer& exec_buffer,
-                      const void* ert_packet, uint32_t ert_bytes,
+bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
+                      const Buffer& exec_buffer, const void* ert_packet,
+                      uint32_t ert_bytes,
                       const PathBChainSubmitInfo& chain_info,
-                      uint32_t* packet_header,
-                      PathBPendingSubmit* out_pending,
+                      uint32_t* packet_header, PathBPendingSubmit* out_pending,
                       std::string* out_error);
 
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,

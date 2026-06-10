@@ -13,10 +13,10 @@
 #include <string>
 #include <vector>
 
-#include "iree/hal/drivers/amdxdna/executable.h"
-#include "iree/hal/drivers/amdxdna/native.h"
 #include "iree/base/api.h"
 #include "iree/base/tracing.h"
+#include "iree/hal/drivers/amdxdna/executable.h"
+#include "iree/hal/drivers/amdxdna/native.h"
 
 struct iree_hal_amdxdna_kernel_params {
   // Raw PDI context image from amdxdna-pdi-fb or extracted from an XADX

@@ -106,9 +106,9 @@ iree_status_t iree_hal_amdxdna_xclbin_extract_pdi(
         "xclbin AIE_PARTITION PDI index %u out of range; contains %u PDIs",
         pdi_index, pdi_count);
   }
-  IREE_RETURN_IF_ERROR(CheckRange(
-      aie_partition_size, pdi_table_offset,
-      uint64_t{kAiePdiRecordSize} * pdi_count, "AIE_PARTITION PDI table"));
+  IREE_RETURN_IF_ERROR(CheckRange(aie_partition_size, pdi_table_offset,
+                                  uint64_t{kAiePdiRecordSize} * pdi_count,
+                                  "AIE_PARTITION PDI table"));
 
   const size_t pdi_record =
       pdi_table_offset + size_t{pdi_index} * kAiePdiRecordSize;

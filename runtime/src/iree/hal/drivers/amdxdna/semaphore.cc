@@ -136,10 +136,8 @@ static iree_status_t iree_hal_amdxdna_semaphore_export_timepoint(
 
 namespace {
 const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable = {
-    {iree_hal_amdxdna_semaphore_destroy,
-     iree_hal_amdxdna_semaphore_query,
-     iree_hal_amdxdna_semaphore_signal,
-     nullptr},
+    {iree_hal_amdxdna_semaphore_destroy, iree_hal_amdxdna_semaphore_query,
+     iree_hal_amdxdna_semaphore_signal, nullptr},
     iree_hal_amdxdna_semaphore_wait,
     iree_hal_amdxdna_semaphore_import_timepoint,
     iree_hal_amdxdna_semaphore_export_timepoint,

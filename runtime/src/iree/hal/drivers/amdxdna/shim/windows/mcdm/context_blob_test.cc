@@ -109,9 +109,9 @@ TEST(ContextBlobTest, ParsesMultiPdiIpLayoutAndAiePartition) {
   std::vector<uint8_t> private_data;
   ContextBlobInfo info;
   std::string error;
-  ASSERT_TRUE(BuildContextPrivateDataFromXclbin(
-      xclbin.data(), xclbin.size(), /*process_id=*/1234, &private_data, &info,
-      &error))
+  ASSERT_TRUE(BuildContextPrivateDataFromXclbin(xclbin.data(), xclbin.size(),
+                                                /*process_id=*/1234,
+                                                &private_data, &info, &error))
       << error;
 
   EXPECT_EQ(info.kernel_name, "dispatch_a");

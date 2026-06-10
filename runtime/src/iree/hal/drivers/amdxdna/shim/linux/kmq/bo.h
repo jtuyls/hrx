@@ -9,8 +9,8 @@
 #include "amdxdna_accel.h"
 #include "bo_flags.h"
 #include "device.h"
-#include "ert.h"
 #include "hwctx.h"
+#include "../../ert.h"
 
 namespace shim_xdna {
 

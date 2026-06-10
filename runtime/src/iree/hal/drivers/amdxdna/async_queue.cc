@@ -381,10 +381,9 @@ void iree_hal_amdxdna_async_queue_set_frontier(
 void iree_hal_amdxdna_async_queue_advance_frontier(
     iree_hal_amdxdna_async_queue_t* queue) {
   if (!queue || !queue->frontier_tracker) return;
-  uint64_t epoch =
-      (uint64_t)iree_atomic_fetch_add(&queue->epoch, 1,
-                                      iree_memory_order_acq_rel) +
-      1;
+  uint64_t epoch = (uint64_t)iree_atomic_fetch_add(&queue->epoch, 1,
+                                                   iree_memory_order_acq_rel) +
+                   1;
   iree_async_frontier_tracker_advance(queue->frontier_tracker,
                                       queue->frontier_axis, epoch);
 }

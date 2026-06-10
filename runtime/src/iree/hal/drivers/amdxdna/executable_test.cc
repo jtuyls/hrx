@@ -260,15 +260,15 @@ TEST(ExecutableTest, ParsesSharedPdiAndRunDefinitions) {
   EXPECT_TRUE(reuse_context.xclbin.empty());
   ASSERT_EQ(reuse_context.asm_inst_runlist.size(), 1u);
   EXPECT_TRUE(reuse_context.reconf_data_runlist.empty());
-  EXPECT_EQ(reuse_context.asm_inst_runlist[0],
-            std::vector<uint32_t>({40, 41}));
+  EXPECT_EQ(reuse_context.asm_inst_runlist[0], std::vector<uint32_t>({40, 41}));
 
   EXPECT_EQ(iree_hal_executable_function_count(base_executable), 3u);
   iree_hal_executable_function_info_t function_info;
   IREE_ASSERT_OK(iree_hal_executable_function_info(
       base_executable, iree_hal_executable_function_from_index(1),
       &function_info));
-  EXPECT_TRUE(iree_string_view_equal(function_info.name, IREE_SV("shared_pdi")));
+  EXPECT_TRUE(
+      iree_string_view_equal(function_info.name, IREE_SV("shared_pdi")));
   EXPECT_EQ(function_info.constant_count, 0u);
   EXPECT_EQ(function_info.binding_count, 0u);
   EXPECT_EQ(function_info.parameter_count, 0u);

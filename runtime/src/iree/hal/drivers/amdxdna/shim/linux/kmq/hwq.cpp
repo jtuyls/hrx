@@ -6,9 +6,9 @@
 #include <sys/ioctl.h>
 
 #include "bo.h"
-#include "ert.h"
 #include "fence.h"
 #include "shim_debug.h"
+#include "../../ert.h"
 
 namespace {
 

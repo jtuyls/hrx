@@ -224,8 +224,8 @@ static iree_status_t iree_hal_amdxdna_allocator_allocate_buffer(
   iree_status_t status = iree_hal_amdxdna_buffer_wrap(
       native_buffer.get(), placement, compat_params.type, compat_params.access,
       compat_params.usage, allocation_size,
-      /*byte_offset=*/0, /*byte_length=*/allocation_size,
-      release_callback, allocator->host_allocator, &buffer);
+      /*byte_offset=*/0, /*byte_length=*/allocation_size, release_callback,
+      allocator->host_allocator, &buffer);
 
   if (iree_status_is_ok(status)) {
     IREE_STATISTICS(iree_hal_allocator_statistics_record_alloc(

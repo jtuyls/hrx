@@ -426,8 +426,8 @@ static hrx_status_t hrx_create_iree_amdxdna_driver(
 
   struct iree_hal_amdxdna_driver_options driver_options;
   iree_hal_amdxdna_driver_options_initialize(&driver_options);
-  driver_options.default_device_params.cmd_chain =
-      (flags & HRX_GPU_INITIALIZE_FLAG_COMMAND_CHAINING) != 0;
+  // Command chaining is driven by the amdxdna device default (cmd_chain), not a
+  // public HRX flag; see iree_hal_amdxdna_device_options_initialize.
 
   iree_hal_driver_t* driver = NULL;
   status = iree_hal_amdxdna_driver_create(iree_make_cstring_view("amdxdna"),
@@ -593,7 +593,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
     return hrx_make_status(HRX_STATUS_ALREADY_EXISTS,
                            "GPU accelerator already initialized");
   }
-  const uint32_t known_flags = HRX_GPU_INITIALIZE_FLAG_COMMAND_CHAINING;
+  const uint32_t known_flags = HRX_GPU_INITIALIZE_FLAG_NONE;
   if ((flags & ~known_flags) != 0) {
     return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT,
                            "unsupported hrx_gpu_initialize flags");

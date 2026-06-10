@@ -347,8 +347,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.ddi_version = 1;
   caps.max_effective_queues = 1;
   caps.max_command_chain_slots = chain_slot_capacity(kMaxExecBoSize);
-  caps.context_image_models =
-      IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_PDI;
+  caps.context_image_models = IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_PDI;
   caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_START_CU |
                          IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_COMMAND_CHAIN;
   caps.buffer_sync_model =
@@ -412,8 +411,7 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   }
   std::string kernel_name_string;
   if (!iree_string_view_is_empty(image->kernel_name)) {
-    kernel_name_string.assign(image->kernel_name.data,
-                              image->kernel_name.size);
+    kernel_name_string.assign(image->kernel_name.data, image->kernel_name.size);
   }
 
   std::unique_ptr<shim_xdna::hw_ctx> shim_context;

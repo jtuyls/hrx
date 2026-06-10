@@ -80,25 +80,24 @@ static iree_status_t iree_hal_amdxdna_verify_run_list(
   for (iree_host_size_t run_i = 0; run_i < run_count; ++run_i) {
     if (control_codes[run_i].empty()) {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "%s entry point %" PRIhsz
-                              " run %" PRIhsz " has no control code",
+                              "%s entry point %" PRIhsz " run %" PRIhsz
+                              " has no control code",
                               format_name, entry_index, run_i);
     }
     if (patch_tables[run_i].size() % 3 != 0) {
-      return iree_make_status(
-          IREE_STATUS_INVALID_ARGUMENT,
-          "%s entry point %" PRIhsz " run %" PRIhsz
-          " patch_table length %zu is not a multiple of 3",
-          format_name, entry_index, run_i, patch_tables[run_i].size());
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "%s entry point %" PRIhsz " run %" PRIhsz
+                              " patch_table length %zu is not a multiple of 3",
+                              format_name, entry_index, run_i,
+                              patch_tables[run_i].size());
     }
     if (!payloads[run_i].empty()) {
       if ((run_i & 1) != 0) {
-        return iree_make_status(
-            IREE_STATUS_INVALID_ARGUMENT,
-            "%s entry point %" PRIhsz
-            " reconfiguration payload run %" PRIhsz
-            " is not in an even reconfiguration slot",
-            format_name, entry_index, run_i);
+        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "%s entry point %" PRIhsz
+                                " reconfiguration payload run %" PRIhsz
+                                " is not in an even reconfiguration slot",
+                                format_name, entry_index, run_i);
       }
       ++payload_run_count;
     }
@@ -210,9 +209,8 @@ static iree_status_t iree_hal_amdxdna_pdi_flatbuffer_verify(
           iree_hal_amdxdna_RunDef_patch_table_get(run));
     }
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0, iree_hal_amdxdna_verify_run_list("PDIX", i, run_count,
-                                             control_codes, payloads,
-                                             patch_tables));
+        z0, iree_hal_amdxdna_verify_run_list(
+                "PDIX", i, run_count, control_codes, payloads, patch_tables));
   }
   if (!has_pdi_entry_point) {
     IREE_TRACE_ZONE_END(z0);
@@ -250,12 +248,10 @@ static iree_status_t iree_hal_amdxdna_xclbin_flatbuffer_verify(
 
   iree_hal_amdxdna_xclbin_XclbinDef_vec_t xclbins =
       iree_hal_amdxdna_xclbin_ExecutableDef_xclbins_get(executable_def);
-  size_t xclbin_count =
-      iree_hal_amdxdna_xclbin_XclbinDef_vec_len(xclbins);
+  size_t xclbin_count = iree_hal_amdxdna_xclbin_XclbinDef_vec_len(xclbins);
   if (xclbin_count == 0) {
     IREE_TRACE_ZONE_END(z0);
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "no xclbin present");
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "no xclbin present");
   }
   for (size_t i = 0; i < xclbin_count; ++i) {
     iree_hal_amdxdna_xclbin_XclbinDef_table_t xclbin =
@@ -336,9 +332,8 @@ static iree_status_t iree_hal_amdxdna_xclbin_flatbuffer_verify(
           iree_hal_amdxdna_xclbin_RunDef_patch_table_get(run));
     }
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0, iree_hal_amdxdna_verify_run_list("XADX", i, run_count,
-                                             control_codes, payloads,
-                                             patch_tables));
+        z0, iree_hal_amdxdna_verify_run_list(
+                "XADX", i, run_count, control_codes, payloads, patch_tables));
   }
   if (!has_context_entry_point) {
     IREE_TRACE_ZONE_END(z0);
@@ -355,7 +350,8 @@ iree_status_t iree_hal_amdxdna_native_executable_infer_format(
     iree_host_size_t executable_format_capacity, char* executable_format,
     iree_host_size_t* out_inferred_size) {
   iree_string_view_t format = kAmdxdnaPdiExecutableFormat;
-  iree_status_t status = iree_hal_amdxdna_pdi_flatbuffer_verify(executable_data);
+  iree_status_t status =
+      iree_hal_amdxdna_pdi_flatbuffer_verify(executable_data);
   if (!iree_status_is_ok(status)) {
     iree_status_free(status);
     status = iree_hal_amdxdna_xclbin_flatbuffer_verify(executable_data);
@@ -386,9 +382,9 @@ static iree_status_t iree_hal_amdxdna_executable_allocate(
     iree_allocator_t host_allocator, iree_host_size_t entry_point_count,
     iree_hal_amdxdna_executable** out_executable) {
   iree_hal_amdxdna_executable* executable = nullptr;
-  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
-      host_allocator, sizeof(*executable),
-      reinterpret_cast<void**>(&executable)));
+  IREE_RETURN_IF_ERROR(
+      iree_allocator_malloc(host_allocator, sizeof(*executable),
+                            reinterpret_cast<void**>(&executable)));
   new (executable) iree_hal_amdxdna_executable();
   iree_hal_resource_initialize(&iree_hal_amdxdna_executable_vtable,
                                &executable->resource);
@@ -405,9 +401,9 @@ static iree_status_t iree_hal_amdxdna_pdi_executable_create(
   IREE_TRACE_ZONE_BEGIN(z0);
 
   *out_executable = nullptr;
-  IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_amdxdna_pdi_flatbuffer_verify(
-              executable_params->executable_data));
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(z0,
+                                    iree_hal_amdxdna_pdi_flatbuffer_verify(
+                                        executable_params->executable_data));
 
   iree_hal_amdxdna_ExecutableDef_table_t executable_def =
       iree_hal_amdxdna_ExecutableDef_as_root(
@@ -488,9 +484,9 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
   IREE_TRACE_ZONE_BEGIN(z0);
 
   *out_executable = nullptr;
-  IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_amdxdna_xclbin_flatbuffer_verify(
-              executable_params->executable_data));
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(z0,
+                                    iree_hal_amdxdna_xclbin_flatbuffer_verify(
+                                        executable_params->executable_data));
 
   iree_hal_amdxdna_xclbin_ExecutableDef_table_t executable_def =
       iree_hal_amdxdna_xclbin_ExecutableDef_as_root(
@@ -599,8 +595,7 @@ iree_status_t iree_hal_amdxdna_native_executable_create(
         executable_params, host_allocator, out_executable);
   }
   return iree_hal_amdxdna_pdi_executable_create(executable_params,
-                                                host_allocator,
-                                                out_executable);
+                                                host_allocator, out_executable);
 }
 
 static void iree_hal_amdxdna_native_executable_destroy(
@@ -640,12 +635,11 @@ static iree_status_t iree_hal_amdxdna_native_executable_function_info(
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "amdxdna executable function out of range");
   }
-  const auto& entry_point = executable->entry_points
-      [iree_hal_executable_function_index(function)];
+  const auto& entry_point =
+      executable->entry_points[iree_hal_executable_function_index(function)];
   memset(out_info, 0, sizeof(*out_info));
-  out_info->name =
-      iree_make_string_view(entry_point.kernel_name.data(),
-                            entry_point.kernel_name.size());
+  out_info->name = iree_make_string_view(entry_point.kernel_name.data(),
+                                         entry_point.kernel_name.size());
   out_info->workgroup_size[0] = 1;
   out_info->workgroup_size[1] = 1;
   out_info->workgroup_size[2] = 1;
@@ -695,8 +689,7 @@ static iree_status_t iree_hal_amdxdna_native_executable_lookup_function_by_name(
 
 static iree_status_t iree_hal_amdxdna_native_executable_lookup_global_by_name(
     iree_hal_executable_t* base_executable, iree_string_view_t name,
-    iree_hal_queue_affinity_t queue_affinity,
-    iree_hal_buffer_t** out_buffer) {
+    iree_hal_queue_affinity_t queue_affinity, iree_hal_buffer_t** out_buffer) {
   (void)base_executable;
   (void)name;
   (void)queue_affinity;

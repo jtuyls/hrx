@@ -19,7 +19,6 @@ iree_cc_library(
     bo.h
     device.cpp
     device.h
-    ert.h
     fence.cpp
     fence.h
     hwctx.cpp
