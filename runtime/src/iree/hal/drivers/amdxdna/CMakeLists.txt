@@ -232,6 +232,23 @@ iree_cc_test(
 
 iree_cc_test(
   NAME
+    executable_xclbin_test
+  SRCS
+    "executable_xclbin_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::base::internal::flatcc::building
+    iree::hal
+    iree::schemas::amdxdna_xclbin_executable_def_c_fbs
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
     nop_executable_cache_test
   SRCS
     "nop_executable_cache_test.cc"
