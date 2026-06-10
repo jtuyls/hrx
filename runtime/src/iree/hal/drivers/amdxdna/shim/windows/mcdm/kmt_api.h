@@ -97,14 +97,6 @@ struct Buffer {
   UINT64 paging_fence_value = 0;
 };
 
-struct CommandControlBuffer {
-  uint64_t size = 0;
-  D3DKMT_HANDLE allocation = 0;
-  D3DKMT_HANDLE resource = 0;
-  void* cpu_ptr = nullptr;
-  uint32_t next_slot_offset = 0;
-};
-
 struct Context {
   D3DKMT_HANDLE context = 0;
   D3DKMT_HANDLE hw_queue = 0;
@@ -211,13 +203,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
                            CommandAperture* out_aperture,
                            std::string* out_error);
 
-bool CreateCommandControlBuffer(const KmtApi& api, const Device& device,
-                                CommandControlBuffer* out_buffer,
-                                std::string* out_error);
-
-void DestroyCommandControlBuffer(const KmtApi& api, const Device& device,
-                                 CommandControlBuffer* buffer);
-
 bool SubmitAndWaitCommandAperture(const KmtApi& api, const Device& device,
                                   Context* context, CommandAperture* aperture,
                                   std::string* out_error);
@@ -232,17 +217,6 @@ bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
                              Context* context, const CommandAperture& aperture,
                              uint64_t offset, bool wait_for_cpu,
                              std::string* out_error);
-
-bool SubmitAndWaitQhdlCommand(const KmtApi& api, const Device& device,
-                              Context* context, CommandControlBuffer* control,
-                              const Buffer& command_buffer,
-                              uint32_t command_bytes, uint32_t command_state,
-                              uint32_t command_allocation_tag,
-                              uint32_t* packet_header, std::string* out_error);
-
-bool SubmitAndWaitBuffer(const KmtApi& api, const Device& device,
-                         Context* context, const Buffer& buffer,
-                         std::string* out_error);
 
 // Path B: per-dispatch hwqueue_aie4-style submit. Reproduces the xrt_core
 // submission recovered from disassembly: reserve an 8-byte completion-ring
@@ -280,9 +254,6 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
 
 // Stale probe path retained for diagnostics only. The working XRT IREE matmul
 // capture uses opcode 2/5/9 setup packets, not opcode 10.
-bool SubmitAndWaitCreateAie4Ctx(const KmtApi& api, const Device& device,
-                                Context* context, std::string* out_error);
-
 void DestroyCommandAperture(const KmtApi& api, const Device& device,
                             CommandAperture* aperture);
 

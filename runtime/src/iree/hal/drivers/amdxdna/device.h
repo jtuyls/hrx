@@ -65,7 +65,7 @@ struct iree_hal_amdxdna_device {
   bool cmd_chain;
   // Native hardware-context cache for control-packet bootstrap PDIs.
   // Implementation-private so HAL-facing code does not expose STL maps/locks.
-  iree_hal_amdxdna_device_context_cache_t* pdi_context_cache;
+  iree_hal_amdxdna_device_context_cache_t* context_cache;
   // Native parent-chain cache for module-style command chains.
   // Implementation-private and device-owned so cached command BOs cannot
   // outlive the native device/context they belong to.

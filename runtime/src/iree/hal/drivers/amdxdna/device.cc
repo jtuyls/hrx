@@ -101,7 +101,7 @@ iree_hal_amdxdna_device::iree_hal_amdxdna_device(
   device_allocator = nullptr;
   native_device = nullptr;
   native_caps = iree_hal_amdxdna_native_device_caps_t();
-  pdi_context_cache = new iree_hal_amdxdna_device_context_cache_t();
+  context_cache = new iree_hal_amdxdna_device_context_cache_t();
   chain_command_cache = nullptr;
   single_command_cache = nullptr;
 
@@ -119,8 +119,8 @@ iree_hal_amdxdna_device::iree_hal_amdxdna_device(
 iree_hal_amdxdna_device::~iree_hal_amdxdna_device() {
   iree_hal_amdxdna_device_destroy_single_command_cache(this);
   iree_hal_amdxdna_device_destroy_chain_command_cache(this);
-  delete pdi_context_cache;
-  pdi_context_cache = nullptr;
+  delete context_cache;
+  context_cache = nullptr;
 }
 
 static iree_status_t iree_hal_amdxdna_device_initialize_hal_resources(
@@ -1169,8 +1169,8 @@ static void iree_hal_amdxdna_device_destroy(iree_hal_device_t* base_device) {
   // Lock defensively against the contract being violated (zero cost
   // uncontended) and so a future audit can't ask "is this clear racy?"
   {
-    std::lock_guard<std::mutex> lock(device->pdi_context_cache->mutex);
-    device->pdi_context_cache->contexts.clear();
+    std::lock_guard<std::mutex> lock(device->context_cache->mutex);
+    device->context_cache->contexts.clear();
   }
   iree_hal_amdxdna_native_device_destroy(device->native_device);
   // The device struct is placement-new'd in iree_hal_amdxdna_device_create;
@@ -1240,9 +1240,9 @@ iree_status_t iree_hal_amdxdna_device_get_or_create_context(
     context_image.type = iree_hal_amdxdna_native_context_image_type_t::pdi;
     context_image.xclbin = iree_const_byte_span_empty();
   }
-  std::lock_guard<std::mutex> lock(device->pdi_context_cache->mutex);
-  auto it = device->pdi_context_cache->contexts.find(key);
-  if (it != device->pdi_context_cache->contexts.end()) {
+  std::lock_guard<std::mutex> lock(device->context_cache->mutex);
+  auto it = device->context_cache->contexts.find(key);
+  if (it != device->context_cache->contexts.end()) {
     *out_context = it->second;
     return iree_ok_status();
   }
@@ -1251,7 +1251,7 @@ iree_status_t iree_hal_amdxdna_device_get_or_create_context(
       device->native_device, &context_image, &raw_context));
   std::shared_ptr<iree_hal_amdxdna_native_context_t> ctx(
       raw_context, iree_hal_amdxdna_native_context_destroy);
-  device->pdi_context_cache->contexts.emplace(std::move(key), ctx);
+  device->context_cache->contexts.emplace(std::move(key), ctx);
   *out_context = ctx;
   return iree_ok_status();
 }

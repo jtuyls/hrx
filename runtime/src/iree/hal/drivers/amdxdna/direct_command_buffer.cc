@@ -1584,6 +1584,11 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
 
   std::vector<uint32_t> prepared_ctrl_words;
   iree_hal_amdxdna_native_command_t* submit_command = nullptr;
+  // Production policy: reuse a prepared single-dispatch native command across
+  // queue_execute calls (keyed by the dispatch signature in the device single-
+  // command cache) instead of rebuilding it each time. Always on; kept as a
+  // named flag until the prepared-command model in the native-DDI follow-ups
+  // replaces the device-global caches.
   const bool use_single_command_cache = true;
   iree_hal_amdxdna_device_single_command_cache_t* single_command_cache =
       nullptr;

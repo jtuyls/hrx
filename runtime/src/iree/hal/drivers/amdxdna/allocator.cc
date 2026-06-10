@@ -24,6 +24,11 @@ struct iree_hal_amdxdna_allocator {
   iree_allocator_t host_allocator;
   iree_hal_amdxdna_native_device_t* native_device;
   std::mutex cache_mutex;
+  // Free-list of native buffers for reuse. NOTE: the reuse key is size-only and
+  // every generic allocation here is host_only; this is safe today because the
+  // generic allocator path allocates a single buffer type. If instruction /
+  // cacheable / device-visible buffers start flowing through this path, the
+  // cache key must include the native buffer type/visibility before reuse.
   std::vector<iree_hal_amdxdna_native_buffer_ptr> cached_buffers;
   IREE_STATISTICS(iree_hal_allocator_statistics_t statistics;)
 
@@ -139,7 +144,7 @@ iree_hal_amdxdna_allocator_query_buffer_compatibility(
   }
 
   params->type &= ~IREE_HAL_MEMORY_TYPE_OPTIMAL;
-  // amdxdna native host-visible allocations are mmap'd shared with the device,
+  // amdxdna native host-visible allocations are shared-mapped with the device,
   // so every allocation is simultaneously host-local, device-visible,
   // host-mappable, and host-transferable. Declaring those capabilities lets
   // iree-tooling's `requires_buffer_transfer` return false for output buffer
@@ -302,9 +307,10 @@ static void iree_hal_amdxdna_allocator_destroy(
 
 static bool iree_hal_amdxdna_allocator_supports_virtual_memory(
     iree_hal_allocator_t* base_allocator) {
-  // XDNA exposes BOs via DRM ioctl, not a virtual-address-reservation API. A
-  // real implementation would need kernel support for partial-population /
-  // page-level mapping that the amdxdna driver does not provide today.
+  // The native backend allocates whole BOs directly, not via a
+  // virtual-address-reservation API. A real implementation would need native
+  // support for partial-population / page-level mapping that the amdxdna
+  // backends do not provide today.
   return false;
 }
 

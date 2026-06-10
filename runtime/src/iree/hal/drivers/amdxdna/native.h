@@ -192,11 +192,6 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
     const iree_hal_amdxdna_native_context_image_t* image,
     iree_hal_amdxdna_native_context_t** out_context);
 
-iree_status_t iree_hal_amdxdna_native_device_create_context(
-    iree_hal_amdxdna_native_device_t* device, iree_const_byte_span_t pdi,
-    iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
-    iree_hal_amdxdna_native_context_t** out_context);
-
 void iree_hal_amdxdna_native_context_destroy(
     iree_hal_amdxdna_native_context_t* context);
 

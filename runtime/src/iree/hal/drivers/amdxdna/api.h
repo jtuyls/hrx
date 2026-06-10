@@ -18,8 +18,9 @@ struct iree_hal_amdxdna_device_params {
   // Number of core tile rows/cols to use. 0 discovers the hardware defaults.
   int32_t n_core_rows;
   int32_t n_core_cols;
-  // Optional DRM accel device path. Empty discovers the first /dev/accel/accel*
-  // node.
+  // Optional native device identifier passed to the platform backend. Empty
+  // selects the backend's default device (e.g. the first DRM accel node on
+  // Linux KMQ, or the default NPU adapter on Windows MCDM).
   iree_string_view_t device_path;
   iree_string_view_t power_mode;
   // When true, batch each dispatch's commands (control-packet reconfig +
