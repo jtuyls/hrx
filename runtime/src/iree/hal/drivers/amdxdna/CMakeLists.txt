@@ -49,6 +49,8 @@ iree_cc_library(
     direct_command_buffer_internal.h
     direct_command_buffer_planning.cc
     direct_command_buffer_planning.h
+    direct_command_buffer_single_cache.cc
+    direct_command_buffer_single_cache.h
     device.cc
     device_internal.h
     driver.cc
