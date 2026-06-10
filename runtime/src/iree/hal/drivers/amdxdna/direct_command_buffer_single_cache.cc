@@ -12,7 +12,7 @@
 #include "iree/hal/drivers/amdxdna/device_internal.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 
-std::mutex& iree_hal_amdxdna_single_command_cache_init_mutex() {
+static std::mutex& iree_hal_amdxdna_single_command_cache_init_mutex() {
   static std::mutex mutex;
   return mutex;
 }
@@ -37,7 +37,7 @@ void iree_hal_amdxdna_device_destroy_single_command_cache(
   device->single_command_cache = nullptr;
 }
 
-bool iree_hal_amdxdna_single_command_cache_matches(
+static bool iree_hal_amdxdna_single_command_cache_matches(
     const iree_hal_amdxdna_single_command_cache_entry& cache,
     iree_hal_amdxdna_native_queue_t* queue, uint32_t cu_index,
     const std::vector<uint32_t>& ctrl_words,
@@ -53,7 +53,7 @@ bool iree_hal_amdxdna_single_command_cache_matches(
          cache.binding_lengths == binding_lengths;
 }
 
-bool iree_hal_amdxdna_single_command_cache_shape_matches(
+static bool iree_hal_amdxdna_single_command_cache_shape_matches(
     const iree_hal_amdxdna_single_command_cache_entry& cache,
     iree_hal_amdxdna_native_queue_t* queue, uint32_t cu_index,
     const std::vector<uint32_t>& ctrl_words,
@@ -65,7 +65,7 @@ bool iree_hal_amdxdna_single_command_cache_shape_matches(
          cache.binding_lengths == binding_lengths;
 }
 
-iree_status_t iree_hal_amdxdna_update_single_command_cache_entry(
+static iree_status_t iree_hal_amdxdna_update_single_command_cache_entry(
     iree_hal_amdxdna_single_command_cache_entry& cache,
     const std::vector<uint32_t>& ctrl_words,
     const std::vector<iree_hal_amdxdna_native_buffer_t*>& binding_buffers,

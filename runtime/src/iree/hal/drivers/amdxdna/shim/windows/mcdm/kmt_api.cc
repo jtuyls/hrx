@@ -1787,6 +1787,18 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
   return true;
 }
 
+bool IsPathBSubmitComplete(const Context& context,
+                           const PathBPendingSubmit& pending) {
+  // Non-blocking poll of the CPU-monitored HW progress fence: the dispatch's
+  // fence_id is reached once the firmware retires it. (The output buffers are
+  // only host-coherent after WaitForPathBSubmits, which performs the syncs.)
+  if (!context.progress_fence_cpu) return false;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  const uint64_t current =
+      *reinterpret_cast<const volatile uint64_t*>(context.progress_fence_cpu);
+  return current >= pending.fence_id;
+}
+
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
                          size_t pending_count, std::string* out_error) {

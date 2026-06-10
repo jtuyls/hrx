@@ -52,6 +52,8 @@ struct WindowsDpuChainCuDescriptorHeader {
 static_assert(sizeof(WindowsDpuChainCuDescriptorHeader) ==
                   kWindowsDpuChainDescriptorHeaderSize,
               "CU chain descriptor header must be 0x34 bytes");
+static_assert(offsetof(WindowsDpuChainCuDescriptorHeader, marker) == 0x00,
+              "marker must be at +0x00");
 static_assert(offsetof(WindowsDpuChainCuDescriptorHeader, cu_index) == 0x2c,
               "cu_index must be at +0x2c");
 static_assert(offsetof(WindowsDpuChainCuDescriptorHeader, copy_word_count) ==
@@ -72,8 +74,16 @@ struct WindowsDpuChainNpuDescriptor {
 static_assert(sizeof(WindowsDpuChainNpuDescriptor) ==
                   kWindowsDpuStartNpuChainDescriptorSize,
               "START_NPU chain descriptor must be 0x3c bytes");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, marker0) == 0x00,
+              "marker0 must be at word [0]");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, instr_addr_lo) == 0x04,
+              "instr_addr_lo must be at word [1]");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, instr_addr_hi) == 0x08,
+              "instr_addr_hi must be at word [2]");
 static_assert(offsetof(WindowsDpuChainNpuDescriptor, instr_size) == 0x1c,
               "instr_size must be at word [7]");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, marker1) == 0x30,
+              "marker1 must be at word [12]");
 static_assert(offsetof(WindowsDpuChainNpuDescriptor, selector) == 0x34,
               "selector must be at word [13]");
 // XRT runlists are logically unbounded but internally submitted in fixed-size
@@ -777,13 +787,12 @@ iree_status_t append_pathb_start_cu_chain_descriptor(
 
   uint8_t* descriptor = descriptor_base + *descriptor_used;
   std::memset(descriptor, 0, descriptor_bytes);
-  auto* header =
-      reinterpret_cast<WindowsDpuChainCuDescriptorHeader*>(descriptor);
-  header->marker = 1;
-  header->cu_index = cu_index;
-  header->copy_word_count = copy_words;
-  std::memcpy(descriptor + sizeof(WindowsDpuChainCuDescriptorHeader),
-              words + copy_start_word, copy_bytes);
+  WindowsDpuChainCuDescriptorHeader header = {};
+  header.marker = 1;
+  header.cu_index = cu_index;
+  header.copy_word_count = copy_words;
+  std::memcpy(descriptor, &header, sizeof(header));
+  std::memcpy(descriptor + sizeof(header), words + copy_start_word, copy_bytes);
   *descriptor_used += descriptor_bytes;
   return iree_ok_status();
 }
@@ -2272,6 +2281,11 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
 
 static iree_status_t iree_hal_amdxdna_native_submit_wait(
     iree_hal_amdxdna_native_submission_t* s) {
+  if (IREE_UNLIKELY(!s->issued || !s->packet)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "amdxdna native submit_wait on a submission that was not issued");
+  }
   iree_hal_amdxdna_native_queue_t* queue = s->queue;
   iree_hal_amdxdna_native_command_t* command = s->command;
   ert_packet* packet = s->packet;
@@ -2373,9 +2387,15 @@ iree_status_t iree_hal_amdxdna_native_submission_query(
     iree_hal_amdxdna_native_submission_t* submission, bool* out_ready) {
   IREE_ASSERT_ARGUMENT(submission);
   IREE_ASSERT_ARGUMENT(out_ready);
-  // Without a non-blocking fence poll, a submission is only known-complete once
-  // it has been waited.
-  *out_ready = submission->waited;
+  if (submission->waited) {
+    *out_ready = true;
+    return iree_ok_status();
+  }
+  // Non-blocking poll of the HW progress fence. Note this reports HW
+  // completion; submission_wait is still required to run the device->host
+  // output sync.
+  *out_ready = mcdm::IsPathBSubmitComplete(submission->queue->context->context,
+                                           submission->pending);
   return iree_ok_status();
 }
 

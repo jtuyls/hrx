@@ -109,14 +109,6 @@ struct iree_hal_amdxdna_device_chain_command_cache_t {
 iree_hal_amdxdna_device_chain_command_cache_t*
 iree_hal_amdxdna_get_chain_command_cache(iree_hal_amdxdna_device* device);
 
-bool iree_hal_amdxdna_chain_cmd_device_signature_matches(
-    const iree_hal_amdxdna_chain_cmd& lhs,
-    const iree_hal_amdxdna_chain_cmd& rhs);
-
-bool iree_hal_amdxdna_chain_cmd_shape_matches(
-    const iree_hal_amdxdna_chain_cmd& lhs,
-    const iree_hal_amdxdna_chain_cmd& rhs);
-
 bool iree_hal_amdxdna_chain_command_cache_device_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,
     const iree_hal_amdxdna_chain_group& group, uint32_t max_slots);
@@ -124,10 +116,6 @@ bool iree_hal_amdxdna_chain_command_cache_device_matches(
 bool iree_hal_amdxdna_chain_command_cache_shape_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,
     const iree_hal_amdxdna_chain_group& group, uint32_t max_slots);
-
-bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
-    const iree_hal_amdxdna_chain_cmd& lhs,
-    const iree_hal_amdxdna_chain_cmd& rhs);
 
 bool iree_hal_amdxdna_chain_command_cache_descriptor_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,

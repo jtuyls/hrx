@@ -70,7 +70,6 @@ enum class iree_hal_amdxdna_native_command_opcode_t : uint8_t {
 enum iree_hal_amdxdna_native_context_image_model_bits_t : uint32_t {
   IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_PDI = 1u << 0,
   IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_XCLBIN = 1u << 1,
-  IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_XADX = 1u << 2,
 };
 
 enum iree_hal_amdxdna_native_dispatch_model_bits_t : uint32_t {
@@ -114,7 +113,6 @@ struct iree_hal_amdxdna_native_device_caps_t {
 enum class iree_hal_amdxdna_native_context_image_type_t : uint8_t {
   pdi = 0,
   xclbin,
-  xadx,
 };
 
 // A context image may carry more than one representation of the same context:
@@ -310,34 +308,48 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
 
 // Asynchronous submit (advertised via caps.supports_async_submit).
 //
-// iree_hal_amdxdna_native_queue_submit issues `command` to the queue's
-// submission worker and returns immediately with an owned submission handle in
-// `out_submission`; the worker runs the same serialized submit_and_wait path so
-// the aperture-serialization contract is preserved (one in-flight submit per
-// queue). The caller MUST keep `command` (and its bound buffers) alive until
-// the submission completes. Wait for completion (and obtain the submit status)
-// with iree_hal_amdxdna_native_submission_wait, then release the handle with
-// iree_hal_amdxdna_native_submission_destroy. submit_and_wait above remains the
-// synchronous path and is unaffected.
+// iree_hal_amdxdna_native_queue_submit issues `command` to the hardware queue
+// inline on the calling thread (the same path-B work submit_and_wait performs,
+// up to and including the SubmitCommandToHwQueue progress-fence kick) and
+// returns immediately with an owned submission handle; the hardware is now
+// executing. Completion is the hardware progress fence -- there is NO
+// background thread.
+//
+// Serialization: the command aperture is per-context, so the caller MUST keep
+// at most one outstanding submission per context/queue and MUST NOT issue again
+// on that queue before waiting the previous submission. Distinct contexts/
+// queues may overlap freely. (The HAL drives one submission lane per queue,
+// which satisfies this.) This DDI does no internal locking.
+//
+// The caller MUST keep `command` and its bound buffers alive until the
+// submission completes. Wait for completion (and obtain the submit status) with
+// iree_hal_amdxdna_native_submission_wait, then release the handle with
+// iree_hal_amdxdna_native_submission_destroy. submit_and_wait above is exactly
+// submit + wait and remains the synchronous path.
 iree_status_t iree_hal_amdxdna_native_queue_submit(
     iree_hal_amdxdna_native_queue_t* queue,
     iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
     iree_hal_amdxdna_native_submission_t** out_submission);
 
-// Blocks until the submission completes or `timeout_ns` elapses, returning the
-// worker's submit status. Returns DEADLINE_EXCEEDED on timeout (the submission
-// stays valid and may be waited on again). timeout_ns == UINT64_MAX waits
-// forever.
+// Blocks until the submission's hardware fence signals, then performs the
+// post-dispatch aperture and device->host output sync and returns the submit
+// status. Calling it again after completion returns the cached status.
+// NOTE: timeout_ns is not yet honored -- the wait currently runs to completion
+// regardless of the deadline (tracked in the native-DDI follow-ups). Pass
+// UINT64_MAX for the only currently-meaningful value.
 iree_status_t iree_hal_amdxdna_native_submission_wait(
     iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns);
 
-// Returns true in `out_ready` if the submission has completed (non-blocking).
+// Non-blocking completion poll: sets *out_ready to true once the hardware
+// progress fence has reached this submission's fence value. A ready submission
+// still requires submission_wait to retire it (the device->host output sync
+// happens in wait), but query lets a caller overlap host work without blocking.
 iree_status_t iree_hal_amdxdna_native_submission_query(
     iree_hal_amdxdna_native_submission_t* submission, bool* out_ready);
 
-// Releases a submission handle. Blocks until the worker is no longer touching
-// it (i.e. the submission has completed), so it is safe to destroy without a
-// prior wait.
+// Releases a submission handle. If the submission was issued but never waited,
+// this waits first so the hardware has finished touching the command and
+// aperture before they may be freed.
 void iree_hal_amdxdna_native_submission_destroy(
     iree_hal_amdxdna_native_submission_t* submission);
 

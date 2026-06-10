@@ -191,4 +191,18 @@ TEST(ApplyPatchTableTest, RejectsOutOfBoundsOrMisalignedOffset) {
                                                   misaligned, args, 1));
 }
 
+TEST(ApplyPatchTableTest, DropsLowTwoBitsOfDescriptorAddress) {
+  std::vector<uint32_t> ctrl(8, 0);
+  // arg_plus 0x13 makes the computed base non-4-aligned; bd[1] must mask the
+  // low two bits to keep the descriptor address word-aligned.
+  std::vector<uint32_t> patches = {0u, 0u, 0x13u};
+  uint64_t args[] = {0x1000u};
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
+                                                 patches, args, 1));
+  const uint64_t base = 0x1000u + 0x13u + kDdrAieAddrOffset;  // 0x80001013
+  EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base & 0xFFFFFFFC));
+  EXPECT_EQ(ctrl[1] & 0x3u, 0u);
+  EXPECT_EQ(ctrl[2], static_cast<uint32_t>(base >> 32));
+}
+
 }  // namespace

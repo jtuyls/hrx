@@ -21,25 +21,33 @@ constexpr uint32_t kWrite32ConstantSentinel = 0xA1EC0000u;
 constexpr uint32_t kWrite32ConstantMask = 0xFFFF0000u;
 }  // namespace
 
+// Misalignment-safe little-endian 32-bit read: a malformed op size can leave
+// `p` non-word-aligned, so read through memcpy rather than an unaligned cast.
+static uint32_t iree_hal_amdxdna_read_u32(const uint8_t* p) {
+  uint32_t value;
+  std::memcpy(&value, p, sizeof(value));
+  return value;
+}
+
 uint32_t iree_hal_amdxdna_txn_op_size(const uint8_t* b, size_t total,
                                       size_t p) {
   if (p >= total) return 0;
   uint8_t op = b[p];
   if (op == 0) {  // WRITE32.
     if (p + 24 > total) return 0;
-    return *reinterpret_cast<const uint32_t*>(b + p + 20);
+    return iree_hal_amdxdna_read_u32(b + p + 20);
   }
   if (op == 1) {  // BLOCKWRITE.
     if (p + 16 > total) return 0;
-    return *reinterpret_cast<const uint32_t*>(b + p + 12);
+    return iree_hal_amdxdna_read_u32(b + p + 12);
   }
   if (op == 3 || op == 4) {
     if (p + 28 > total) return 0;
-    return *reinterpret_cast<const uint32_t*>(b + p + 24);
+    return iree_hal_amdxdna_read_u32(b + p + 24);
   }
   if (op >= 128) {  // Custom op.
     if (p + 8 > total) return 0;
-    return *reinterpret_cast<const uint32_t*>(b + p + 4);
+    return iree_hal_amdxdna_read_u32(b + p + 4);
   }
   return 4;
 }

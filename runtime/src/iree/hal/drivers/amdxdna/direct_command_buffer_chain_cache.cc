@@ -12,7 +12,7 @@
 #include "iree/hal/drivers/amdxdna/device_internal.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 
-std::mutex& iree_hal_amdxdna_chain_command_cache_init_mutex() {
+static std::mutex& iree_hal_amdxdna_chain_command_cache_init_mutex() {
   static std::mutex mutex;
   return mutex;
 }
@@ -46,7 +46,7 @@ bool iree_hal_amdxdna_direct_command_buffer_control_words_changed(
                      cached_word_count * sizeof(uint32_t)) != 0;
 }
 
-bool iree_hal_amdxdna_chain_cmd_device_signature_matches(
+static bool iree_hal_amdxdna_chain_cmd_device_signature_matches(
     const iree_hal_amdxdna_chain_cmd& lhs,
     const iree_hal_amdxdna_chain_cmd& rhs) {
   return lhs.ctrl_words == rhs.ctrl_words &&
@@ -55,7 +55,7 @@ bool iree_hal_amdxdna_chain_cmd_device_signature_matches(
          lhs.binding_lengths == rhs.binding_lengths;
 }
 
-bool iree_hal_amdxdna_chain_cmd_shape_matches(
+static bool iree_hal_amdxdna_chain_cmd_shape_matches(
     const iree_hal_amdxdna_chain_cmd& lhs,
     const iree_hal_amdxdna_chain_cmd& rhs) {
   return lhs.ctrl_words.size() == rhs.ctrl_words.size() &&
@@ -107,7 +107,7 @@ bool iree_hal_amdxdna_chain_command_cache_shape_matches(
 // bindings) so flush can reuse an already-built cached chain WITHOUT building
 // this group's deferred children. Equivalent to the ctrl_words signature match
 // but computable on unbuilt descriptors.
-bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
+static bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
     const iree_hal_amdxdna_chain_cmd& lhs,
     const iree_hal_amdxdna_chain_cmd& rhs) {
   return lhs.src_asm_inst == rhs.src_asm_inst &&

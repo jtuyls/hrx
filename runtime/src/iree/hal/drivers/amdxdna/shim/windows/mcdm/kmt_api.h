@@ -261,6 +261,11 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
                          size_t pending_count, std::string* out_error);
 
+// Non-blocking completion poll for an issued (but not yet waited) path-B
+// submit: true once the HW progress fence has reached pending.fence_id.
+bool IsPathBSubmitComplete(const Context& context,
+                           const PathBPendingSubmit& pending);
+
 // Stale probe path retained for diagnostics only. The working XRT IREE matmul
 // capture uses opcode 2/5/9 setup packets, not opcode 10.
 void DestroyCommandAperture(const KmtApi& api, const Device& device,

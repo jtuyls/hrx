@@ -21,12 +21,15 @@
 // rebound/rewritten in place to match a freshly recorded dispatch.
 //
 // Ownership/threading contract: like the chain command cache, this is
-// intentionally DEVICE-GLOBAL. The cache mutex is held across the cached
-// command's submit, so it ALSO serializes aperture-touching submits on a
-// context (required by the native.h Windows MCDM contract). Re-owning prepared
-// commands per executable entry point would need a separate per-context submit
-// lock to preserve that serialization; that is tracked as the prepared-command
-// revisit in the native-DDI follow-ups doc.
+// intentionally DEVICE-GLOBAL. On the PARTIAL_ELF dispatch path (the only
+// single-dispatch path the Windows MCDM backend enables) the cache mutex is
+// held across the cached command's submit, so it ALSO serializes the
+// aperture-touching submit on a context (required by the native.h Windows MCDM
+// contract). The non-PARTIAL_ELF single path (Linux KMQ) does not stage into a
+// shared aperture and is intentionally unlocked. Re-owning prepared commands
+// per executable entry point would need a separate per-context submit lock to
+// preserve that serialization on the MCDM path; that is tracked as the
+// prepared-command revisit in the native-DDI follow-ups doc.
 
 struct iree_hal_amdxdna_device;
 
