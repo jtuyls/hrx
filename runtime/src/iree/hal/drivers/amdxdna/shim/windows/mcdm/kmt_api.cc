@@ -1903,6 +1903,16 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                                out_pending, out_error);
 }
 
+bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
+                 const Buffer& exec_buffer, const void* ert_packet,
+                 uint32_t ert_bytes, uint32_t command_state,
+                 uint32_t* packet_header, PathBPendingSubmit* out_pending,
+                 std::string* out_error) {
+  return SubmitPathBImplNoWait(api, device, context, exec_buffer, ert_packet,
+                               ert_bytes, command_state, /*chain_info=*/nullptr,
+                               packet_header, out_pending, out_error);
+}
+
 void DestroyCommandAperture(const KmtApi& api, const Device& device,
                             CommandAperture* aperture) {
   if (!aperture || (!aperture->allocation && !aperture->resource &&

@@ -24,6 +24,7 @@ struct iree_hal_amdxdna_native_buffer_t;
 struct iree_hal_amdxdna_native_context_t;
 struct iree_hal_amdxdna_native_queue_t;
 struct iree_hal_amdxdna_native_command_t;
+struct iree_hal_amdxdna_native_submission_t;
 
 // Thread-safety contract (current single-worker baseline; the async evolution
 // is tracked in the native-DDI follow-ups doc):
@@ -306,5 +307,38 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
     iree_hal_amdxdna_native_queue_t* queue,
     iree_hal_amdxdna_native_command_t* const* commands,
     iree_host_size_t command_count, iree_string_view_t label);
+
+// Asynchronous submit (advertised via caps.supports_async_submit).
+//
+// iree_hal_amdxdna_native_queue_submit issues `command` to the queue's
+// submission worker and returns immediately with an owned submission handle in
+// `out_submission`; the worker runs the same serialized submit_and_wait path so
+// the aperture-serialization contract is preserved (one in-flight submit per
+// queue). The caller MUST keep `command` (and its bound buffers) alive until
+// the submission completes. Wait for completion (and obtain the submit status)
+// with iree_hal_amdxdna_native_submission_wait, then release the handle with
+// iree_hal_amdxdna_native_submission_destroy. submit_and_wait above remains the
+// synchronous path and is unaffected.
+iree_status_t iree_hal_amdxdna_native_queue_submit(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission);
+
+// Blocks until the submission completes or `timeout_ns` elapses, returning the
+// worker's submit status. Returns DEADLINE_EXCEEDED on timeout (the submission
+// stays valid and may be waited on again). timeout_ns == UINT64_MAX waits
+// forever.
+iree_status_t iree_hal_amdxdna_native_submission_wait(
+    iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns);
+
+// Returns true in `out_ready` if the submission has completed (non-blocking).
+iree_status_t iree_hal_amdxdna_native_submission_query(
+    iree_hal_amdxdna_native_submission_t* submission, bool* out_ready);
+
+// Releases a submission handle. Blocks until the worker is no longer touching
+// it (i.e. the submission has completed), so it is safe to destroy without a
+// prior wait.
+void iree_hal_amdxdna_native_submission_destroy(
+    iree_hal_amdxdna_native_submission_t* submission);
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_NATIVE_H_

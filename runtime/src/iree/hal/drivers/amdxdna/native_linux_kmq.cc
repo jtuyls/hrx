@@ -744,3 +744,40 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
   }
   return iree_ok_status();
 }
+
+// Async submit is not yet implemented on the Linux KMQ backend; its caps do not
+// advertise supports_async_submit. These stubs keep the DDI link-complete.
+struct iree_hal_amdxdna_native_submission_t {};
+
+iree_status_t iree_hal_amdxdna_native_queue_submit(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission) {
+  (void)queue;
+  (void)command;
+  (void)label;
+  if (out_submission) *out_submission = nullptr;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "amdxdna Linux KMQ async submit is not implemented");
+}
+
+iree_status_t iree_hal_amdxdna_native_submission_wait(
+    iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns) {
+  (void)submission;
+  (void)timeout_ns;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "amdxdna Linux KMQ async submit is not implemented");
+}
+
+iree_status_t iree_hal_amdxdna_native_submission_query(
+    iree_hal_amdxdna_native_submission_t* submission, bool* out_ready) {
+  (void)submission;
+  if (out_ready) *out_ready = false;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "amdxdna Linux KMQ async submit is not implemented");
+}
+
+void iree_hal_amdxdna_native_submission_destroy(
+    iree_hal_amdxdna_native_submission_t* submission) {
+  (void)submission;
+}

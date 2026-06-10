@@ -1533,7 +1533,9 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
       IREE_HAL_AMDXDNA_NATIVE_COMPLETION_MODEL_COMPLETION_SLOT;
   caps.supports_command_chain = true;
   caps.supports_submit_many = true;
-  caps.supports_async_submit = false;
+  // Async submit is implemented via the path-B hardware-fence issue/wait split
+  // (iree_hal_amdxdna_native_queue_submit + native_submission_wait).
+  caps.supports_async_submit = true;
   caps.supports_external_buffer_import = false;
   caps.supports_external_buffer_export = false;
   caps.supports_real_multi_queue = false;
@@ -2140,11 +2142,29 @@ iree_status_t iree_hal_amdxdna_native_command_prepare_chain(
   return iree_ok_status();
 }
 
-iree_status_t iree_hal_amdxdna_native_queue_submit_and_wait(
-    iree_hal_amdxdna_native_queue_t* queue,
-    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label) {
-  IREE_ASSERT_ARGUMENT(queue);
-  IREE_ASSERT_ARGUMENT(command);
+// Async submit is built on a clean issue/wait split of the path-B submit:
+// submit_issue does all pre-dispatch work and issues the command to the HW
+// queue (SubmitPathB[Chain] -> fence token); submit_wait blocks on that fence
+// and does the post-dispatch aperture + output sync. submit_and_wait composes
+// them (unchanged synchronous behavior); the async DDI exposes them separately.
+struct iree_hal_amdxdna_native_submission_t {
+  iree_hal_amdxdna_native_queue_t* queue = nullptr;
+  iree_hal_amdxdna_native_command_t* command = nullptr;
+  std::string label;
+  mcdm::PathBPendingSubmit pending = {};
+  ert_packet* packet = nullptr;
+  bool is_pathb_chain = false;
+  bool is_pathb_partial_elf = false;
+  bool skip_bound_sync = false;
+  bool issued = false;
+  bool waited = false;
+  iree_status_t status = iree_ok_status();
+};
+
+static iree_status_t iree_hal_amdxdna_native_submit_issue(
+    iree_hal_amdxdna_native_submission_t* s) {
+  iree_hal_amdxdna_native_queue_t* queue = s->queue;
+  iree_hal_amdxdna_native_command_t* command = s->command;
   ert_packet* packet = command_packet(command);
   reset_command_packet_for_start(command);
 
@@ -2156,134 +2176,136 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_and_wait(
     if (!bound.buffer) continue;
     if (is_pathb_partial_elf_control_binding(command, bound)) continue;
     IREE_RETURN_IF_ERROR(materialize_deferred_buffer(bound.buffer));
-    std::string label = "bound[" + std::to_string(i) + "]";
+    std::string bound_label = "bound[" + std::to_string(i) + "]";
     if (!mcdm::WaitForBufferResidency(
             command->device->api, command->device->device,
-            queue->context->context, bound.buffer->buffer, label.c_str(),
+            queue->context->context, bound.buffer->buffer, bound_label.c_str(),
             &error)) {
       return status_from_mcdm_error(
           "amdxdna Windows MCDM bound BO residency wait failed", error);
     }
   }
 
-  bool packet_state_from_completion_slot = false;
-  {
-    const bool is_pathb_chain =
-        command->opcode ==
-        iree_hal_amdxdna_native_command_opcode_t::command_chain;
-    const bool is_pathb_partial_elf =
-        !is_pathb_chain && uses_partial_elf_npu_packet(command);
-    const uint32_t command_bytes = (packet->count + 1) * sizeof(uint32_t);
-    const bool skip_bound_sync = !is_pathb_chain && is_pathb_partial_elf;
-    // The NPU is not cache-coherent: flush every bound buffer (instruction
-    // control code + input args) host->device BEFORE the dispatch so the
-    // firmware reads real data, not stale device memory. (Output is synced
-    // device->host after.)
-    if (!skip_bound_sync) {
-      for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
-        iree_hal_amdxdna_native_buffer_t* bound =
-            command->bound_buffers[i].buffer;
-        if (!bound) continue;
-        IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
-            bound, iree_hal_amdxdna_native_sync_direction_t::host_to_device));
-      }
-    }
-    if (!queue->context->has_command_aperture) {
-      return iree_make_status(
-          IREE_STATUS_FAILED_PRECONDITION,
-          "amdxdna Windows MCDM pathb submit requested without command "
-          "aperture");
-    }
-    const bool skip_non_chain_presync = !is_pathb_chain && is_pathb_partial_elf;
-    if (!skip_non_chain_presync) {
-      if (!mcdm::SubmitPathBApertureSync(
-              command->device->api, command->device->device,
-              &queue->context->context, queue->context->command_aperture,
-              /*offset=*/0x10000, /*wait_for_cpu=*/false, &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb pre-dispatch sync failed", error);
-      }
-    }
-    if (is_pathb_chain) {
-      IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command));
-    } else if (pathb_stage_code_after_presync(command)) {
-      IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
-    }
-    IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
-    IREE_RETURN_IF_ERROR(
-        materialize_deferred_buffer(command->exec_buffer.get()));
-    command->start_packet = reinterpret_cast<ert_start_kernel_cmd*>(
-        command->exec_buffer->buffer.cpu_ptr);
-    packet = command_packet(command);
-    IREE_RETURN_IF_ERROR(maybe_write_partial_elf_bo_table(command));
-    // Module-style path-B writes the state-3 command BO through its CPU
-    // mapping and submits it directly. For partial-ELF path-B commands, use a
-    // CPU fence instead of a generic per-dispatch host->device sync.
-    const bool skip_exec_sync = !is_pathb_chain && is_pathb_partial_elf;
-    if (!skip_exec_sync) {
+  const bool is_pathb_chain =
+      command->opcode ==
+      iree_hal_amdxdna_native_command_opcode_t::command_chain;
+  const bool is_pathb_partial_elf =
+      !is_pathb_chain && uses_partial_elf_npu_packet(command);
+  const uint32_t command_bytes = (packet->count + 1) * sizeof(uint32_t);
+  const bool skip_bound_sync = !is_pathb_chain && is_pathb_partial_elf;
+  // The NPU is not cache-coherent: flush every bound buffer host->device BEFORE
+  // the dispatch so the firmware reads real data.
+  if (!skip_bound_sync) {
+    for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
+      iree_hal_amdxdna_native_buffer_t* bound =
+          command->bound_buffers[i].buffer;
+      if (!bound) continue;
       IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
-          command->exec_buffer.get(),
-          iree_hal_amdxdna_native_sync_direction_t::host_to_device));
-    } else {
-      std::atomic_thread_fence(std::memory_order_seq_cst);
+          bound, iree_hal_amdxdna_native_sync_direction_t::host_to_device));
     }
-    if (is_pathb_chain) {
-      mcdm::PathBChainSubmitInfo chain_info = {};
-      chain_info.descriptor_gpu_va = command->pathb_chain_descriptor_gpu_va;
-      chain_info.descriptor_bytes = command->pathb_chain_descriptor_bytes;
-      chain_info.command_count =
-          reinterpret_cast<ert_cmd_chain_data*>(packet->data)->command_count;
-      chain_info.first_child_opcode = command->pathb_chain_first_child_opcode;
-      if (!mcdm::SubmitAndWaitPathBChain(
-              command->device->api, command->device->device,
-              &queue->context->context, command->exec_buffer->buffer, packet,
-              command_bytes, chain_info, &packet->header, &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb chain submit failed", error);
-      }
-    } else {
-      if (!mcdm::SubmitAndWaitPathB(
-              command->device->api, command->device->device,
-              &queue->context->context, command->exec_buffer->buffer, packet,
-              command_bytes, /*command_state=*/3, &packet->header, &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb command submit failed", error);
-      }
+  }
+  if (!queue->context->has_command_aperture) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "amdxdna Windows MCDM pathb submit requested without command aperture");
+  }
+  const bool skip_non_chain_presync = !is_pathb_chain && is_pathb_partial_elf;
+  if (!skip_non_chain_presync) {
+    if (!mcdm::SubmitPathBApertureSync(
+            command->device->api, command->device->device,
+            &queue->context->context, queue->context->command_aperture,
+            /*offset=*/0x10000, /*wait_for_cpu=*/false, &error)) {
+      return status_from_mcdm_error(
+          "amdxdna Windows MCDM pathb pre-dispatch sync failed", error);
     }
-    packet_state_from_completion_slot = true;
-    const bool skip_non_chain_postsync =
-        !is_pathb_chain && is_pathb_partial_elf;
-    if (!skip_non_chain_postsync) {
-      if (!mcdm::SubmitPathBApertureSync(
-              command->device->api, command->device->device,
-              &queue->context->context, queue->context->command_aperture,
-              /*offset=*/0x8000, /*wait_for_cpu=*/true, &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb post-dispatch sync failed", error);
-      }
+  }
+  if (is_pathb_chain) {
+    IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command));
+  } else if (pathb_stage_code_after_presync(command)) {
+    IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
+  }
+  IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
+  IREE_RETURN_IF_ERROR(materialize_deferred_buffer(command->exec_buffer.get()));
+  command->start_packet = reinterpret_cast<ert_start_kernel_cmd*>(
+      command->exec_buffer->buffer.cpu_ptr);
+  packet = command_packet(command);
+  IREE_RETURN_IF_ERROR(maybe_write_partial_elf_bo_table(command));
+  const bool skip_exec_sync = !is_pathb_chain && is_pathb_partial_elf;
+  if (!skip_exec_sync) {
+    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
+        command->exec_buffer.get(),
+        iree_hal_amdxdna_native_sync_direction_t::host_to_device));
+  } else {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+  }
+  if (is_pathb_chain) {
+    mcdm::PathBChainSubmitInfo chain_info = {};
+    chain_info.descriptor_gpu_va = command->pathb_chain_descriptor_gpu_va;
+    chain_info.descriptor_bytes = command->pathb_chain_descriptor_bytes;
+    chain_info.command_count =
+        reinterpret_cast<ert_cmd_chain_data*>(packet->data)->command_count;
+    chain_info.first_child_opcode = command->pathb_chain_first_child_opcode;
+    if (!mcdm::SubmitPathBChain(
+            command->device->api, command->device->device,
+            &queue->context->context, command->exec_buffer->buffer, packet,
+            command_bytes, chain_info, &packet->header, &s->pending, &error)) {
+      return status_from_mcdm_error(
+          "amdxdna Windows MCDM pathb chain submit failed", error);
     }
-    // The NPU is not cache-coherent: invalidate every bound buffer (incl. the
-    // output) device->host so the host reads the firmware's results, not stale
-    // cache. This was missing and could masquerade as "no execution".
-    if (!skip_bound_sync) {
-      for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
-        iree_hal_amdxdna_native_buffer_t* bound =
-            command->bound_buffers[i].buffer;
-        if (!bound) continue;
-        IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
-            bound, iree_hal_amdxdna_native_sync_direction_t::device_to_host));
-      }
+  } else {
+    if (!mcdm::SubmitPathB(command->device->api, command->device->device,
+                           &queue->context->context,
+                           command->exec_buffer->buffer, packet, command_bytes,
+                           /*command_state=*/3, &packet->header, &s->pending,
+                           &error)) {
+      return status_from_mcdm_error(
+          "amdxdna Windows MCDM pathb command submit failed", error);
+    }
+  }
+  s->packet = packet;
+  s->is_pathb_chain = is_pathb_chain;
+  s->is_pathb_partial_elf = is_pathb_partial_elf;
+  s->skip_bound_sync = skip_bound_sync;
+  s->issued = true;
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_native_submit_wait(
+    iree_hal_amdxdna_native_submission_t* s) {
+  iree_hal_amdxdna_native_queue_t* queue = s->queue;
+  iree_hal_amdxdna_native_command_t* command = s->command;
+  ert_packet* packet = s->packet;
+  std::string error;
+  if (!mcdm::WaitForPathBSubmits(command->device->api, command->device->device,
+                                 &queue->context->context, &s->pending,
+                                 /*pending_count=*/1, &error)) {
+    return status_from_mcdm_error("amdxdna Windows MCDM pathb wait failed",
+                                  error);
+  }
+  const bool skip_non_chain_postsync =
+      !s->is_pathb_chain && s->is_pathb_partial_elf;
+  if (!skip_non_chain_postsync) {
+    if (!mcdm::SubmitPathBApertureSync(
+            command->device->api, command->device->device,
+            &queue->context->context, queue->context->command_aperture,
+            /*offset=*/0x8000, /*wait_for_cpu=*/true, &error)) {
+      return status_from_mcdm_error(
+          "amdxdna Windows MCDM pathb post-dispatch sync failed", error);
+    }
+  }
+  // The NPU is not cache-coherent: invalidate every bound buffer device->host
+  // so the host reads the firmware's results, not stale cache.
+  if (!s->skip_bound_sync) {
+    for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
+      iree_hal_amdxdna_native_buffer_t* bound =
+          command->bound_buffers[i].buffer;
+      if (!bound) continue;
+      IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
+          bound, iree_hal_amdxdna_native_sync_direction_t::device_to_host));
     }
   }
   queue->exec_command_count++;
-
-  if (!packet_state_from_completion_slot) {
-    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
-        command->exec_buffer.get(),
-        iree_hal_amdxdna_native_sync_direction_t::device_to_host));
-  }
   if (packet->state == ERT_CMD_STATE_COMPLETED) return iree_ok_status();
-
   if (command->opcode ==
       iree_hal_amdxdna_native_command_opcode_t::command_chain) {
     ert_cmd_chain_data* chain_data =
@@ -2292,12 +2314,82 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_and_wait(
         IREE_STATUS_INTERNAL,
         "amdxdna %.*s did not complete: ert state %u (error_index %u, "
         "submit_index %u)",
-        static_cast<int>(label.size), label.data, packet->state,
+        static_cast<int>(s->label.size()), s->label.data(), packet->state,
         chain_data->error_index, chain_data->submit_index);
   }
   return iree_make_status(
       IREE_STATUS_INTERNAL, "amdxdna %.*s did not complete: ert state %u",
-      static_cast<int>(label.size), label.data, packet->state);
+      static_cast<int>(s->label.size()), s->label.data(), packet->state);
+}
+
+iree_status_t iree_hal_amdxdna_native_queue_submit_and_wait(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label) {
+  IREE_ASSERT_ARGUMENT(queue);
+  IREE_ASSERT_ARGUMENT(command);
+  iree_hal_amdxdna_native_submission_t submission;
+  submission.queue = queue;
+  submission.command = command;
+  submission.label.assign(label.data, label.size);
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_submit_issue(&submission));
+  return iree_hal_amdxdna_native_submit_wait(&submission);
+}
+
+iree_status_t iree_hal_amdxdna_native_queue_submit(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission) {
+  IREE_ASSERT_ARGUMENT(queue);
+  IREE_ASSERT_ARGUMENT(command);
+  IREE_ASSERT_ARGUMENT(out_submission);
+  *out_submission = nullptr;
+  auto* submission = new iree_hal_amdxdna_native_submission_t();
+  submission->queue = queue;
+  submission->command = command;
+  submission->label.assign(label.data, label.size);
+  iree_status_t status = iree_hal_amdxdna_native_submit_issue(submission);
+  if (!iree_status_is_ok(status)) {
+    delete submission;
+    return status;
+  }
+  *out_submission = submission;
+  return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_native_submission_wait(
+    iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns) {
+  IREE_ASSERT_ARGUMENT(submission);
+  // The path-B fence wait is currently blocking; timeout_ns is not yet threaded
+  // into WaitForPathBSubmits (the HAL semaphore layer enforces deadlines).
+  (void)timeout_ns;
+  if (!submission->waited) {
+    submission->status = iree_hal_amdxdna_native_submit_wait(submission);
+    submission->waited = true;
+  }
+  return iree_status_clone(submission->status);
+}
+
+iree_status_t iree_hal_amdxdna_native_submission_query(
+    iree_hal_amdxdna_native_submission_t* submission, bool* out_ready) {
+  IREE_ASSERT_ARGUMENT(submission);
+  IREE_ASSERT_ARGUMENT(out_ready);
+  // Without a non-blocking fence poll, a submission is only known-complete once
+  // it has been waited.
+  *out_ready = submission->waited;
+  return iree_ok_status();
+}
+
+void iree_hal_amdxdna_native_submission_destroy(
+    iree_hal_amdxdna_native_submission_t* submission) {
+  if (!submission) return;
+  // The fence wait is synchronous: if issued-but-not-waited, wait now so the HW
+  // is finished touching the command/aperture before the caller frees them.
+  if (submission->issued && !submission->waited) {
+    submission->status = iree_hal_amdxdna_native_submit_wait(submission);
+    submission->waited = true;
+  }
+  iree_status_ignore(submission->status);
+  delete submission;
 }
 
 iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(

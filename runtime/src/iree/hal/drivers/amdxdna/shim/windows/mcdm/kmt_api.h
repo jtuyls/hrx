@@ -248,6 +248,15 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       uint32_t* packet_header, PathBPendingSubmit* out_pending,
                       std::string* out_error);
 
+// Single-dispatch path-B issue (no wait); the async counterpart of
+// SubmitAndWaitPathB. Returns the in-flight fence token in `out_pending`; wait
+// for it with WaitForPathBSubmits.
+bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
+                 const Buffer& exec_buffer, const void* ert_packet,
+                 uint32_t ert_bytes, uint32_t command_state,
+                 uint32_t* packet_header, PathBPendingSubmit* out_pending,
+                 std::string* out_error);
+
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
                          size_t pending_count, std::string* out_error);
