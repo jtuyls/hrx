@@ -102,6 +102,20 @@ iree_cc_test(
 
 iree_cc_test(
   NAME
+    xclbin_util_test
+  SRCS
+    "xclbin_util_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
     async_queue_test
   SRCS
     "async_queue_test.cc"
