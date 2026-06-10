@@ -37,6 +37,45 @@ constexpr size_t kWindowsDpuChainCodeAlignment = 0x8000;
 constexpr uint64_t kWindowsDpuChainDescriptorApertureOffset = 0x10000;
 constexpr size_t kWindowsDpuChainDescriptorHeaderSize = 0x34;
 constexpr size_t kWindowsDpuStartNpuChainDescriptorSize = 0x3c;
+
+// Typed layouts for the two path-B chain descriptor formats (firmware ABI;
+// offsets recovered from xrt_core). Expressed as structs with static_asserts so
+// the magic offsets are explicit and compile-time validated instead of bare
+// memcpy offsets. The descriptor block is zero-initialized, so reserved fields
+// stay 0.
+struct WindowsDpuChainCuDescriptorHeader {
+  uint32_t marker;           // +0x00, always 1
+  uint32_t reserved0[10];    // +0x04..+0x2b
+  uint32_t cu_index;         // +0x2c
+  uint32_t copy_word_count;  // +0x30, START_CU packet words copied after header
+};
+static_assert(sizeof(WindowsDpuChainCuDescriptorHeader) ==
+                  kWindowsDpuChainDescriptorHeaderSize,
+              "CU chain descriptor header must be 0x34 bytes");
+static_assert(offsetof(WindowsDpuChainCuDescriptorHeader, cu_index) == 0x2c,
+              "cu_index must be at +0x2c");
+static_assert(offsetof(WindowsDpuChainCuDescriptorHeader, copy_word_count) ==
+                  0x30,
+              "copy_word_count must be at +0x30");
+
+struct WindowsDpuChainNpuDescriptor {
+  uint32_t marker0;        // [0]  +0x00, always 2
+  uint32_t instr_addr_lo;  // [1]  +0x04
+  uint32_t instr_addr_hi;  // [2]  +0x08
+  uint32_t reserved0[4];   // [3..6]
+  uint32_t instr_size;     // [7]  +0x1c
+  uint32_t reserved1[4];   // [8..11]
+  uint32_t marker1;        // [12] +0x30, always 2
+  uint32_t selector;       // [13] +0x34
+  uint32_t selector_hi;    // [14] +0x38
+};
+static_assert(sizeof(WindowsDpuChainNpuDescriptor) ==
+                  kWindowsDpuStartNpuChainDescriptorSize,
+              "START_NPU chain descriptor must be 0x3c bytes");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, instr_size) == 0x1c,
+              "instr_size must be at word [7]");
+static_assert(offsetof(WindowsDpuChainNpuDescriptor, selector) == 0x34,
+              "selector must be at word [13]");
 // XRT runlists are logically unbounded but internally submitted in fixed-size
 // ERT_CMD_CHAIN chunks. XRT 2.19 hardwires that native submit chunk size to 24,
 // so the Windows MCDM shim uses the same value for now. The recovered path-B
@@ -738,13 +777,12 @@ iree_status_t append_pathb_start_cu_chain_descriptor(
 
   uint8_t* descriptor = descriptor_base + *descriptor_used;
   std::memset(descriptor, 0, descriptor_bytes);
-  uint32_t value = 1;
-  std::memcpy(descriptor + 0x00, &value, sizeof(value));
-  value = cu_index;
-  std::memcpy(descriptor + 0x2c, &value, sizeof(value));
-  value = copy_words;
-  std::memcpy(descriptor + 0x30, &value, sizeof(value));
-  std::memcpy(descriptor + kWindowsDpuChainDescriptorHeaderSize,
+  auto* header =
+      reinterpret_cast<WindowsDpuChainCuDescriptorHeader*>(descriptor);
+  header->marker = 1;
+  header->cu_index = cu_index;
+  header->copy_word_count = copy_words;
+  std::memcpy(descriptor + sizeof(WindowsDpuChainCuDescriptorHeader),
               words + copy_start_word, copy_bytes);
   *descriptor_used += descriptor_bytes;
   return iree_ok_status();
@@ -782,18 +820,18 @@ iree_status_t append_pathb_start_npu_chain_descriptor(
   const uint32_t selector = arg_words > 0 ? args[0] : 0;
   const uint32_t selector_hi = arg_words > 1 ? args[1] : 0;
 
-  uint32_t words[kWindowsDpuStartNpuChainDescriptorSize / sizeof(uint32_t)] =
-      {};
-  words[0] = 2;
-  words[1] = static_cast<uint32_t>(npu_data->instruction_buffer);
-  words[2] = static_cast<uint32_t>(npu_data->instruction_buffer >> 32);
-  words[7] = npu_data->instruction_buffer_size;
-  words[12] = 2;
-  words[13] = selector;
-  words[14] = selector_hi;
+  WindowsDpuChainNpuDescriptor desc = {};
+  desc.marker0 = 2;
+  desc.instr_addr_lo = static_cast<uint32_t>(npu_data->instruction_buffer);
+  desc.instr_addr_hi =
+      static_cast<uint32_t>(npu_data->instruction_buffer >> 32);
+  desc.instr_size = npu_data->instruction_buffer_size;
+  desc.marker1 = 2;
+  desc.selector = selector;
+  desc.selector_hi = selector_hi;
 
-  std::memcpy(descriptor_base + *descriptor_used, words, sizeof(words));
-  *descriptor_used += sizeof(words);
+  std::memcpy(descriptor_base + *descriptor_used, &desc, sizeof(desc));
+  *descriptor_used += sizeof(desc);
   return iree_ok_status();
 }
 
