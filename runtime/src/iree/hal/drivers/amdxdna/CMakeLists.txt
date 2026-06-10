@@ -45,6 +45,8 @@ iree_cc_library(
     direct_command_buffer.cc
     direct_command_buffer.h
     direct_command_buffer_internal.h
+    direct_command_buffer_planning.cc
+    direct_command_buffer_planning.h
     device.cc
     device_internal.h
     driver.cc
@@ -105,6 +107,20 @@ iree_cc_test(
     xclbin_util_test
   SRCS
     "xclbin_util_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    direct_command_buffer_planning_test
+  SRCS
+    "direct_command_buffer_planning_test.cc"
   DEPS
     iree::hal::drivers::amdxdna
     iree::base
