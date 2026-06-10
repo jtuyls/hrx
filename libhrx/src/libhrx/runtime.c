@@ -589,14 +589,10 @@ hrx_status_t hrx_cpu_device_get(int index, hrx_device_t* device) {
 //===----------------------------------------------------------------------===//
 
 hrx_status_t hrx_gpu_initialize(uint32_t flags) {
+  (void)flags;
   if (g_gpu.initialized) {
     return hrx_make_status(HRX_STATUS_ALREADY_EXISTS,
                            "GPU accelerator already initialized");
-  }
-  const uint32_t known_flags = HRX_GPU_INITIALIZE_FLAG_NONE;
-  if ((flags & ~known_flags) != 0) {
-    return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT,
-                           "unsupported hrx_gpu_initialize flags");
   }
 
 #ifndef HRX_HAS_ACCELERATOR_DRIVER

@@ -279,10 +279,6 @@ typedef struct hrx_executable_export_info_t {
 // GPU accelerator lifecycle
 //===----------------------------------------------------------------------===//
 
-typedef uint32_t hrx_gpu_initialize_flags_t;
-
-#define HRX_GPU_INITIALIZE_FLAG_NONE 0u
-
 HRX_API hrx_status_t hrx_gpu_initialize(uint32_t flags);
 HRX_API hrx_status_t hrx_gpu_shutdown(void);
 HRX_API hrx_status_t hrx_gpu_device_count(int* count);
