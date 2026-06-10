@@ -116,16 +116,18 @@ enum class iree_hal_amdxdna_native_context_image_type_t : uint8_t {
   xadx,
 };
 
+// A context image may carry more than one representation of the same context:
+// `type` is the primary format a backend must consume (Linux KMQ requires
+// `pdi`; Windows MCDM requires `xclbin`), but both spans can be populated at
+// once. The XADX path deliberately provides both: Windows builds the context
+// blob from the `xclbin` (AXLF) AND uses the extracted `pdi` for the command
+// aperture. This is why the DDI is not a single opaque image blob.
 struct iree_hal_amdxdna_native_context_image_t {
   iree_hal_amdxdna_native_context_image_type_t type =
       iree_hal_amdxdna_native_context_image_type_t::pdi;
   iree_const_byte_span_t pdi = {nullptr, 0};
   iree_const_byte_span_t xclbin = {nullptr, 0};
   iree_string_view_t kernel_name = {nullptr, 0};
-  uint32_t pdi_index = 0;
-  uint32_t xclbin_index = 0;
-  const void* platform_metadata = nullptr;
-  iree_host_size_t platform_metadata_length = 0;
 };
 
 struct iree_hal_amdxdna_native_cu_index_t {
