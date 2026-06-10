@@ -1,4 +1,4 @@
-// Copyright 2026 The IREE Authors
+// Copyright 2024 The IREE Authors
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -9,6 +9,8 @@
 #include <string.h>
 
 #include <memory>
+#include <mutex>
+#include <vector>
 
 #include "iree/hal/drivers/amdxdna/buffer.h"
 #include "iree/hal/drivers/amdxdna/util.h"
@@ -21,6 +23,8 @@ struct iree_hal_amdxdna_allocator {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
   iree_hal_amdxdna_native_device_t* native_device;
+  std::mutex cache_mutex;
+  std::vector<iree_hal_amdxdna_native_buffer_ptr> cached_buffers;
   IREE_STATISTICS(iree_hal_allocator_statistics_t statistics;)
 
   iree_hal_amdxdna_allocator(iree_allocator_t host_allocator,
@@ -34,6 +38,8 @@ struct iree_hal_amdxdna_allocator {
     IREE_TRACE_ZONE_END(z0);
   }
 };
+
+static constexpr size_t kAmdxdnaAllocatorCacheCapacity = 64;
 
 static iree_status_t iree_hal_amdxdna_allocator_unimplemented(
     const char* operation) {
@@ -55,25 +61,59 @@ static void iree_hal_amdxdna_allocator_query_statistics(
 #endif  // IREE_STATISTICS_ENABLE
 }
 
-static iree_status_t iree_hal_amdxdna_allocator_query_memory_heaps(
-    iree_hal_allocator_t* base_allocator, iree_host_size_t capacity,
-    iree_hal_allocator_memory_heap_t* heaps, iree_host_size_t* out_count) {
-  (void)base_allocator;
-  static constexpr iree_host_size_t kHeapCount = 1;
-  *out_count = kHeapCount;
-  if (capacity < kHeapCount) {
-    return iree_status_from_code(IREE_STATUS_OUT_OF_RANGE);
+static void iree_hal_amdxdna_allocator_release_cached_buffer(
+    void* user_data, iree_hal_buffer_t* base_buffer) {
+  auto* allocator = static_cast<iree_hal_amdxdna_allocator*>(user_data);
+  if (!allocator) return;
+  iree_hal_amdxdna_native_buffer_t* native_buffer =
+      iree_hal_amdxdna_buffer_steal_native_buffer(base_buffer);
+  if (native_buffer) {
+    iree_hal_amdxdna_native_buffer_ptr cached(native_buffer);
+    std::lock_guard<std::mutex> lock(allocator->cache_mutex);
+    if (allocator->cached_buffers.size() < kAmdxdnaAllocatorCacheCapacity) {
+      allocator->cached_buffers.push_back(std::move(cached));
+    }
   }
+  iree_hal_allocator_release(
+      reinterpret_cast<iree_hal_allocator_t*>(allocator));
+}
 
-  heaps[0] = {
-      .type =
-          IREE_HAL_MEMORY_TYPE_HOST_LOCAL | IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE,
-      .allowed_usage = IREE_HAL_BUFFER_USAGE_TRANSFER |
-                       IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE |
-                       IREE_HAL_BUFFER_USAGE_MAPPING,
-      .max_allocation_size = IREE_DEVICE_SIZE_MAX,
-      .min_alignment = 4,
-  };
+static iree_hal_buffer_release_callback_t
+iree_hal_amdxdna_allocator_make_release_callback(
+    iree_hal_amdxdna_allocator* allocator) {
+  iree_hal_allocator_retain(reinterpret_cast<iree_hal_allocator_t*>(allocator));
+  return iree_hal_buffer_release_callback_t{
+      iree_hal_amdxdna_allocator_release_cached_buffer, allocator};
+}
+
+static void iree_hal_amdxdna_allocator_drop_release_callback(
+    iree_hal_buffer_release_callback_t release_callback) {
+  if (release_callback.fn) {
+    iree_hal_allocator_release(
+        reinterpret_cast<iree_hal_allocator_t*>(release_callback.user_data));
+  }
+}
+
+static void iree_hal_amdxdna_allocator_trim_cache(
+    iree_hal_amdxdna_allocator* allocator) {
+  std::lock_guard<std::mutex> lock(allocator->cache_mutex);
+  allocator->cached_buffers.clear();
+}
+
+static iree_status_t iree_hal_amdxdna_allocator_take_cached_buffer(
+    iree_hal_amdxdna_allocator* allocator, iree_device_size_t allocation_size,
+    iree_hal_amdxdna_native_buffer_ptr* out_buffer) {
+  std::lock_guard<std::mutex> lock(allocator->cache_mutex);
+  for (size_t i = 0; i < allocator->cached_buffers.size(); ++i) {
+    iree_hal_amdxdna_native_buffer_t* candidate =
+        allocator->cached_buffers[i].get();
+    if (iree_hal_amdxdna_native_buffer_size(candidate) != allocation_size) {
+      continue;
+    }
+    *out_buffer = std::move(allocator->cached_buffers[i]);
+    allocator->cached_buffers.erase(allocator->cached_buffers.begin() + i);
+    return iree_ok_status();
+  }
   return iree_ok_status();
 }
 
@@ -124,6 +164,23 @@ iree_hal_amdxdna_allocator_query_buffer_compatibility(
   return compatibility;
 }
 
+static iree_status_t iree_hal_amdxdna_allocator_query_memory_heaps(
+    iree_hal_allocator_t* base_allocator, iree_host_size_t capacity,
+    iree_hal_allocator_memory_heap_t* heaps, iree_host_size_t* out_count) {
+  (void)base_allocator;
+  const iree_host_size_t count = 1;
+  if (out_count) *out_count = count;
+  if (capacity < count) {
+    return iree_status_from_code(IREE_STATUS_OUT_OF_RANGE);
+  }
+  heaps[0] = iree_hal_allocator_memory_heap_t{
+      IREE_HAL_MEMORY_TYPE_HOST_LOCAL | IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE,
+      IREE_HAL_BUFFER_USAGE_TRANSFER | IREE_HAL_BUFFER_USAGE_DISPATCH |
+          IREE_HAL_BUFFER_USAGE_MAPPING,
+      ~(iree_device_size_t)0, 4};
+  return iree_ok_status();
+}
+
 static iree_status_t iree_hal_amdxdna_allocator_allocate_buffer(
     iree_hal_allocator_t* base_allocator,
     const iree_hal_buffer_params_t* params, iree_device_size_t allocation_size,
@@ -147,22 +204,28 @@ static iree_status_t iree_hal_amdxdna_allocator_allocate_buffer(
 
   iree_hal_amdxdna_native_buffer_ptr native_buffer;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0,
-      iree_hal_amdxdna_native_device_alloc_buffer(
-          allocator->native_device, allocation_size,
-          iree_hal_amdxdna_native_buffer_type_t::host_only, &native_buffer));
+      z0, iree_hal_amdxdna_allocator_take_cached_buffer(
+              allocator, allocation_size, &native_buffer));
+  if (!native_buffer) {
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0,
+        iree_hal_amdxdna_native_device_alloc_buffer(
+            allocator->native_device, allocation_size,
+            iree_hal_amdxdna_native_buffer_type_t::host_only, &native_buffer));
+  }
   iree_hal_buffer_t* buffer = nullptr;
   const iree_hal_buffer_placement_t placement = {
-      .queue_affinity = params->queue_affinity ? params->queue_affinity
-                                               : IREE_HAL_QUEUE_AFFINITY_ANY,
-      .flags = IREE_HAL_BUFFER_PLACEMENT_FLAG_NONE,
-  };
+      nullptr,
+      params->queue_affinity ? params->queue_affinity
+                             : IREE_HAL_QUEUE_AFFINITY_ANY,
+      IREE_HAL_BUFFER_PLACEMENT_FLAG_NONE, 0};
+  iree_hal_buffer_release_callback_t release_callback =
+      iree_hal_amdxdna_allocator_make_release_callback(allocator);
   iree_status_t status = iree_hal_amdxdna_buffer_wrap(
       native_buffer.get(), placement, compat_params.type, compat_params.access,
       compat_params.usage, allocation_size,
       /*byte_offset=*/0, /*byte_length=*/allocation_size,
-      iree_hal_buffer_release_callback_null(), allocator->host_allocator,
-      &buffer);
+      release_callback, allocator->host_allocator, &buffer);
 
   if (iree_status_is_ok(status)) {
     IREE_STATISTICS(iree_hal_allocator_statistics_record_alloc(
@@ -170,7 +233,11 @@ static iree_status_t iree_hal_amdxdna_allocator_allocate_buffer(
     native_buffer.release();
     *out_buffer = buffer;
   } else {
-    iree_hal_buffer_release(buffer);
+    if (buffer) {
+      iree_hal_buffer_release(buffer);
+    } else {
+      iree_hal_amdxdna_allocator_drop_release_callback(release_callback);
+    }
   }
 
   IREE_TRACE_ZONE_END(z0);
@@ -205,10 +272,16 @@ iree_status_t iree_hal_amdxdna_allocator_create(
                                 reinterpret_cast<void**>(&allocator)));
   allocator =
       new (allocator) iree_hal_amdxdna_allocator(host_allocator, native_device);
+  iree_status_t status = iree_ok_status();
 
-  *out_allocator = reinterpret_cast<iree_hal_allocator_t*>(allocator);
+  if (iree_status_is_ok(status)) {
+    *out_allocator = reinterpret_cast<iree_hal_allocator_t*>(allocator);
+  } else {
+    iree_hal_allocator_release(
+        reinterpret_cast<iree_hal_allocator_t*>(allocator));
+  }
   IREE_TRACE_ZONE_END(z0);
-  return iree_ok_status();
+  return status;
 }
 
 static void iree_hal_amdxdna_allocator_destroy(
@@ -219,7 +292,10 @@ static void iree_hal_amdxdna_allocator_destroy(
   iree_hal_amdxdna_allocator* allocator = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
       base_allocator, iree_hal_amdxdna_allocator_vtable,
       iree_hal_amdxdna_allocator);
-  iree_allocator_free(allocator->host_allocator, allocator);
+  iree_allocator_t host_allocator = allocator->host_allocator;
+  iree_hal_amdxdna_allocator_trim_cache(allocator);
+  allocator->~iree_hal_amdxdna_allocator();
+  iree_allocator_free(host_allocator, allocator);
 
   IREE_TRACE_ZONE_END(z0);
 }
@@ -247,9 +323,10 @@ static iree_allocator_t iree_hal_amdxdna_allocator_host_allocator(
 
 static iree_status_t iree_hal_amdxdna_allocator_trim(
     iree_hal_allocator_t* base_allocator) {
-  (void)base_allocator;
-  // BOs are owned directly by HAL buffers and released immediately on buffer
-  // destruction; there is no allocator-side cache to trim.
+  iree_hal_amdxdna_allocator* allocator = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_allocator, iree_hal_amdxdna_allocator_vtable,
+      iree_hal_amdxdna_allocator);
+  iree_hal_amdxdna_allocator_trim_cache(allocator);
   return iree_ok_status();
 }
 
@@ -384,15 +461,14 @@ static iree_status_t iree_hal_amdxdna_allocator_virtual_memory_advise(
 
 namespace {
 const iree_hal_allocator_vtable_t iree_hal_amdxdna_allocator_vtable = {
-    .destroy = iree_hal_amdxdna_allocator_destroy,
-    .host_allocator = iree_hal_amdxdna_allocator_host_allocator,
-    .trim = iree_hal_amdxdna_allocator_trim,
-    .query_statistics = iree_hal_amdxdna_allocator_query_statistics,
-    .query_memory_heaps = iree_hal_amdxdna_allocator_query_memory_heaps,
-    .query_buffer_compatibility =
-        iree_hal_amdxdna_allocator_query_buffer_compatibility,
-    .allocate_buffer = iree_hal_amdxdna_allocator_allocate_buffer,
-    .deallocate_buffer = iree_hal_amdxdna_allocator_deallocate_buffer,
+    iree_hal_amdxdna_allocator_destroy,
+    iree_hal_amdxdna_allocator_host_allocator,
+    iree_hal_amdxdna_allocator_trim,
+    iree_hal_amdxdna_allocator_query_statistics,
+    iree_hal_amdxdna_allocator_query_memory_heaps,
+    iree_hal_amdxdna_allocator_query_buffer_compatibility,
+    iree_hal_amdxdna_allocator_allocate_buffer,
+    iree_hal_amdxdna_allocator_deallocate_buffer,
     // Stubs that return UNIMPLEMENTED. The XDNA kernel ABI has no
     // wrap-host-pointer / userptr ioctl (no equivalent of
     // hipHostRegister/cuMemHostRegister), so a real zero-copy import is not
@@ -405,25 +481,22 @@ const iree_hal_allocator_vtable_t iree_hal_amdxdna_allocator_vtable = {
     // binding. A real implementation would have to allocate a SHMEM BO and
     // memcpy host data into it (gives a dispatch-capable buffer at the cost
     // of one copy), or add a kernel userptr path (zero-copy, kernel work).
-    .import_buffer = iree_hal_amdxdna_allocator_import_buffer,
-    .export_buffer = iree_hal_amdxdna_allocator_export_buffer,
+    iree_hal_amdxdna_allocator_import_buffer,
+    iree_hal_amdxdna_allocator_export_buffer,
     // Virtual memory is not supported on XDNA. supports_virtual_memory
     // returns false so callers short-circuit before reaching the rest of
     // the VM vtable; the remaining slots are filled with UNIMPLEMENTED
     // stubs to keep the vtable complete (NULL fn pointers would SEGV any
     // caller that bypasses the supports check).
-    .supports_virtual_memory =
-        iree_hal_amdxdna_allocator_supports_virtual_memory,
-    .virtual_memory_query_granularity =
-        iree_hal_amdxdna_allocator_virtual_memory_query_granularity,
-    .virtual_memory_reserve = iree_hal_amdxdna_allocator_virtual_memory_reserve,
-    .virtual_memory_release = iree_hal_amdxdna_allocator_virtual_memory_release,
-    .physical_memory_allocate =
-        iree_hal_amdxdna_allocator_physical_memory_allocate,
-    .physical_memory_free = iree_hal_amdxdna_allocator_physical_memory_free,
-    .virtual_memory_map = iree_hal_amdxdna_allocator_virtual_memory_map,
-    .virtual_memory_unmap = iree_hal_amdxdna_allocator_virtual_memory_unmap,
-    .virtual_memory_protect = iree_hal_amdxdna_allocator_virtual_memory_protect,
-    .virtual_memory_advise = iree_hal_amdxdna_allocator_virtual_memory_advise,
+    iree_hal_amdxdna_allocator_supports_virtual_memory,
+    iree_hal_amdxdna_allocator_virtual_memory_query_granularity,
+    iree_hal_amdxdna_allocator_virtual_memory_reserve,
+    iree_hal_amdxdna_allocator_virtual_memory_release,
+    iree_hal_amdxdna_allocator_physical_memory_allocate,
+    iree_hal_amdxdna_allocator_physical_memory_free,
+    iree_hal_amdxdna_allocator_virtual_memory_map,
+    iree_hal_amdxdna_allocator_virtual_memory_unmap,
+    iree_hal_amdxdna_allocator_virtual_memory_protect,
+    iree_hal_amdxdna_allocator_virtual_memory_advise,
 };
 }

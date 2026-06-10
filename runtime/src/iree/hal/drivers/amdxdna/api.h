@@ -24,8 +24,10 @@ struct iree_hal_amdxdna_device_params {
   iree_string_view_t power_mode;
   // When true, batch each dispatch's commands (control-packet reconfig +
   // kernel exec) into a single ERT_CMD_CHAIN submitted with one issue/wait,
-  // removing the per-command host round-trip. Default false = the proven
-  // per-command ERT_START_CU path.
+  // removing the per-command host round-trip. Defaults to true (see
+  // iree_hal_amdxdna_device_options_initialize); requires executables compiled
+  // with the host patch table. Set to false for the per-command ERT_START_CU
+  // path.
   bool cmd_chain;
 };
 

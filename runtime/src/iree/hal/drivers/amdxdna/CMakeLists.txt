@@ -5,8 +5,9 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(FATAL_ERROR "amdxdna HAL backend is only implemented for Linux KMQ")
+if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32))
+  message(STATUS "amdxdna HAL backend is only implemented for Linux KMQ and Windows MCDM; skipping")
+  return()
 endif()
 
 iree_add_all_subdirs()
@@ -14,12 +15,21 @@ iree_add_all_subdirs()
 set(IREE_HAL_AMDXDNA_NATIVE_SRCS
   native.h
 )
-set(IREE_HAL_AMDXDNA_NATIVE_DEPS
-  iree::hal::drivers::amdxdna::shim::linux::kmq::shim-xdna
-)
-list(APPEND IREE_HAL_AMDXDNA_NATIVE_SRCS
-  native_linux_kmq.cc
-)
+if(WIN32)
+  set(IREE_HAL_AMDXDNA_NATIVE_DEPS
+    iree::hal::drivers::amdxdna::shim::windows::mcdm::kmt_api
+  )
+  list(APPEND IREE_HAL_AMDXDNA_NATIVE_SRCS
+    native_windows_mcdm.cc
+  )
+else()
+  set(IREE_HAL_AMDXDNA_NATIVE_DEPS
+    iree::hal::drivers::amdxdna::shim::linux::kmq::shim-xdna
+  )
+  list(APPEND IREE_HAL_AMDXDNA_NATIVE_SRCS
+    native_linux_kmq.cc
+  )
+endif()
 
 iree_cc_library(
   NAME
@@ -49,6 +59,8 @@ iree_cc_library(
     semaphore.cc
     semaphore.h
     util.h
+    xclbin_util.cc
+    xclbin_util.h
   DEPS
     iree::async
     iree::async::util::proactor_pool
@@ -63,6 +75,7 @@ iree_cc_library(
     iree::hal::utils::queue_host_call_emulation
     iree::hal::utils::resource_set
     iree::base::internal::flatcc::parsing
+    iree::schemas::amdxdna_xclbin_executable_def_c_fbs
     iree::schemas::pdi_executable_def_c_fbs
     ${IREE_HAL_AMDXDNA_NATIVE_DEPS}
   PUBLIC
@@ -175,6 +188,7 @@ iree_cc_test(
     iree::base
     iree::base::internal::flatcc::building
     iree::hal
+    iree::schemas::amdxdna_xclbin_executable_def_c_fbs
     iree::schemas::pdi_executable_def_c_fbs
     iree::testing::gtest
     iree::testing::gtest_main
@@ -192,6 +206,7 @@ iree_cc_test(
     iree::base
     iree::base::internal::flatcc::building
     iree::hal
+    iree::schemas::amdxdna_xclbin_executable_def_c_fbs
     iree::schemas::pdi_executable_def_c_fbs
     iree::testing::gtest
     iree::testing::gtest_main

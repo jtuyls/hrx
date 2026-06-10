@@ -67,6 +67,8 @@ struct iree_hal_amdxdna_native_command_t {
 
 namespace {
 
+constexpr size_t kMaxExecBoSize = 4096;
+
 std::string string_view_to_string(iree_string_view_t value) {
   return std::string(value.data, value.size);
 }
@@ -117,31 +119,15 @@ shim_xdna::power_mode to_shim_power_mode(
   return shim_xdna::power_mode::default_mode;
 }
 
-iree_hal_amdxdna_native_power_mode_t from_shim_power_mode(
-    shim_xdna::power_mode power_mode) {
-  switch (power_mode) {
-    case shim_xdna::power_mode::default_mode:
-      return iree_hal_amdxdna_native_power_mode_t::default_mode;
-    case shim_xdna::power_mode::low:
-      return iree_hal_amdxdna_native_power_mode_t::low;
-    case shim_xdna::power_mode::medium:
-      return iree_hal_amdxdna_native_power_mode_t::medium;
-    case shim_xdna::power_mode::high:
-      return iree_hal_amdxdna_native_power_mode_t::high;
-    case shim_xdna::power_mode::turbo:
-      return iree_hal_amdxdna_native_power_mode_t::turbo;
-  }
-  return iree_hal_amdxdna_native_power_mode_t::default_mode;
-}
-
 uint32_t to_shim_buffer_flags(iree_hal_amdxdna_native_buffer_type_t type) {
   switch (type) {
     case iree_hal_amdxdna_native_buffer_type_t::host_only:
-      return AMDXDNA_BO_FLAGS_HOST_ONLY;
+      return XCL_BO_FLAGS_HOST_ONLY;
     case iree_hal_amdxdna_native_buffer_type_t::cacheable:
-      return AMDXDNA_BO_FLAGS_CACHEABLE;
+    case iree_hal_amdxdna_native_buffer_type_t::instruction:
+      return XCL_BO_FLAGS_CACHEABLE;
   }
-  return AMDXDNA_BO_FLAGS_HOST_ONLY;
+  return XCL_BO_FLAGS_HOST_ONLY;
 }
 
 shim_xdna::direction to_shim_sync_direction(
@@ -160,11 +146,19 @@ uint32_t to_ert_opcode(iree_hal_amdxdna_native_command_opcode_t opcode) {
     case iree_hal_amdxdna_native_command_opcode_t::start_cu:
       return ERT_START_CU;
     case iree_hal_amdxdna_native_command_opcode_t::start_npu:
+    case iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf:
       return ERT_START_NPU;
     case iree_hal_amdxdna_native_command_opcode_t::command_chain:
       return ERT_CMD_CHAIN;
   }
   return ERT_START_CU;
+}
+
+uint32_t chain_slot_capacity(size_t exec_bo_size) {
+  const size_t header = offsetof(ert_packet, data) + sizeof(ert_cmd_chain_data);
+  return exec_bo_size > header
+             ? static_cast<uint32_t>((exec_bo_size - header) / sizeof(uint64_t))
+             : 1;
 }
 
 ert_packet* command_packet(iree_hal_amdxdna_native_command_t* command) {
@@ -249,29 +243,6 @@ iree_status_t iree_hal_amdxdna_native_resolve_device_options(
   return iree_ok_status();
 }
 
-iree_status_t iree_hal_amdxdna_native_query_device_identity(
-    const iree_hal_amdxdna_device_params* options, std::string* out_device_path,
-    std::string* out_arch) {
-  IREE_ASSERT_ARGUMENT(options);
-  IREE_ASSERT_ARGUMENT(out_device_path);
-  IREE_ASSERT_ARGUMENT(out_arch);
-  out_device_path->clear();
-  out_arch->clear();
-  std::filesystem::path device_path =
-      iree_string_view_is_empty(options->device_path)
-          ? shim_xdna::find_default_accel_device_path()
-          : std::filesystem::path(string_view_to_string(options->device_path));
-  if (::access(device_path.c_str(), R_OK | W_OK) != 0) {
-    const int saved_errno = errno;
-    return iree_make_status(iree_status_code_from_errno(saved_errno),
-                            "unable to access amdxdna device path '%s'",
-                            device_path.c_str());
-  }
-  *out_device_path = device_path.string();
-  *out_arch = shim_xdna::query_npu_arch();
-  return iree_ok_status();
-}
-
 iree_status_t iree_hal_amdxdna_native_device_create(
     const iree_hal_amdxdna_device_params* options,
     iree_allocator_t host_allocator,
@@ -314,19 +285,6 @@ void iree_hal_amdxdna_native_device_destroy(
   iree_allocator_free(host_allocator, device);
 }
 
-iree_status_t iree_hal_amdxdna_native_device_get_power_mode(
-    iree_hal_amdxdna_native_device_t* device,
-    iree_hal_amdxdna_native_power_mode_t* out_power_mode) {
-  IREE_ASSERT_ARGUMENT(device);
-  IREE_ASSERT_ARGUMENT(out_power_mode);
-  shim_xdna::power_mode power_mode = shim_xdna::power_mode::default_mode;
-  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_status_from_errno(
-      device->shim_device->get_power_mode(&power_mode),
-      "amdxdna get power mode failed"));
-  *out_power_mode = from_shim_power_mode(power_mode);
-  return iree_ok_status();
-}
-
 iree_status_t iree_hal_amdxdna_native_device_set_power_mode(
     iree_hal_amdxdna_native_device_t* device,
     iree_hal_amdxdna_native_power_mode_t power_mode) {
@@ -334,6 +292,80 @@ iree_status_t iree_hal_amdxdna_native_device_set_power_mode(
   return iree_hal_amdxdna_status_from_errno(
       device->shim_device->set_power_mode(to_shim_power_mode(power_mode)),
       "amdxdna set power mode failed");
+}
+
+bool iree_hal_amdxdna_native_device_supports_partial_elf_dispatch(
+    iree_hal_amdxdna_native_device_t* device) {
+  iree_hal_amdxdna_native_device_caps_t caps;
+  if (!iree_status_is_ok(
+          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
+    return false;
+  }
+  return (caps.dispatch_models &
+          IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_PARTIAL_ELF) != 0;
+}
+
+bool iree_hal_amdxdna_native_device_uses_npu_payload_dispatch(
+    iree_hal_amdxdna_native_device_t* device) {
+  iree_hal_amdxdna_native_device_caps_t caps;
+  if (!iree_status_is_ok(
+          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
+    return false;
+  }
+  return (caps.dispatch_models &
+          IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_START_NPU) != 0;
+}
+
+bool iree_hal_amdxdna_native_device_syncs_bindings_on_submit(
+    iree_hal_amdxdna_native_device_t* device) {
+  iree_hal_amdxdna_native_device_caps_t caps;
+  if (!iree_status_is_ok(
+          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
+    return false;
+  }
+  return caps.buffer_sync_model ==
+         iree_hal_amdxdna_native_buffer_sync_model_t::submit_syncs_bindings;
+}
+
+iree_hal_amdxdna_native_command_opcode_t
+iree_hal_amdxdna_native_device_dispatch_opcode(
+    iree_hal_amdxdna_native_device_t* device) {
+  iree_hal_amdxdna_native_device_caps_t caps;
+  if (!iree_status_is_ok(
+          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
+    return iree_hal_amdxdna_native_command_opcode_t::start_cu;
+  }
+  return caps.default_dispatch_opcode;
+}
+
+iree_status_t iree_hal_amdxdna_native_device_query_caps(
+    iree_hal_amdxdna_native_device_t* device,
+    iree_hal_amdxdna_native_device_caps_t* out_caps) {
+  IREE_ASSERT_ARGUMENT(device);
+  IREE_ASSERT_ARGUMENT(out_caps);
+  iree_hal_amdxdna_native_device_caps_t caps;
+  caps.ddi_version = 1;
+  caps.max_effective_queues = 1;
+  caps.max_command_chain_slots = chain_slot_capacity(kMaxExecBoSize);
+  caps.context_image_models =
+      IREE_HAL_AMDXDNA_NATIVE_CONTEXT_IMAGE_MODEL_PDI;
+  caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_START_CU |
+                         IREE_HAL_AMDXDNA_NATIVE_DISPATCH_MODEL_COMMAND_CHAIN;
+  caps.buffer_sync_model =
+      iree_hal_amdxdna_native_buffer_sync_model_t::caller_syncs_bindings;
+  caps.completion_models =
+      IREE_HAL_AMDXDNA_NATIVE_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
+      IREE_HAL_AMDXDNA_NATIVE_COMPLETION_MODEL_NATIVE_FENCE;
+  caps.supports_command_chain = true;
+  caps.supports_submit_many = true;
+  caps.supports_async_submit = false;
+  caps.supports_external_buffer_import = false;
+  caps.supports_external_buffer_export = false;
+  caps.supports_real_multi_queue = false;
+  caps.default_dispatch_opcode =
+      iree_hal_amdxdna_native_command_opcode_t::start_cu;
+  *out_caps = caps;
+  return iree_ok_status();
 }
 
 iree_status_t iree_hal_amdxdna_native_device_alloc_buffer(
@@ -355,12 +387,20 @@ iree_status_t iree_hal_amdxdna_native_device_alloc_buffer(
 }
 
 iree_status_t iree_hal_amdxdna_native_device_create_context(
-    iree_hal_amdxdna_native_device_t* device, iree_const_byte_span_t pdi,
-    iree_string_view_t kernel_name,
+    iree_hal_amdxdna_native_device_t* device,
+    const iree_hal_amdxdna_native_context_image_t* image,
     iree_hal_amdxdna_native_context_t** out_context) {
   IREE_ASSERT_ARGUMENT(device);
+  IREE_ASSERT_ARGUMENT(image);
   IREE_ASSERT_ARGUMENT(out_context);
   *out_context = nullptr;
+  if (IREE_UNLIKELY(image->type !=
+                    iree_hal_amdxdna_native_context_image_type_t::pdi)) {
+    return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                            "amdxdna Linux KMQ context creation requires a "
+                            "PDI context image");
+  }
+  iree_const_byte_span_t pdi = image->pdi;
   if (IREE_UNLIKELY(pdi.data_length != 0 && !pdi.data)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "amdxdna native context PDI data is NULL");
@@ -371,8 +411,9 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
     pdi_vector.assign(pdi.data, pdi.data + pdi.data_length);
   }
   std::string kernel_name_string;
-  if (!iree_string_view_is_empty(kernel_name)) {
-    kernel_name_string.assign(kernel_name.data, kernel_name.size);
+  if (!iree_string_view_is_empty(image->kernel_name)) {
+    kernel_name_string.assign(image->kernel_name.data,
+                              image->kernel_name.size);
   }
 
   std::unique_ptr<shim_xdna::hw_ctx> shim_context;
@@ -386,6 +427,19 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   return iree_ok_status();
 }
 
+iree_status_t iree_hal_amdxdna_native_device_create_context(
+    iree_hal_amdxdna_native_device_t* device, iree_const_byte_span_t pdi,
+    iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    iree_hal_amdxdna_native_context_t** out_context) {
+  (void)xclbin;
+  iree_hal_amdxdna_native_context_image_t image;
+  image.type = iree_hal_amdxdna_native_context_image_type_t::pdi;
+  image.pdi = pdi;
+  image.kernel_name = kernel_name;
+  return iree_hal_amdxdna_native_device_create_context(device, &image,
+                                                       out_context);
+}
+
 void iree_hal_amdxdna_native_context_destroy(
     iree_hal_amdxdna_native_context_t* context) {
   delete context;
@@ -393,23 +447,16 @@ void iree_hal_amdxdna_native_context_destroy(
 
 iree_status_t iree_hal_amdxdna_native_device_query_chain_max_slots(
     iree_hal_amdxdna_native_device_t* device, uint32_t* out_max_slots) {
+  IREE_ASSERT_ARGUMENT(device);
   IREE_ASSERT_ARGUMENT(out_max_slots);
-  iree_hal_amdxdna_native_command_ptr command;
-  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_command_create(
-      device, iree_hal_amdxdna_native_command_opcode_t::command_chain,
-      &command));
-  const size_t capacity = command->kernel->get_exec_buf_bo()->size();
-  const size_t header = offsetof(ert_packet, data) + sizeof(ert_cmd_chain_data);
-  *out_max_slots =
-      capacity > header
-          ? static_cast<uint32_t>((capacity - header) / sizeof(uint64_t))
-          : 1;
+  iree_hal_amdxdna_native_device_caps_t caps;
+  IREE_RETURN_IF_ERROR(
+      iree_hal_amdxdna_native_device_query_caps(device, &caps));
+  *out_max_slots = caps.max_command_chain_slots;
   return iree_ok_status();
 }
 
-size_t iree_hal_amdxdna_native_command_arg_binding_capacity() {
-  return shim_xdna::kMaxArgBosPerCommand;
-}
+size_t iree_hal_amdxdna_native_command_arg_binding_capacity() { return 1024; }
 
 void iree_hal_amdxdna_native_buffer_destroy(
     iree_hal_amdxdna_native_buffer_t* buffer) {
@@ -461,6 +508,15 @@ iree_status_t iree_hal_amdxdna_native_buffer_sync_all(
       "amdxdna native buffer sync failed");
 }
 
+iree_status_t iree_hal_amdxdna_native_buffer_ensure_allocated(
+    iree_hal_amdxdna_native_buffer_t* buffer) {
+  if (IREE_UNLIKELY(!buffer || !buffer->bo)) {
+    return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                            "amdxdna native buffer is not allocated");
+  }
+  return iree_ok_status();
+}
+
 uint64_t iree_hal_amdxdna_native_buffer_device_address(
     iree_hal_amdxdna_native_buffer_t* buffer) {
   return buffer->bo->get_paddr();
@@ -493,6 +549,11 @@ iree_status_t iree_hal_amdxdna_native_context_open_cu(
 iree_hal_amdxdna_native_queue_t* iree_hal_amdxdna_native_context_queue(
     iree_hal_amdxdna_native_context_t* context) {
   return &context->queue;
+}
+
+uint64_t iree_hal_amdxdna_native_queue_exec_command_count(
+    iree_hal_amdxdna_native_queue_t* queue) {
+  return queue->hwq->exec_cmd_count();
 }
 
 iree_status_t iree_hal_amdxdna_native_command_create(
@@ -528,7 +589,9 @@ iree_status_t iree_hal_amdxdna_native_command_set_cu_index(
 
 iree_status_t iree_hal_amdxdna_native_command_add_control_buffer(
     iree_hal_amdxdna_native_command_t* command,
-    iree_hal_amdxdna_native_buffer_t* control_buffer) {
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size) {
+  (void)control_buffer_size;
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->add_ctrl_bo(*control_buffer->bo),
       "amdxdna native command control-buffer argument failed");
@@ -575,6 +638,33 @@ iree_status_t iree_hal_amdxdna_native_command_bind_buffer(
                                                   static_cast<size_t>(offset),
                                                   static_cast<size_t>(size)),
       "amdxdna native command buffer binding failed");
+}
+
+iree_status_t iree_hal_amdxdna_native_command_reset_bound_buffers(
+    iree_hal_amdxdna_native_command_t* command) {
+  (void)command;
+  return iree_make_status(
+      IREE_STATUS_UNIMPLEMENTED,
+      "amdxdna Linux KMQ native commands do not support rebinding prepared "
+      "command BO tables");
+}
+
+iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
+    iree_hal_amdxdna_native_command_t* command) {
+  (void)command;
+  return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_native_command_mark_code_dirty(
+    iree_hal_amdxdna_native_command_t* command) {
+  (void)command;
+  return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_native_command_mark_chain_code_dirty(
+    iree_hal_amdxdna_native_command_t* command) {
+  (void)command;
+  return iree_ok_status();
 }
 
 iree_status_t iree_hal_amdxdna_native_command_prepare_chain(
@@ -657,4 +747,15 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_and_wait(
   return iree_make_status(
       IREE_STATUS_INTERNAL, "amdxdna %.*s did not complete: ert state %u",
       static_cast<int>(label.size), label.data, packet->state);
+}
+
+iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count, iree_string_view_t label) {
+  for (iree_host_size_t i = 0; i < command_count; ++i) {
+    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_queue_submit_and_wait(
+        queue, commands[i], label));
+  }
+  return iree_ok_status();
 }

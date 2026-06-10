@@ -30,7 +30,7 @@ void iree_hal_amdxdna_event_destroy(iree_hal_event_t* base_event) {
 }
 
 const iree_hal_event_vtable_t iree_hal_amdxdna_event_vtable = {
-    .destroy = iree_hal_amdxdna_event_destroy,
+    iree_hal_amdxdna_event_destroy,
 };
 
 }  // namespace

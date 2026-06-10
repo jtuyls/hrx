@@ -122,11 +122,9 @@ static iree_status_t iree_hal_amdxdna_nop_executable_cache_prepare_executable(
 namespace {
 const iree_hal_executable_cache_vtable_t
     iree_hal_amdxdna_nop_executable_cache_vtable = {
-        .destroy = iree_hal_amdxdna_nop_executable_cache_destroy,
-        .infer_format = iree_hal_amdxdna_nop_executable_cache_infer_format,
-        .can_prepare_format =
-            iree_hal_amdxdna_nop_executable_cache_can_prepare_format,
-        .prepare_executable =
-            iree_hal_amdxdna_nop_executable_cache_prepare_executable,
+        iree_hal_amdxdna_nop_executable_cache_destroy,
+        iree_hal_amdxdna_nop_executable_cache_infer_format,
+        iree_hal_amdxdna_nop_executable_cache_can_prepare_format,
+        iree_hal_amdxdna_nop_executable_cache_prepare_executable,
 };
 }  // namespace

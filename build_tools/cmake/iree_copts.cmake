@@ -398,12 +398,18 @@ if(NOT IREE_ARCH STREQUAL "wasm_32")
   )
 endif()
 
+set(_IREE_MSVC_NATVIS_LINKOPTS)
+if(EXISTS "${IREE_ROOT_DIR}/runtime/iree.natvis")
+  list(APPEND _IREE_MSVC_NATVIS_LINKOPTS
+    "-natvis:${IREE_ROOT_DIR}/runtime/iree.natvis"
+  )
+endif()
 iree_select_compiler_opts(IREE_DEFAULT_LINKOPTS
   CLANG_OR_GCC
     ${_IREE_MATH_LINKOPTS}
     ${_IREE_LOGGING_LINKOPTS}
   MSVC
-    "-natvis:${IREE_ROOT_DIR}/runtime/iree.natvis"
+    ${_IREE_MSVC_NATVIS_LINKOPTS}
 )
 
 if(EMSCRIPTEN AND IREE_EXTERNAL_WEBGPU_HAL_DRIVER_FOUND)

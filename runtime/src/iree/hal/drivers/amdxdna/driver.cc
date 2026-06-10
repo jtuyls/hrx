@@ -192,25 +192,20 @@ static iree_status_t iree_hal_amdxdna_driver_query_available_devices(
   iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
       base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
 
-  // Report the accessible device-node path as the device's stable identifier
-  // and the NPU architecture as its name. Both come from filesystem / sysfs
-  // reads; the device is not opened.
-  std::string device_path;
-  std::string arch;
-  iree_status_t status = iree_hal_amdxdna_native_query_device_identity(
-      &driver->options.default_device_params, &device_path, &arch);
-  if (iree_status_code(status) == IREE_STATUS_NOT_FOUND) {
-    iree_status_ignore(status);
-    IREE_TRACE_ZONE_END(z0);
-    return iree_ok_status();
+  // Report the configured logical device without opening the native driver.
+  // Platform-specific discovery can be added under the native layer later; the
+  // HAL driver keeps this path OS-neutral.
+  iree_string_view_t configured_path =
+      driver->options.default_device_params.device_path;
+  if (iree_string_view_is_empty(configured_path)) {
+    configured_path = IREE_SV("amdxdna://default");
   }
-  IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, status);
-  if (arch.empty()) arch = "amdxdna";
+  iree_string_view_t arch = IREE_SV("amdxdna");
 
   // Single allocation: the info struct followed by its path and name bytes, so
   // the caller frees everything with one iree_allocator_free.
   iree_host_size_t total_size =
-      sizeof(iree_hal_device_info_t) + device_path.size() + arch.size();
+      sizeof(iree_hal_device_info_t) + configured_path.size + arch.size;
   iree_hal_device_info_t* device_infos = nullptr;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, total_size,
@@ -219,11 +214,11 @@ static iree_status_t iree_hal_amdxdna_driver_query_available_devices(
   char* storage =
       reinterpret_cast<char*>(device_infos) + sizeof(iree_hal_device_info_t);
   device_infos[0].device_id = IREE_HAL_AMDXDNA_DEVICE_ID_DEFAULT;
-  memcpy(storage, device_path.data(), device_path.size());
-  device_infos[0].path = iree_make_string_view(storage, device_path.size());
-  storage += device_path.size();
-  memcpy(storage, arch.data(), arch.size());
-  device_infos[0].name = iree_make_string_view(storage, arch.size());
+  memcpy(storage, configured_path.data, configured_path.size);
+  device_infos[0].path = iree_make_string_view(storage, configured_path.size);
+  storage += configured_path.size;
+  memcpy(storage, arch.data, arch.size);
+  device_infos[0].name = iree_make_string_view(storage, arch.size);
 
   *out_device_info_count = 1;
   *out_device_infos = device_infos;
@@ -319,10 +314,10 @@ static iree_status_t iree_hal_amdxdna_driver_create_device_by_path(
 
 namespace {
 const iree_hal_driver_vtable_t iree_hal_amdxdna_driver_vtable = {
-    .destroy = iree_hal_amdxdna_driver_destroy,
-    .query_available_devices = iree_hal_amdxdna_driver_query_available_devices,
-    .dump_device_info = iree_hal_amdxdna_driver_dump_device_info,
-    .create_device_by_id = iree_hal_amdxdna_driver_create_device_by_id,
-    .create_device_by_path = iree_hal_amdxdna_driver_create_device_by_path,
+    iree_hal_amdxdna_driver_destroy,
+    iree_hal_amdxdna_driver_query_available_devices,
+    iree_hal_amdxdna_driver_dump_device_info,
+    iree_hal_amdxdna_driver_create_device_by_id,
+    iree_hal_amdxdna_driver_create_device_by_path,
 };
 }

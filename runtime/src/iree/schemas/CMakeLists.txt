@@ -101,6 +101,19 @@ flatbuffer_c_library(
 
 flatbuffer_c_library(
   NAME
+    amdxdna_xclbin_executable_def_c_fbs
+  SRCS
+    "amdxdna_xclbin_executable_def.fbs"
+  FLATCC_ARGS
+    "--reader"
+    "--builder"
+    "--verifier"
+    "--json"
+  PUBLIC
+)
+
+flatbuffer_c_library(
+  NAME
     metal_executable_def_c_fbs
   SRCS
     "metal_executable_def.fbs"

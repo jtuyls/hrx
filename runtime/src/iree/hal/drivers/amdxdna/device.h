@@ -1,4 +1,4 @@
-// Copyright 2026 The IREE Authors
+// Copyright 2024 The IREE Authors
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -10,16 +10,17 @@
 #include <atomic>
 #include <cstdint>
 
-#include "iree/base/internal/arena.h"
-#include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/async_queue.h"
 #include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/base/internal/arena.h"
+#include "iree/hal/api.h"
 
 struct iree_async_proactor_pool_t;
 struct iree_async_proactor_t;
+struct iree_hal_amdxdna_device_chain_command_cache_t;
 struct iree_hal_amdxdna_device_context_cache_t;
-
+struct iree_hal_amdxdna_device_single_command_cache_t;
 struct iree_hal_amdxdna_device {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
@@ -58,12 +59,21 @@ struct iree_hal_amdxdna_device {
   iree_async_axis_t frontier_axis;
 
   iree_hal_amdxdna_native_device_t* native_device;
+  iree_hal_amdxdna_native_device_caps_t native_caps;
   // When true, dispatches are submitted as a single ERT_CMD_CHAIN instead of
   // per-command issue/wait (see iree_hal_amdxdna_device_params::cmd_chain).
   bool cmd_chain;
   // Native hardware-context cache for control-packet bootstrap PDIs.
   // Implementation-private so HAL-facing code does not expose STL maps/locks.
   iree_hal_amdxdna_device_context_cache_t* pdi_context_cache;
+  // Native parent-chain cache for module-style command chains.
+  // Implementation-private and device-owned so cached command BOs cannot outlive
+  // the native device/context they belong to.
+  iree_hal_amdxdna_device_chain_command_cache_t* chain_command_cache;
+  // Native single-dispatch cache for module-style commands.
+  // This owns prepared command/control BOs keyed by the device-visible dispatch
+  // signature and is destroyed before the native device.
+  iree_hal_amdxdna_device_single_command_cache_t* single_command_cache;
   // Maximum slots that fit in one ERT_CMD_CHAIN exec BO (constant per device).
   // Lazily computed on first flush; the chain flush splits into this many
   // slots per submitted chain. Atomic because a multi-worker submission path
@@ -73,10 +83,9 @@ struct iree_hal_amdxdna_device {
   // safe, but we still need atomic load/store to avoid torn reads on the
   // 0 -> max sentinel transition.
   std::atomic<uint32_t> chain_max_slots{0};
-  // True when creation successfully changed hardware power mode and teardown
-  // should best-effort restore the previous mode.
-  bool power_mode_restore_pending;
-  iree_hal_amdxdna_native_power_mode_t previous_power_mode;
+  // True when creation successfully changed hardware power mode away from the
+  // default and teardown should best-effort restore the default.
+  bool power_mode_applied;
   // should come last; see the definition of total_size below in
   // iree_hal_amdxdna_device_create
   iree_string_view_t identifier;

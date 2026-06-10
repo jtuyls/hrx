@@ -27,9 +27,20 @@ iree_status_t iree_hal_amdxdna_buffer_invalidate_range(
     iree_hal_buffer_t* base_buffer, iree_device_size_t local_byte_offset,
     iree_device_size_t local_byte_length);
 
+iree_status_t iree_hal_amdxdna_buffer_flush_range(
+    iree_hal_buffer_t* base_buffer, iree_device_size_t local_byte_offset,
+    iree_device_size_t local_byte_length);
+
+iree_hal_amdxdna_native_buffer_t* iree_hal_amdxdna_buffer_steal_native_buffer(
+    iree_hal_buffer_t* base_buffer);
+
 // Returns true if queue_dealloca has fired on this buffer and subsequent
 // queue ops should fail with FAILED_PRECONDITION/INVALID_ARGUMENT.
 bool iree_hal_amdxdna_buffer_is_deallocated(iree_hal_buffer_t* base_buffer);
+
+// Marks the buffer as allocated. Called after allocator reuse to reset the
+// deallocation marker on a recycled HAL/native buffer pair.
+void iree_hal_amdxdna_buffer_mark_allocated(iree_hal_buffer_t* base_buffer);
 
 // Marks the buffer as deallocated. Called by the queue_dealloca async task
 // after its wait_semaphore_list is satisfied. Idempotent.

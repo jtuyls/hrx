@@ -80,7 +80,6 @@ static iree_status_t iree_hal_amdxdna_driver_parse_flags(
                 builder,
                 iree_make_string_pair(key_amdxdna_power_mode, power_mode)));
   }
-
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }

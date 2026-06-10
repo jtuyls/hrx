@@ -383,7 +383,8 @@ static void hrx_debug_print_iree_status(const char* label,
 
 #ifdef HRX_HAS_IREE_AMDGPU_DRIVER
 static hrx_status_t hrx_create_iree_amdgpu_driver(
-    iree_allocator_t alloc, iree_hal_driver_t** out_driver) {
+    iree_allocator_t alloc, uint32_t flags, iree_hal_driver_t** out_driver) {
+  (void)flags;
   iree_status_t status = iree_hal_amdgpu_driver_module_register(
       iree_hal_driver_registry_default());
   if (iree_status_is_already_exists(status)) {
@@ -411,7 +412,7 @@ static hrx_status_t hrx_create_iree_amdgpu_driver(
 
 #ifdef HRX_HAS_IREE_AMDXDNA_DRIVER
 static hrx_status_t hrx_create_iree_amdxdna_driver(
-    iree_allocator_t alloc, iree_hal_driver_t** out_driver) {
+    iree_allocator_t alloc, uint32_t flags, iree_hal_driver_t** out_driver) {
   iree_status_t status = iree_hal_amdxdna_driver_module_register(
       iree_hal_driver_registry_default());
   if (iree_status_is_already_exists(status)) {
@@ -425,6 +426,8 @@ static hrx_status_t hrx_create_iree_amdxdna_driver(
 
   struct iree_hal_amdxdna_driver_options driver_options;
   iree_hal_amdxdna_driver_options_initialize(&driver_options);
+  driver_options.default_device_params.cmd_chain =
+      (flags & HRX_GPU_INITIALIZE_FLAG_COMMAND_CHAINING) != 0;
 
   iree_hal_driver_t* driver = NULL;
   status = iree_hal_amdxdna_driver_create(iree_make_cstring_view("amdxdna"),
@@ -445,7 +448,7 @@ static hrx_status_t hrx_create_iree_amdxdna_driver(
 // preference when HRX_GPU_DRIVER is unset.
 typedef struct hrx_accelerator_driver_t {
   const char* name;
-  hrx_status_t (*create)(iree_allocator_t alloc,
+  hrx_status_t (*create)(iree_allocator_t alloc, uint32_t flags,
                          iree_hal_driver_t** out_driver);
 } hrx_accelerator_driver_t;
 
@@ -586,10 +589,14 @@ hrx_status_t hrx_cpu_device_get(int index, hrx_device_t* device) {
 //===----------------------------------------------------------------------===//
 
 hrx_status_t hrx_gpu_initialize(uint32_t flags) {
-  (void)flags;
   if (g_gpu.initialized) {
     return hrx_make_status(HRX_STATUS_ALREADY_EXISTS,
                            "GPU accelerator already initialized");
+  }
+  const uint32_t known_flags = HRX_GPU_INITIALIZE_FLAG_COMMAND_CHAINING;
+  if ((flags & ~known_flags) != 0) {
+    return hrx_make_status(HRX_STATUS_INVALID_ARGUMENT,
+                           "unsupported hrx_gpu_initialize flags");
   }
 
 #ifndef HRX_HAS_ACCELERATOR_DRIVER
@@ -614,7 +621,7 @@ hrx_status_t hrx_gpu_initialize(uint32_t flags) {
   iree_allocator_t alloc = g_shared.host_allocator;
 
   iree_hal_driver_t* driver = NULL;
-  status = driver_desc->create(alloc, &driver);
+  status = driver_desc->create(alloc, flags, &driver);
   if (!hrx_status_is_ok(status)) {
     hrx_release_shared_state();
     return status;

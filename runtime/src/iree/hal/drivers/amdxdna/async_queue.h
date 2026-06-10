@@ -44,6 +44,11 @@ void iree_hal_amdxdna_async_queue_set_frontier(
     iree_hal_amdxdna_async_queue_t* queue,
     iree_async_frontier_tracker_t* tracker, iree_async_axis_t axis);
 
+// Advances the queue frontier once for an operation completed inline on the
+// caller thread. The worker path performs the same update after async ops.
+void iree_hal_amdxdna_async_queue_advance_frontier(
+    iree_hal_amdxdna_async_queue_t* queue);
+
 // Stops the worker, drains pending ops, and frees the queue. Pending wait
 // timepoints are cancelled with IREE_STATUS_CANCELLED; retained_resources are
 // still released. Synchronous: blocks until the worker has joined.

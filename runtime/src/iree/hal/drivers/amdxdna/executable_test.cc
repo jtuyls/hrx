@@ -233,32 +233,66 @@ TEST(ExecutableTest, ParsesSharedPdiAndRunDefinitions) {
 
   const auto& entry0 = executable->entry_points[0];
   EXPECT_EQ(entry0.kernel_name, "entry0");
-  EXPECT_EQ(entry0.pdi_index, 0);
   EXPECT_EQ(entry0.pdi, std::vector<uint8_t>({0x50, 0x44, 0x49, 0x00}));
-  ASSERT_EQ(entry0.runs.size(), 2u);
-  EXPECT_EQ(entry0.runs[0].control_code, std::vector<uint32_t>({10, 11}));
-  EXPECT_EQ(entry0.runs[0].data_payload,
+  EXPECT_TRUE(entry0.xclbin.empty());
+  ASSERT_EQ(entry0.asm_inst_runlist.size(), 2u);
+  ASSERT_EQ(entry0.reconf_data_runlist.size(), 1u);
+  ASSERT_EQ(entry0.patch_runlist.size(), 2u);
+  EXPECT_EQ(entry0.asm_inst_runlist[0], std::vector<uint32_t>({10, 11}));
+  EXPECT_EQ(entry0.reconf_data_runlist[0],
             std::vector<uint32_t>({100, 101, 102}));
-  EXPECT_EQ(entry0.runs[0].patch_table, std::vector<uint32_t>({0, 0, 4}));
-  EXPECT_EQ(entry0.runs[1].control_code, std::vector<uint32_t>({20, 21}));
-  EXPECT_TRUE(entry0.runs[1].data_payload.empty());
-  EXPECT_EQ(entry0.runs[1].patch_table,
+  EXPECT_EQ(entry0.patch_runlist[0], std::vector<uint32_t>({0, 0, 4}));
+  EXPECT_EQ(entry0.asm_inst_runlist[1], std::vector<uint32_t>({20, 21}));
+  EXPECT_EQ(entry0.patch_runlist[1],
             std::vector<uint32_t>({8, 1, 0, 12, 2, 16}));
 
   const auto& shared_pdi = executable->entry_points[1];
   EXPECT_EQ(shared_pdi.kernel_name, "shared_pdi");
-  EXPECT_EQ(shared_pdi.pdi_index, 0);
   EXPECT_EQ(shared_pdi.pdi, entry0.pdi);
-  ASSERT_EQ(shared_pdi.runs.size(), 1u);
-  EXPECT_EQ(shared_pdi.runs[0].control_code, std::vector<uint32_t>({30}));
+  EXPECT_TRUE(shared_pdi.xclbin.empty());
+  ASSERT_EQ(shared_pdi.asm_inst_runlist.size(), 1u);
+  EXPECT_TRUE(shared_pdi.reconf_data_runlist.empty());
+  EXPECT_EQ(shared_pdi.asm_inst_runlist[0], std::vector<uint32_t>({30}));
 
   const auto& reuse_context = executable->entry_points[2];
   EXPECT_EQ(reuse_context.kernel_name, "reuse_context");
-  EXPECT_EQ(reuse_context.pdi_index, -1);
   EXPECT_TRUE(reuse_context.pdi.empty());
-  ASSERT_EQ(reuse_context.runs.size(), 1u);
-  EXPECT_EQ(reuse_context.runs[0].control_code,
+  EXPECT_TRUE(reuse_context.xclbin.empty());
+  ASSERT_EQ(reuse_context.asm_inst_runlist.size(), 1u);
+  EXPECT_TRUE(reuse_context.reconf_data_runlist.empty());
+  EXPECT_EQ(reuse_context.asm_inst_runlist[0],
             std::vector<uint32_t>({40, 41}));
+
+  EXPECT_EQ(iree_hal_executable_function_count(base_executable), 3u);
+  iree_hal_executable_function_info_t function_info;
+  IREE_ASSERT_OK(iree_hal_executable_function_info(
+      base_executable, iree_hal_executable_function_from_index(1),
+      &function_info));
+  EXPECT_TRUE(iree_string_view_equal(function_info.name, IREE_SV("shared_pdi")));
+  EXPECT_EQ(function_info.constant_count, 0u);
+  EXPECT_EQ(function_info.binding_count, 0u);
+  EXPECT_EQ(function_info.parameter_count, 0u);
+  EXPECT_EQ(function_info.workgroup_size[0], 1u);
+  EXPECT_EQ(function_info.workgroup_size[1], 1u);
+  EXPECT_EQ(function_info.workgroup_size[2], 1u);
+  iree_hal_executable_function_parameter_t parameters[1];
+  IREE_ASSERT_OK(iree_hal_executable_function_parameters(
+      base_executable, iree_hal_executable_function_from_index(1),
+      IREE_ARRAYSIZE(parameters), parameters));
+
+  iree_hal_executable_function_t function =
+      iree_hal_executable_function_invalid();
+  IREE_ASSERT_OK(iree_hal_executable_lookup_function_by_name(
+      base_executable, IREE_SV("reuse_context"), &function));
+  EXPECT_EQ(iree_hal_executable_function_index(function), 2u);
+
+  iree_hal_executable_function_t missing_function =
+      iree_hal_executable_function_invalid();
+  iree_status_t missing_status = iree_hal_executable_lookup_function_by_name(
+      base_executable, IREE_SV("missing"), &missing_function);
+  EXPECT_EQ(iree_status_code(missing_status), IREE_STATUS_NOT_FOUND);
+  iree_status_free(missing_status);
+  EXPECT_FALSE(iree_hal_executable_function_is_valid(missing_function));
 
   iree_hal_executable_release(base_executable);
 }
