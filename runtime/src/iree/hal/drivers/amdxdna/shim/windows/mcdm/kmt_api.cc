@@ -529,7 +529,14 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
   constexpr uint64_t kPathBSubmitPrivatePrefixSize = 0x68;
   uint64_t requested_size = std::max<uint64_t>(size, 1);
   if (kind == BufferKind::execbuf) {
-    requested_size += kPathBSubmitPrivatePrefixSize;
+    // Match XRT exactly: it allocates a full 4 KiB command page + the 0x68
+    // prefix (0x1068, 8 KiB aligned) for every exec BO, so each runlist BO
+    // lands on its own page pair. We were allocating only the exact runlist
+    // bytes (~0x148, single 4 KiB page), packing multiple parents' exec BOs
+    // into one coherence granule and racing the firmware on multi-parent
+    // re-runs. The HAL still sees only the logical command capacity.
+    requested_size =
+        std::max<uint64_t>(requested_size, 0x1000) + kPathBSubmitPrivatePrefixSize;
   }
   uint64_t aligned_size = AlignUpToPage(requested_size);
   uint64_t size_pages = aligned_size / 4096;
@@ -1812,6 +1819,9 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
     if (out_error) *out_error = "WaitForPathBSubmits called without commands";
     return false;
   }
+  // Match XRT runlist semantics: wait for the final parent chunk. In-order HWQ
+  // execution means earlier parent chunks have retired when the last fence is
+  // reached. Completion state for each parent is still checked below.
   PathBPendingSubmit& last = pending[pending_count - 1];
   if (!WaitForHwQueueFenceCpu(
           api, device, *context, last.fence_id,

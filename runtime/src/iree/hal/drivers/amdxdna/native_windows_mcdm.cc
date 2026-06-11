@@ -350,6 +350,8 @@ struct iree_hal_amdxdna_native_command_t {
 iree_status_t materialize_deferred_instruction_buffer(
     iree_hal_amdxdna_native_context_t* context,
     iree_hal_amdxdna_native_buffer_t* buffer);
+iree_status_t materialize_deferred_buffer(
+    iree_hal_amdxdna_native_buffer_t* buffer);
 
 namespace {
 
@@ -1239,7 +1241,7 @@ iree_status_t sync_prepared_pathb_chain_batch(
   mcdm::CommandAperture& aperture = queue->context->command_aperture;
   flush_host_writes_to_mcdm();
   std::string error;
-  const bool use_sync9 = command_count > 1;
+  const bool use_sync9 = code_bytes != 0;
   if (use_sync9) {
     size_t last_sync_offset = 0;
     auto submit_sync9 = [&](size_t end_offset) -> iree_status_t {
@@ -2445,13 +2447,11 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
   std::vector<size_t> descriptor_sizes(command_count);
   size_t code_cursor = 0;
   for (iree_host_size_t i = 0; i < command_count; ++i) {
-    // Deduplicating identical child instruction streams within one parent chain
-    // is valid and matches the driver's per-descriptor byte-count model. Keep
-    // multi-parent batches conservative: submitting multiple parents before a
-    // wait failed when they shared compacted aperture slots, so give each child
-    // its own XRT-style 0x8000 slot until that firmware ordering rule is
-    // mapped.
-    commands[i]->pathb_chain_allow_code_dedup = command_count == 1;
+    // XRT's module runlist path gives every child run its own 0x8000-spaced
+    // instruction slot. Keep the Windows MCDM shim structurally identical here:
+    // descriptor-level dedup is tempting, but it changes the sync9 slot topology
+    // and makes KMT captures harder to compare against XRT.
+    commands[i]->pathb_chain_allow_code_dedup = false;
     IREE_RETURN_IF_ERROR(get_pathb_chain_region_sizes(
         commands[i], &code_sizes[i], &descriptor_sizes[i]));
     const size_t code_base = align_up_size(code_cursor, 0x1000);
