@@ -331,21 +331,71 @@ mcdm::BufferKind to_mcdm_buffer_kind(
   return mcdm::BufferKind::host_only;
 }
 
-uint32_t to_ert_opcode(iree_hal_amdxdna_native_command_opcode_t opcode) {
-  switch (opcode) {
-    case iree_hal_amdxdna_native_command_opcode_t::start_cu:
-      return ERT_START_CU;
-    case iree_hal_amdxdna_native_command_opcode_t::start_npu:
+struct WindowsMcdmOpcodeHandler {
+  iree_hal_amdxdna_native_command_opcode_t opcode;
+  const char* name;
+  uint32_t ert_opcode;
+  uint32_t initial_packet_word_count = 1;
+  bool is_chain = false;
+  bool uses_regmap_args = false;
+  bool uses_partial_elf = false;
+  bool accepts_control_buffer = false;
+
+  bool skips_non_chain_aperture_sync() const {
+    return !is_chain && uses_partial_elf;
+  }
+
+  bool skips_exec_buffer_sync() const { return uses_partial_elf; }
+};
+
+const WindowsMcdmOpcodeHandler& windows_mcdm_opcode_handler(
+    iree_hal_amdxdna_native_command_opcode_t opcode) {
+  static constexpr WindowsMcdmOpcodeHandler kStartCu = {
+      iree_hal_amdxdna_native_command_opcode_t::start_cu,
+      "start_cu",
+      ERT_START_CU,
+  };
+  static constexpr WindowsMcdmOpcodeHandler kStartNpu = {
+      iree_hal_amdxdna_native_command_opcode_t::start_npu,
+      "start_npu",
       // XRT's non-ELF DPU/TXN path submits DPU kernels as START_CU packets
       // with type ERT_CU. The NPU operation selector is arg0 in the xclbin XML
       // register map, not the ERT packet opcode.
-      return ERT_START_CU;
+      ERT_START_CU,
+      1 + kWindowsDpuRegmapWords,
+      false,
+      true,
+      false,
+      true,
+  };
+  static constexpr WindowsMcdmOpcodeHandler kStartNpuPartialElf = {
+      iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf,
+      "start_npu_partial_elf",
+      ERT_START_NPU,
+      1 + sizeof(ert_npu_data) / sizeof(uint32_t) + 2,
+      false,
+      false,
+      true,
+      true,
+  };
+  static constexpr WindowsMcdmOpcodeHandler kCommandChain = {
+      iree_hal_amdxdna_native_command_opcode_t::command_chain,
+      "command_chain",
+      ERT_CMD_CHAIN,
+      1,
+      true,
+  };
+  switch (opcode) {
+    case iree_hal_amdxdna_native_command_opcode_t::start_cu:
+      return kStartCu;
+    case iree_hal_amdxdna_native_command_opcode_t::start_npu:
+      return kStartNpu;
     case iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf:
-      return ERT_START_NPU;
+      return kStartNpuPartialElf;
     case iree_hal_amdxdna_native_command_opcode_t::command_chain:
-      return ERT_CMD_CHAIN;
+      return kCommandChain;
   }
-  return ERT_START_CU;
+  return kStartCu;
 }
 
 ert_start_kernel_cmd* command_start_packet(
@@ -498,6 +548,16 @@ iree_status_t materialize_deferred_buffer(
 
 namespace {
 
+const WindowsMcdmOpcodeHandler& command_opcode_handler(
+    const iree_hal_amdxdna_native_command_t* command) {
+  return windows_mcdm_opcode_handler(command->opcode);
+}
+
+bool command_is_pathb_chain(
+    const iree_hal_amdxdna_native_command_t* command) {
+  return command && command_opcode_handler(command).is_chain;
+}
+
 bool pathb_stage_code_after_presync(
     iree_hal_amdxdna_native_command_t* command) {
   return command && command->device;
@@ -614,9 +674,9 @@ iree_status_t stage_windows_dpu_code_buffer(
     IREE_RETURN_IF_ERROR(materialize_deferred_instruction_buffer(
         queue->context, command->control_buffer));
   }
+  const bool is_partial_elf = command_opcode_handler(command).uses_partial_elf;
   auto set_partial_elf_instruction_fields = [&]() -> iree_status_t {
-    if (command->opcode !=
-        iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf) {
+    if (!is_partial_elf) {
       return iree_ok_status();
     }
     ert_npu_data* npu_data = get_ert_npu_data(command->start_packet);
@@ -631,9 +691,6 @@ iree_status_t stage_windows_dpu_code_buffer(
     npu_data->instruction_prop_count = 0;
     return iree_ok_status();
   };
-  const bool is_partial_elf =
-      command->opcode ==
-      iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf;
   const bool same_staged_code =
       command->pathb_code_staged &&
       command->pathb_code_staged_size == command->control_buffer_size &&
@@ -742,9 +799,7 @@ iree_status_t inc_pkt_count(iree_hal_amdxdna_native_command_t* command,
 void bind_buffer_ref(iree_hal_amdxdna_native_command_t* command,
                      size_t position, iree_hal_amdxdna_native_buffer_t* buffer,
                      iree_device_size_t offset, iree_device_size_t size) {
-  if (position == 0 &&
-      command->opcode !=
-          iree_hal_amdxdna_native_command_opcode_t::command_chain) {
+  if (position == 0 && !command_is_pathb_chain(command)) {
     command->bound_buffers.clear();
   }
   command->bound_buffers.push_back(BoundBuffer{position, buffer, offset, size});
@@ -753,20 +808,16 @@ void bind_buffer_ref(iree_hal_amdxdna_native_command_t* command,
 bool is_pathb_partial_elf_control_binding(
     iree_hal_amdxdna_native_command_t* command, const BoundBuffer& bound) {
   return command && command->device &&
-         command->opcode ==
-             iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf &&
+         command_opcode_handler(command).uses_partial_elf &&
          bound.position == 0 && bound.buffer == command->control_buffer;
 }
 
 bool uses_windows_dpu_regmap(iree_hal_amdxdna_native_command_t* command) {
-  return command &&
-         command->opcode == iree_hal_amdxdna_native_command_opcode_t::start_npu;
+  return command && command_opcode_handler(command).uses_regmap_args;
 }
 
 bool uses_partial_elf_npu_packet(iree_hal_amdxdna_native_command_t* command) {
-  return command &&
-         command->opcode ==
-             iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf;
+  return command && command_opcode_handler(command).uses_partial_elf;
 }
 
 iree_status_t ensure_partial_elf_dummy_buffers(
@@ -2077,10 +2128,12 @@ iree_status_t iree_hal_amdxdna_native_command_create(
   IREE_ASSERT_ARGUMENT(out_command);
   out_command->reset();
 
+  const WindowsMcdmOpcodeHandler& handler =
+      windows_mcdm_opcode_handler(opcode);
   iree_hal_amdxdna_native_buffer_ptr exec_buffer;
   iree_status_t status = iree_ok_status();
   uint64_t exec_buffer_size = kMaxExecBoSize;
-  if (opcode == iree_hal_amdxdna_native_command_opcode_t::command_chain) {
+  if (handler.is_chain) {
     exec_buffer_size = windows_dpu_pathb_chain_exec_bo_size();
   } else if (compact_execbuf_enabled()) {
     exec_buffer_size = kWindowsDpuPathBExecBoSize;
@@ -2091,23 +2144,15 @@ iree_status_t iree_hal_amdxdna_native_command_create(
                                                         std::move(exec_buffer));
   std::memset(command->start_packet, 0, command->command_size);
   command->start_packet->state = ERT_CMD_STATE_NEW;
-  command->start_packet->opcode = to_ert_opcode(opcode);
+  command->start_packet->opcode = handler.ert_opcode;
   command->start_packet->type = ERT_CU;
   status = inc_pkt_count(command, sizeof(uint32_t));
   if (!iree_status_is_ok(status)) {
     delete command;
     return status;
   }
-  if (opcode == iree_hal_amdxdna_native_command_opcode_t::start_npu) {
-    // XRT creates the full DPU register-map payload up front:
-    // header + CU mask + 15 register words from the xclbin XML metadata.
-    command->start_packet->count = 1 + kWindowsDpuRegmapWords;
-  } else if (opcode ==
-             iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf) {
-    // Match XRT's module-style ERT_START_NPU packet:
-    // header + CU mask + ert_npu_data + selector word + trailing return word.
-    command->start_packet->count =
-        1 + sizeof(ert_npu_data) / sizeof(uint32_t) + 2;
+  if (handler.initial_packet_word_count != 1) {
+    command->start_packet->count = handler.initial_packet_word_count;
   }
   out_command->reset(command);
   return iree_ok_status();
@@ -2129,89 +2174,57 @@ iree_status_t iree_hal_amdxdna_native_command_add_control_buffer(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_buffer_t* control_buffer,
     iree_device_size_t control_buffer_size) {
-  switch (command->opcode) {
-    case iree_hal_amdxdna_native_command_opcode_t::start_cu:
-      return iree_ok_status();
-    case iree_hal_amdxdna_native_command_opcode_t::start_npu: {
-      if (IREE_UNLIKELY(!control_buffer || control_buffer_size == 0)) {
-        return iree_make_status(
-            IREE_STATUS_INVALID_ARGUMENT,
-            "amdxdna Windows MCDM instruction buffer is empty");
-      }
-      if (IREE_UNLIKELY(control_buffer_size >
-                        iree_hal_amdxdna_native_buffer_size(control_buffer))) {
-        return iree_make_status(
-            IREE_STATUS_OUT_OF_RANGE,
-            "amdxdna Windows MCDM instruction byte count exceeds BO size");
-      }
-      if (IREE_UNLIKELY(control_buffer_size % sizeof(uint32_t) != 0)) {
-        return iree_make_status(
-            IREE_STATUS_INVALID_ARGUMENT,
-            "amdxdna Windows MCDM instruction byte count is not word aligned");
-      }
-      if (IREE_UNLIKELY(control_buffer_size >
-                        std::numeric_limits<uint32_t>::max())) {
-        return iree_make_status(
-            IREE_STATUS_OUT_OF_RANGE,
-            "amdxdna Windows MCDM instruction buffer is too large");
-      }
-      command->control_buffer = control_buffer;
-      command->control_buffer_size = control_buffer_size;
-      command->pathb_code_staged = false;
-      command->pathb_code_staged_size = 0;
-      return iree_ok_status();
-    }
-    case iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf: {
-      if (IREE_UNLIKELY(!control_buffer || control_buffer_size == 0)) {
-        return iree_make_status(
-            IREE_STATUS_INVALID_ARGUMENT,
-            "amdxdna Windows MCDM PARTIAL_ELF instruction buffer is empty");
-      }
-      if (IREE_UNLIKELY(control_buffer_size >
-                        iree_hal_amdxdna_native_buffer_size(control_buffer))) {
-        return iree_make_status(
-            IREE_STATUS_OUT_OF_RANGE,
-            "amdxdna Windows MCDM PARTIAL_ELF instruction byte count exceeds "
-            "BO size");
-      }
-      if (IREE_UNLIKELY(control_buffer_size % sizeof(uint32_t) != 0)) {
-        return iree_make_status(
-            IREE_STATUS_INVALID_ARGUMENT,
-            "amdxdna Windows MCDM PARTIAL_ELF instruction byte count is not "
-            "word aligned");
-      }
-      if (IREE_UNLIKELY(control_buffer_size >
-                        std::numeric_limits<uint32_t>::max())) {
-        return iree_make_status(
-            IREE_STATUS_OUT_OF_RANGE,
-            "amdxdna Windows MCDM PARTIAL_ELF instruction buffer is too large");
-      }
-      command->control_buffer = control_buffer;
-      command->control_buffer_size = control_buffer_size;
-      command->pathb_code_staged = false;
-      command->pathb_code_staged_size = 0;
-      ert_npu_data* npu_data = get_ert_npu_data(command->start_packet);
-      if (IREE_UNLIKELY(!npu_data)) {
-        return iree_make_status(
-            IREE_STATUS_INTERNAL,
-            "amdxdna Windows MCDM PARTIAL_ELF packet has no NPU data");
-      }
-      // Path-B exposes the instruction stream through the context instruction
-      // BO. The control buffer is host-side source data staged there before
-      // submit.
-      npu_data->instruction_buffer = 0;
-      npu_data->instruction_buffer_size =
-          static_cast<uint32_t>(control_buffer_size);
-      npu_data->instruction_prop_count = 0;
-      bind_buffer_ref(command, /*position=*/0, control_buffer, /*offset=*/0,
-                      control_buffer_size);
-      return iree_ok_status();
-    }
-    case iree_hal_amdxdna_native_command_opcode_t::command_chain:
-      break;
+  const WindowsMcdmOpcodeHandler& handler = command_opcode_handler(command);
+  if (!handler.accepts_control_buffer) {
+    if (!handler.is_chain) return iree_ok_status();
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "unsupported control buffer command opcode");
   }
-  return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                          "unsupported control buffer command opcode");
+  const char* label =
+      handler.uses_partial_elf ? "PARTIAL_ELF instruction" : "instruction";
+  if (IREE_UNLIKELY(!control_buffer || control_buffer_size == 0)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna Windows MCDM %s buffer is empty", label);
+  }
+  if (IREE_UNLIKELY(control_buffer_size >
+                    iree_hal_amdxdna_native_buffer_size(control_buffer))) {
+    return iree_make_status(
+        IREE_STATUS_OUT_OF_RANGE,
+        "amdxdna Windows MCDM %s byte count exceeds BO size", label);
+  }
+  if (IREE_UNLIKELY(control_buffer_size % sizeof(uint32_t) != 0)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "amdxdna Windows MCDM %s byte count is not word aligned", label);
+  }
+  if (IREE_UNLIKELY(control_buffer_size >
+                    std::numeric_limits<uint32_t>::max())) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "amdxdna Windows MCDM %s buffer is too large",
+                            label);
+  }
+  command->control_buffer = control_buffer;
+  command->control_buffer_size = control_buffer_size;
+  command->pathb_code_staged = false;
+  command->pathb_code_staged_size = 0;
+  if (!handler.uses_partial_elf) {
+    return iree_ok_status();
+  }
+  ert_npu_data* npu_data = get_ert_npu_data(command->start_packet);
+  if (IREE_UNLIKELY(!npu_data)) {
+    return iree_make_status(
+        IREE_STATUS_INTERNAL,
+        "amdxdna Windows MCDM PARTIAL_ELF packet has no NPU data");
+  }
+  // Path-B exposes the instruction stream through the context instruction BO.
+  // The control buffer is host-side source data staged there before submit.
+  npu_data->instruction_buffer = 0;
+  npu_data->instruction_buffer_size =
+      static_cast<uint32_t>(control_buffer_size);
+  npu_data->instruction_prop_count = 0;
+  bind_buffer_ref(command, /*position=*/0, control_buffer, /*offset=*/0,
+                  control_buffer_size);
+  return iree_ok_status();
 }
 
 iree_status_t iree_hal_amdxdna_native_command_add_arg_32(
@@ -2321,8 +2334,7 @@ iree_status_t iree_hal_amdxdna_native_command_reset_bound_buffers(
 iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
     iree_hal_amdxdna_native_command_t* command) {
   IREE_ASSERT_ARGUMENT(command);
-  if (IREE_UNLIKELY(command->opcode !=
-                    iree_hal_amdxdna_native_command_opcode_t::command_chain)) {
+  if (IREE_UNLIKELY(!command_is_pathb_chain(command))) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "amdxdna native command is not a chain command");
   }
@@ -2335,8 +2347,7 @@ iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
 iree_status_t iree_hal_amdxdna_native_command_mark_code_dirty(
     iree_hal_amdxdna_native_command_t* command) {
   IREE_ASSERT_ARGUMENT(command);
-  if (command->opcode ==
-      iree_hal_amdxdna_native_command_opcode_t::command_chain) {
+  if (command_is_pathb_chain(command)) {
     command->pathb_chain_code_dirty = true;
     if (!command->pathb_chain_prepared_valid) {
       command->pathb_chain_descriptor_dirty = true;
@@ -2351,8 +2362,7 @@ iree_status_t iree_hal_amdxdna_native_command_mark_code_dirty(
 iree_status_t iree_hal_amdxdna_native_command_mark_chain_code_dirty(
     iree_hal_amdxdna_native_command_t* command) {
   IREE_ASSERT_ARGUMENT(command);
-  if (IREE_UNLIKELY(command->opcode !=
-                    iree_hal_amdxdna_native_command_opcode_t::command_chain)) {
+  if (IREE_UNLIKELY(!command_is_pathb_chain(command))) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "amdxdna native command is not a chain command");
   }
@@ -2367,8 +2377,7 @@ iree_status_t iree_hal_amdxdna_native_command_prepare_chain(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_command_t* const* commands,
     iree_host_size_t command_count) {
-  if (IREE_UNLIKELY(command->opcode !=
-                    iree_hal_amdxdna_native_command_opcode_t::command_chain)) {
+  if (IREE_UNLIKELY(!command_is_pathb_chain(command))) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "amdxdna native command is not a chain command");
   }
@@ -2444,10 +2453,85 @@ struct iree_hal_amdxdna_native_submission_t {
   iree_status_t status = iree_ok_status();
 };
 
+iree_status_t stage_pathb_command_for_submit(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command,
+    const WindowsMcdmOpcodeHandler& handler) {
+  if (handler.uses_partial_elf) {
+    SubmitProfileScope profile(SubmitProfilePhase::ensure_dummy);
+    IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
+  }
+  if (handler.is_chain) {
+    SubmitProfileScope profile(SubmitProfilePhase::stage_code);
+    IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command));
+  } else if (pathb_stage_code_after_presync(command)) {
+    SubmitProfileScope profile(SubmitProfilePhase::stage_code);
+    IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
+  }
+  if (!handler.uses_partial_elf) {
+    SubmitProfileScope profile(SubmitProfilePhase::ensure_dummy);
+    IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
+  }
+  if (handler.uses_partial_elf) {
+    IREE_RETURN_IF_ERROR(ensure_pathb_single_aperture_session_presync(queue));
+  }
+  return iree_ok_status();
+}
+
+iree_status_t sync_partial_elf_runtime_bindings_for_submit(
+    iree_hal_amdxdna_native_command_t* command) {
+  SubmitProfileScope profile(SubmitProfilePhase::bound_presync);
+  for (const BoundBuffer& bound : command->bound_buffers) {
+    if (!bound.buffer) continue;
+    if (is_pathb_partial_elf_control_binding(command, bound)) continue;
+    if (bound.size <= sizeof(uint32_t)) continue;
+    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync(
+        bound.buffer,
+        iree_hal_amdxdna_native_sync_direction_t::host_to_device, bound.size,
+        bound.offset));
+  }
+  return iree_ok_status();
+}
+
+iree_status_t submit_pathb_command_to_kmt(
+    iree_hal_amdxdna_native_submission_t* s, uint32_t command_bytes,
+    const WindowsMcdmOpcodeHandler& handler, std::string* error) {
+  iree_hal_amdxdna_native_queue_t* queue = s->queue;
+  iree_hal_amdxdna_native_command_t* command = s->command;
+  ert_packet* packet = command_packet(command);
+  SubmitProfileScope profile(SubmitProfilePhase::submit_kmt);
+  if (handler.is_chain) {
+    mcdm::PathBChainSubmitInfo chain_info = {};
+    chain_info.descriptor_gpu_va = command->pathb_chain_descriptor_gpu_va;
+    chain_info.descriptor_bytes = command->pathb_chain_descriptor_bytes;
+    chain_info.command_count =
+        reinterpret_cast<ert_cmd_chain_data*>(packet->data)->command_count;
+    chain_info.first_child_opcode = command->pathb_chain_first_child_opcode;
+    if (!mcdm::SubmitPathBChain(
+            command->device->api, command->device->device,
+            &queue->context->context, command->exec_buffer->buffer, packet,
+            command_bytes, chain_info, &packet->header, &s->pending, error)) {
+      return status_from_mcdm_error(
+          "amdxdna Windows MCDM pathb chain submit failed", *error);
+    }
+    return iree_ok_status();
+  }
+  if (!mcdm::SubmitPathB(command->device->api, command->device->device,
+                         &queue->context->context,
+                         command->exec_buffer->buffer, packet, command_bytes,
+                         /*command_state=*/3, &packet->header, &s->pending,
+                         error)) {
+    return status_from_mcdm_error(
+        "amdxdna Windows MCDM pathb command submit failed", *error);
+  }
+  return iree_ok_status();
+}
+
 static iree_status_t iree_hal_amdxdna_native_submit_issue(
     iree_hal_amdxdna_native_submission_t* s) {
   iree_hal_amdxdna_native_queue_t* queue = s->queue;
   iree_hal_amdxdna_native_command_t* command = s->command;
+  const WindowsMcdmOpcodeHandler& handler = command_opcode_handler(command);
   ert_packet* packet = command_packet(command);
   {
     SubmitProfileScope profile(SubmitProfilePhase::finalize_regmap);
@@ -2455,11 +2539,9 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
     IREE_RETURN_IF_ERROR(finalize_windows_dpu_regmap(queue, command));
   }
 
-  const bool is_pathb_chain =
-      command->opcode ==
-      iree_hal_amdxdna_native_command_opcode_t::command_chain;
+  const bool is_pathb_chain = handler.is_chain;
   const bool is_pathb_partial_elf =
-      !is_pathb_chain && uses_partial_elf_npu_packet(command);
+      !is_pathb_chain && handler.uses_partial_elf;
 
   std::string error;
   {
@@ -2502,8 +2584,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
         IREE_STATUS_FAILED_PRECONDITION,
         "amdxdna Windows MCDM pathb submit requested without command aperture");
   }
-  const bool skip_non_chain_presync = !is_pathb_chain && is_pathb_partial_elf;
-  if (!skip_non_chain_presync) {
+  if (!handler.skips_non_chain_aperture_sync()) {
     SubmitProfileScope profile(SubmitProfilePhase::aperture_presync);
     if (!mcdm::SubmitPathBApertureSync(
             command->device->api, command->device->device,
@@ -2513,25 +2594,8 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
         "amdxdna Windows MCDM pathb pre-dispatch sync failed", error);
     }
   }
-  if (is_pathb_partial_elf) {
-    SubmitProfileScope profile(SubmitProfilePhase::ensure_dummy);
-    IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
-  }
-  if (is_pathb_chain) {
-    SubmitProfileScope profile(SubmitProfilePhase::stage_code);
-    IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command));
-  } else if (pathb_stage_code_after_presync(command)) {
-    SubmitProfileScope profile(SubmitProfilePhase::stage_code);
-    IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
-  }
-  if (!is_pathb_partial_elf) {
-    SubmitProfileScope profile(SubmitProfilePhase::ensure_dummy);
-    IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
-  }
-  if (is_pathb_partial_elf) {
-    IREE_RETURN_IF_ERROR(
-        ensure_pathb_single_aperture_session_presync(queue));
-  }
+  IREE_RETURN_IF_ERROR(
+      stage_pathb_command_for_submit(queue, command, handler));
   {
     SubmitProfileScope profile(SubmitProfilePhase::exec_materialize);
     IREE_RETURN_IF_ERROR(
@@ -2544,25 +2608,15 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
     SubmitProfileScope profile(SubmitProfilePhase::bo_table);
     IREE_RETURN_IF_ERROR(maybe_write_partial_elf_bo_table(command));
   }
-  if (is_pathb_partial_elf) {
-    SubmitProfileScope profile(SubmitProfilePhase::bound_presync);
-    for (const BoundBuffer& bound : command->bound_buffers) {
-      if (!bound.buffer) continue;
-      if (is_pathb_partial_elf_control_binding(command, bound)) continue;
-      if (bound.size <= sizeof(uint32_t)) continue;
-      IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync(
-          bound.buffer,
-          iree_hal_amdxdna_native_sync_direction_t::host_to_device, bound.size,
-          bound.offset));
-    }
+  if (handler.uses_partial_elf) {
+    IREE_RETURN_IF_ERROR(sync_partial_elf_runtime_bindings_for_submit(command));
   }
   // The state-3 packet lives in a normal command BO. Keep its CPU writes
   // visible before the KMT submit; the staged instruction bytes are made
   // visible above through the command-aperture refresh.
-  const bool skip_exec_sync = is_pathb_partial_elf;
   {
     SubmitProfileScope profile(SubmitProfilePhase::exec_sync);
-    if (!skip_exec_sync) {
+    if (!handler.skips_exec_buffer_sync()) {
       IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_sync_all(
           command->exec_buffer.get(),
           iree_hal_amdxdna_native_sync_direction_t::host_to_device));
@@ -2571,34 +2625,8 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
                                       /*offset=*/0, command_bytes);
     }
   }
-  {
-    SubmitProfileScope profile(SubmitProfilePhase::submit_kmt);
-    if (is_pathb_chain) {
-      mcdm::PathBChainSubmitInfo chain_info = {};
-      chain_info.descriptor_gpu_va = command->pathb_chain_descriptor_gpu_va;
-      chain_info.descriptor_bytes = command->pathb_chain_descriptor_bytes;
-      chain_info.command_count =
-          reinterpret_cast<ert_cmd_chain_data*>(packet->data)->command_count;
-      chain_info.first_child_opcode = command->pathb_chain_first_child_opcode;
-      if (!mcdm::SubmitPathBChain(
-              command->device->api, command->device->device,
-              &queue->context->context, command->exec_buffer->buffer, packet,
-              command_bytes, chain_info, &packet->header, &s->pending,
-              &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb chain submit failed", error);
-      }
-    } else {
-      if (!mcdm::SubmitPathB(
-              command->device->api, command->device->device,
-              &queue->context->context, command->exec_buffer->buffer, packet,
-              command_bytes, /*command_state=*/3, &packet->header, &s->pending,
-              &error)) {
-        return status_from_mcdm_error(
-            "amdxdna Windows MCDM pathb command submit failed", error);
-      }
-    }
-  }
+  IREE_RETURN_IF_ERROR(
+      submit_pathb_command_to_kmt(s, command_bytes, handler, &error));
   s->packet = packet;
   s->is_pathb_chain = is_pathb_chain;
   s->is_pathb_partial_elf = is_pathb_partial_elf;
@@ -2663,8 +2691,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_wait(
     if (packet->state == ERT_CMD_STATE_COMPLETED) {
       return iree_ok_status();
     }
-    if (command->opcode ==
-        iree_hal_amdxdna_native_command_opcode_t::command_chain) {
+    if (command_is_pathb_chain(command)) {
       ert_cmd_chain_data* chain_data =
           reinterpret_cast<ert_cmd_chain_data*>(packet->data);
       return iree_make_status(
@@ -2795,8 +2822,7 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
   iree_hal_amdxdna_native_device_t* device = queue->context->device;
 
   for (iree_host_size_t i = 0; i < command_count; ++i) {
-    if (commands[i]->opcode !=
-        iree_hal_amdxdna_native_command_opcode_t::command_chain) {
+    if (!command_is_pathb_chain(commands[i])) {
       for (iree_host_size_t j = 0; j < command_count; ++j) {
         IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_queue_submit_and_wait(
             queue, commands[j], label));
