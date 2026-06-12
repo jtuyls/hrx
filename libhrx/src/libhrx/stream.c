@@ -408,10 +408,15 @@ hrx_status_t hrx_stream_dispatch(hrx_stream_t stream,
   status = hrx_stream_begin_cb(stream);
   if (!hrx_status_is_ok(status)) HRX_RETURN_AND_END_ZONE(z0, status);
 
+  iree_hal_buffer_ref_t stack_bindings[16];
   iree_hal_buffer_ref_t* hal_bindings = NULL;
   if (binding_count > 0) {
-    hal_bindings = (iree_hal_buffer_ref_t*)calloc(
-        binding_count, sizeof(iree_hal_buffer_ref_t));
+    if (binding_count <= sizeof(stack_bindings) / sizeof(stack_bindings[0])) {
+      hal_bindings = stack_bindings;
+    } else {
+      hal_bindings = (iree_hal_buffer_ref_t*)calloc(
+          binding_count, sizeof(iree_hal_buffer_ref_t));
+    }
     if (!hal_bindings) {
       HRX_RETURN_AND_END_ZONE(
           z0, hrx_make_status(HRX_STATUS_OUT_OF_MEMORY,
@@ -419,7 +424,7 @@ hrx_status_t hrx_stream_dispatch(hrx_stream_t stream,
     }
     for (size_t i = 0; i < binding_count; ++i) {
       if (!bindings[i].buffer) {
-        free(hal_bindings);
+        if (hal_bindings != stack_bindings) free(hal_bindings);
         HRX_RETURN_AND_END_ZONE(z0, hrx_make_status(HRX_STATUS_INVALID_ARGUMENT,
                                                     "binding buffer is NULL"));
       }
@@ -455,12 +460,7 @@ hrx_status_t hrx_stream_dispatch(hrx_stream_t stream,
       stream->pending_cb, executable->hal_executable,
       iree_hal_executable_function_from_index(export_ordinal), hal_config,
       hal_constants, hal_binding_list, hal_flags);
-  free(hal_bindings);
-  if (!iree_status_is_ok(iree_status)) {
-    HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(iree_status));
-  }
-
-  iree_status = hrx_stream_record_ordering_barrier(stream);
+  if (hal_bindings != stack_bindings) free(hal_bindings);
   if (!iree_status_is_ok(iree_status)) {
     HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(iree_status));
   }

@@ -107,7 +107,6 @@ iree_hal_amdxdna_device::iree_hal_amdxdna_device(
 
   iree_hal_resource_initialize(&iree_hal_amdxdna_device_vtable, &resource);
   this->host_allocator = host_allocator;
-  this->cmd_chain = options->cmd_chain != 0;
   this->power_mode_applied = false;
 
   iree_arena_block_pool_initialize(ARENA_BLOCK_SIZE, host_allocator,
@@ -1289,13 +1288,6 @@ void iree_hal_amdxdna_device_options_initialize(
   IREE_TRACE_ZONE_BEGIN(z0);
 
   memset(out_options, 0, sizeof(*out_options));
-  // Default to the ERT_CMD_CHAIN dispatch path: it batches a command buffer's
-  // dispatches into one runlist submitted with a single issue/wait (≈XRT
-  // throughput) instead of one submit+wait per dispatch. Requires executables
-  // compiled with the host patch table; callers can force the per-command path
-  // with `amdxdna_cmd_chain=0`.
-  out_options->cmd_chain = true;
-
   IREE_TRACE_ZONE_END(z0);
 }
 

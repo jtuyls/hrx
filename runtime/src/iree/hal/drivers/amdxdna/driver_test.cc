@@ -23,7 +23,6 @@ TEST(DriverTest, DeviceOptionsParseOverridesDefaults) {
       iree_make_string_pair(IREE_SV("amdxdna_device_path"),
                             IREE_SV("/dev/accel/accel2")),
       iree_make_string_pair(IREE_SV("amdxdna_power_mode"), IREE_SV("turbo")),
-      iree_make_string_pair(IREE_SV("amdxdna_cmd_chain"), IREE_SV("1")),
   };
   IREE_ASSERT_OK(iree_hal_amdxdna_device_options_parse(
       &params, IREE_ARRAYSIZE(pairs), pairs));
@@ -33,7 +32,6 @@ TEST(DriverTest, DeviceOptionsParseOverridesDefaults) {
   EXPECT_TRUE(
       iree_string_view_equal(params.device_path, IREE_SV("/dev/accel/accel2")));
   EXPECT_TRUE(iree_string_view_equal(params.power_mode, IREE_SV("turbo")));
-  EXPECT_TRUE(params.cmd_chain);
 }
 
 TEST(DriverTest, DeviceOptionsParseRejectsInvalidValues) {

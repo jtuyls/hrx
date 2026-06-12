@@ -31,19 +31,6 @@ static bool iree_hal_amdxdna_patch_table_is_valid(
   return patch_table && !patch_table->empty() && (patch_table->size() % 3 == 0);
 }
 
-enum class iree_hal_amdxdna_chain_flush_mode {
-  disabled,
-  ert_chain,
-};
-
-static iree_hal_amdxdna_chain_flush_mode
-iree_hal_amdxdna_select_chain_flush_mode(iree_hal_amdxdna_device* device) {
-  if (!device || !device->cmd_chain) {
-    return iree_hal_amdxdna_chain_flush_mode::disabled;
-  }
-  return iree_hal_amdxdna_chain_flush_mode::ert_chain;
-}
-
 struct iree_hal_amdxdna_direct_command_buffer {
   iree_hal_command_buffer_t base;
   iree_allocator_t host_allocator;
@@ -55,8 +42,10 @@ struct iree_hal_amdxdna_direct_command_buffer {
 
   iree_hal_amdxdna_device* device;
 
-  // Cmd_chain mode: dispatches accumulate sub-commands here and end() flushes
-  // them as ERT_CMD_CHAIN(s). Stays empty when cmd_chain is off.
+  // Dispatches that can be lowered through the host-patched partial-ELF path
+  // accumulate here until end(). A single child is submitted directly; two or
+  // more children, or a multi-control-code/reconfiguration artifact, flush as
+  // ERT_CMD_CHAIN(s).
   iree_hal_amdxdna_chain_accum chain_accum;
 
 };
@@ -100,7 +89,7 @@ iree_status_t iree_hal_amdxdna_direct_command_buffer_create(
                             "indirect command buffers not yet implemented");
   }
   // The amdxdna CB has no replayable state: begin/end are not implemented as
-  // resets, and (in cmd_chain mode) chain_accum is finalized by end(). A
+  // resets, and deferred dispatch groups are finalized by end(). A
   // non-ONE_SHOT CB would carry that state across replays. Require ONE_SHOT to
   // match the only mode IREE creates through us today (queue_execute passes
   // ONE_SHOT | ALLOW_INLINE_EXECUTION | UNVALIDATED) and to fail loudly if a
@@ -396,19 +385,16 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_copy_buffer(
 }
 
 // ===========================================================================
-// ERT_CMD_CHAIN support (enabled by default via the `amdxdna_cmd_chain` device
-// option; set `amdxdna_cmd_chain=0` to opt out; see api.h
-// iree_hal_amdxdna_device_params).
+// ERT_CMD_CHAIN support.
 //
-// Batches the dispatch's commands (control-packet reconfig + kernel exec) into
-// a single ERT_CMD_CHAIN submitted with one issue/wait, removing the
-// per-command host round-trip. Each slot is submitted as ERT_START_NPU
-// (PARTIAL_ELF) with arg[0]=AIE2_EXEC_BUFFER_KERNEL_OP_TXN so the firmware runs
-// the same XAie TXN control code as the per-command ERT_START_CU path; the I/O
+// Command buffers are lowered by command-stream shape: one recorded child uses
+// the direct single-dispatch native command path, while two or more children,
+// or artifacts with reconfiguration/multiple control codes, are batched into an
+// ERT_CMD_CHAIN submitted with one issue/wait. Each chain slot is submitted as
+// ERT_START_NPU (PARTIAL_ELF) with arg[0]=AIE2_EXEC_BUFFER_KERNEL_OP_TXN so the
+// firmware runs the same XAie TXN control code as the direct path; the I/O
 // addresses that the CU path lets the firmware patch are instead host-patched
-// into the control-code BD registers here (the chainable path carries no
-// per-slot patch args). The per-command ERT_START_CU path
-// (`amdxdna_cmd_chain=0`) is unchanged.
+// into the control-code BD registers here.
 // ===========================================================================
 namespace {
 // TXN-interpreter selector: tells the firmware to interpret the instruction
@@ -502,11 +488,11 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
 }  // namespace
 
 // Accumulate one dispatch's reconfig+exec sub-commands into the command
-// buffer's chain accumulator (cmd_chain mode). Does NOT submit; the whole
-// command buffer is flushed as one chain per hw queue by flush_chains() at
-// end(). Dispatches that share a hw queue (e.g. all entry points of one
-// control-packet executable, or separate executables resolved to the same
-// shared context) accumulate into one group and thus one chain.
+// buffer's deferred-submit accumulator. Does NOT submit; flush_chains() chooses
+// direct single-dispatch submit for one child and ERT_CMD_CHAIN for multi-child
+// groups at end(). Dispatches that share a hw queue (e.g. all entry points of
+// one control-packet executable, or separate executables resolved to the same
+// shared context) accumulate into one group.
 static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
     iree_hal_buffer_ref_list_t& bindings,
     iree_hal_amdxdna_direct_command_buffer* command_buffer,
@@ -742,8 +728,145 @@ static iree_status_t iree_hal_amdxdna_prepare_chain(
   return iree_ok_status();
 }
 
-// Flush all accumulated chain groups (cmd_chain mode). Each group becomes one
-// native-queue batch, submitted in recorded order so producer/consumer
+static bool iree_hal_amdxdna_chain_group_requires_parent_chain(
+    const iree_hal_amdxdna_chain_group& group) {
+  return group.cmds.size() > 1 || !group.reconf_buffers.empty();
+}
+
+static iree_status_t
+iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
+    iree_hal_amdxdna_direct_command_buffer* command_buffer,
+    iree_hal_amdxdna_chain_group& group) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+  if (group.cmds.size() != 1) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                            "single-dispatch flush expected one command, got "
+                            "%zu",
+                            group.cmds.size());
+  }
+  iree_hal_amdxdna_chain_cmd& cmd = group.cmds[0];
+  if (!cmd.src_asm_inst || !cmd.src_patches) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "single-dispatch flush is missing recorded control-code descriptors");
+  }
+
+  if (!cmd.src_use_native_partial_elf) {
+    if (!cmd.built) {
+      IREE_RETURN_AND_END_ZONE_IF_ERROR(
+          z0, iree_hal_amdxdna_make_npu_cmd(
+                  command_buffer, cmd.src_cu_idx, *cmd.src_asm_inst,
+                  *cmd.src_patches, cmd.binding_device_addrs.data(),
+                  cmd.binding_buffers.data(), cmd.binding_offsets.data(),
+                  cmd.binding_lengths.data(), cmd.binding_device_addrs.size(),
+                  iree_make_const_byte_span(cmd.src_constants.data(),
+                                            cmd.src_constants.size()),
+                  cmd.src_use_native_partial_elf, &cmd));
+    }
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_queue_submit_and_wait(
+                group.queue, cmd.command.get(), IREE_SV("dispatch")));
+    IREE_TRACE_ZONE_END(z0);
+    return iree_ok_status();
+  }
+
+  std::vector<uint32_t> prepared_ctrl_words = *cmd.src_asm_inst;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_patch_write32_constants(
+              prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+              iree_make_const_byte_span(cmd.src_constants.data(),
+                                        cmd.src_constants.size())));
+  if (!iree_hal_amdxdna_apply_patch_table(
+          prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+          *cmd.src_patches, cmd.binding_device_addrs.data(),
+          cmd.binding_device_addrs.size())) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(
+        IREE_STATUS_INTERNAL,
+        "amdxdna PARTIAL_ELF single dispatch has an invalid host patch table");
+  }
+
+  iree_hal_amdxdna_device_single_command_cache_t* single_command_cache =
+      iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
+  std::unique_lock<std::mutex> single_cache_lock(single_command_cache->mutex);
+  iree_hal_amdxdna_single_command_cache_entry* single_cache_entry = nullptr;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_find_single_command_cache_entry(
+              single_command_cache, group.queue, cmd.src_cu_idx.index,
+              prepared_ctrl_words, cmd.binding_buffers,
+              cmd.binding_device_addrs, cmd.binding_offsets,
+              cmd.binding_lengths, &single_cache_entry));
+
+  iree_hal_amdxdna_native_command_t* submit_command = nullptr;
+  if (single_cache_entry) {
+    submit_command = single_cache_entry->command.get();
+  } else {
+    const size_t ctrl_code_size =
+        prepared_ctrl_words.size() * sizeof(uint32_t);
+    iree_hal_amdxdna_native_buffer_ptr ctrl_code_buffer;
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_device_alloc_buffer(
+                command_buffer->device->native_device, ctrl_code_size,
+                iree_hal_amdxdna_native_buffer_type_t::instruction,
+                &ctrl_code_buffer));
+    void* instr_buffer_ptr = nullptr;
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_buffer_map(ctrl_code_buffer.get(),
+                                               &instr_buffer_ptr));
+    memcpy(instr_buffer_ptr, prepared_ctrl_words.data(), ctrl_code_size);
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_buffer_sync_all(
+                ctrl_code_buffer.get(),
+                iree_hal_amdxdna_native_sync_direction_t::host_to_device));
+
+    iree_hal_amdxdna_native_command_ptr command;
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_command_create(
+                command_buffer->device->native_device,
+                iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf,
+                &command));
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_command_set_cu_index(command.get(),
+                                                         cmd.src_cu_idx));
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_command_add_control_buffer(
+                command.get(), ctrl_code_buffer.get(), ctrl_code_size));
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, iree_hal_amdxdna_native_command_add_arg_32(
+                command.get(), kAie2ExecBufferKernelOpTxn));
+    for (size_t i = 0; i < cmd.binding_buffers.size(); ++i) {
+      IREE_RETURN_AND_END_ZONE_IF_ERROR(
+          z0, iree_hal_amdxdna_native_command_bind_buffer(
+                  command.get(), /*position=*/i + 1, cmd.binding_buffers[i],
+                  cmd.binding_offsets[i], cmd.binding_lengths[i]));
+    }
+    std::vector<iree_hal_amdxdna_native_buffer_t*> binding_buffers =
+        cmd.binding_buffers;
+    std::vector<uint64_t> binding_device_addrs = cmd.binding_device_addrs;
+    std::vector<iree_device_size_t> binding_offsets = cmd.binding_offsets;
+    std::vector<iree_device_size_t> binding_lengths = cmd.binding_lengths;
+    single_cache_entry = iree_hal_amdxdna_store_single_command_cache_entry(
+        single_command_cache, group.queue, cmd.src_cu_idx.index,
+        std::move(prepared_ctrl_words), std::move(binding_buffers),
+        std::move(binding_device_addrs), std::move(binding_offsets),
+        std::move(binding_lengths), std::move(ctrl_code_buffer),
+        std::move(command));
+    submit_command = single_cache_entry->command.get();
+  }
+
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_native_queue_submit_and_wait(group.queue,
+                                                        submit_command,
+                                                        IREE_SV("dispatch")));
+  IREE_TRACE_ZONE_END(z0);
+  return iree_ok_status();
+}
+
+// Flush all accumulated groups. Single-child groups submit directly; groups
+// with multiple children become native ERT chains chunked to the backend slot
+// limit. Groups are submitted in recorded order so producer/consumer
 // dependencies across groups are honored by the device's in-order completion.
 static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
     iree_hal_amdxdna_direct_command_buffer* command_buffer) {
@@ -751,8 +874,11 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
   if (groups.empty()) return iree_ok_status();
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  const iree_hal_amdxdna_chain_flush_mode flush_mode =
-      iree_hal_amdxdna_select_chain_flush_mode(command_buffer->device);
+  const bool has_parent_chain_group = std::any_of(
+      groups.begin(), groups.end(),
+      [](const iree_hal_amdxdna_chain_group& group) {
+        return iree_hal_amdxdna_chain_group_requires_parent_chain(group);
+      });
 
   // Max slots per chain that fit the fixed-size exec buffer (constant per
   // device; computed once and cached). Atomic load with relaxed ordering: a
@@ -761,7 +887,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
   // acquire on the success path / release on the store so a thread observing
   // the cached value also observes the probe's published writes.
   uint32_t max_slots = std::numeric_limits<uint32_t>::max();
-  if (flush_mode == iree_hal_amdxdna_chain_flush_mode::ert_chain) {
+  if (has_parent_chain_group) {
     std::atomic<uint32_t>& max_slots_atomic =
         command_buffer->device->chain_max_slots;
     max_slots = max_slots_atomic.load(std::memory_order_acquire);
@@ -776,11 +902,17 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
     }
   }
 
-  // Submit each accumulated group as native ERT chains chunked into
-  // max_slots-sized pieces.
+  // Submit each accumulated group either as one direct native command or as
+  // native ERT chains chunked into max_slots-sized pieces.
   iree_status_t status = iree_ok_status();
   for (iree_hal_amdxdna_chain_group& group : groups) {
-    if (flush_mode == iree_hal_amdxdna_chain_flush_mode::ert_chain) {
+    const bool submit_as_chain =
+        iree_hal_amdxdna_chain_group_requires_parent_chain(group);
+    if (!submit_as_chain) {
+      status =
+          iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
+              command_buffer, group);
+    } else {
       std::unique_lock<std::mutex> chain_cache_lock;
       iree_hal_amdxdna_chain_command_cache_entry* chain_cache = nullptr;
       if (group.native_partial_elf && group.reconf_buffers.empty()) {
@@ -957,17 +1089,18 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
               IREE_SV("ERT_CMD_CHAIN"));
         }
       }
-    } else {
-      status = iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
-                                "amdxdna cmd-chain flush requested while "
-                                "cmd_chain mode is disabled");
     }
     if (!iree_status_is_ok(status)) break;
-    // Sync this group's I/O bindings back to host once its chains complete.
-    for (const iree_hal_buffer_ref_t& binding_ref : group.binding_refs) {
-      status = iree_hal_amdxdna_buffer_invalidate_range(
-          binding_ref.buffer, binding_ref.offset, binding_ref.length);
-      if (!iree_status_is_ok(status)) break;
+    // Parent chains do not go through the native submit path's normal binding
+    // sync model, so sync this group's I/O bindings back to host once the
+    // chains complete. The direct single path mirrors normal_run() and relies
+    // on the native submit's binding sync behavior.
+    if (submit_as_chain) {
+      for (const iree_hal_buffer_ref_t& binding_ref : group.binding_refs) {
+        status = iree_hal_amdxdna_buffer_invalidate_range(
+            binding_ref.buffer, binding_ref.offset, binding_ref.length);
+        if (!iree_status_is_ok(status)) break;
+      }
     }
     if (!iree_status_is_ok(status)) break;
   }
@@ -1456,11 +1589,19 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_dispatch(
   iree_hal_amdxdna_native_queue_t* queue =
       iree_hal_amdxdna_native_context_queue(context.get());
 
-  const iree_hal_amdxdna_chain_flush_mode chain_flush_mode =
-      iree_hal_amdxdna_select_chain_flush_mode(command_buffer->device);
-  if (chain_flush_mode != iree_hal_amdxdna_chain_flush_mode::disabled) {
-    // Accumulate this dispatch's commands; the whole command buffer is flushed
-    // per native queue at end() as ERT_CMD_CHAIN chunks.
+  const bool has_host_patch_table =
+      kernel_params.patch_runlist.size() ==
+      kernel_params.asm_inst_runlist.size();
+  const bool multi_control_code_or_pdi =
+      kernel_params.n_pdi_loads > 1 ||
+      kernel_params.asm_inst_runlist.size() > 1 || num_reconfigurations != 0;
+  const bool use_deferred_submit_policy =
+      has_host_patch_table &&
+      (use_native_partial_elf_context || multi_control_code_or_pdi);
+  if (use_deferred_submit_policy) {
+    // Accumulate this dispatch's commands; end() chooses the native shape from
+    // the recorded stream: one child submits as a direct single dispatch, while
+    // multiple children or multi-control-code artifacts become ERT_CMD_CHAINs.
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
                 bindings, command_buffer, context, queue, cu_idx, kernel_params,
@@ -1503,8 +1644,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_dispatch(
   return iree_ok_status();
 }
 
-// In cmd_chain mode, flush the accumulated dispatches as ERT_CMD_CHAIN(s) once
-// the whole command buffer has been recorded/replayed. No-op otherwise.
+// Flush deferred dispatches once the whole command buffer has been recorded.
+// No-op when every dispatch used the immediate legacy path.
 static iree_status_t iree_hal_amdxdna_direct_command_buffer_end(
     iree_hal_command_buffer_t* base_command_buffer) {
   IREE_TRACE_ZONE_BEGIN(z0);

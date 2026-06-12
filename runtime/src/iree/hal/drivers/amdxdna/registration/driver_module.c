@@ -18,10 +18,6 @@ IREE_FLAG(string, amdxdna_device_path, "",
           "DRM accel device path to open (for example /dev/accel/accel0). "
           "Empty discovers the first /dev/accel/accel* node.");
 IREE_FLAG(string, amdxdna_power_mode, "", "Set the power mode of the NPU.");
-IREE_FLAG(bool, amdxdna_cmd_chain, false,
-          "Batch each dispatch's commands into a single ERT_CMD_CHAIN "
-          "(removes the per-command host round-trip).");
-
 static const iree_string_view_t key_amdxdna_n_core_rows =
     iree_string_view_literal("amdxdna_n_core_rows");
 static const iree_string_view_t key_amdxdna_n_core_cols =
@@ -30,9 +26,6 @@ static const iree_string_view_t key_amdxdna_device_path =
     iree_string_view_literal("amdxdna_device_path");
 static const iree_string_view_t key_amdxdna_power_mode =
     iree_string_view_literal("amdxdna_power_mode");
-static const iree_string_view_t key_amdxdna_cmd_chain =
-    iree_string_view_literal("amdxdna_cmd_chain");
-
 static iree_status_t iree_hal_amdxdna_driver_factory_enumerate(
     void* self, iree_host_size_t* out_driver_info_count,
     const iree_hal_driver_info_t** out_driver_infos) {
@@ -60,12 +53,6 @@ static iree_status_t iree_hal_amdxdna_driver_parse_flags(
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_string_pair_builder_add_int32(builder, key_amdxdna_n_core_cols,
                                              FLAG_amdxdna_n_core_cols));
-  IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_string_pair_builder_add(
-              builder, iree_make_string_pair(key_amdxdna_cmd_chain,
-                                             FLAG_amdxdna_cmd_chain
-                                                 ? IREE_SV("true")
-                                                 : IREE_SV("false"))));
   iree_string_view_t device_path = IREE_SV(FLAG_amdxdna_device_path);
   if (!iree_string_view_is_empty(device_path)) {
     IREE_RETURN_AND_END_ZONE_IF_ERROR(

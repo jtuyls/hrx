@@ -60,9 +60,6 @@ struct iree_hal_amdxdna_device {
 
   iree_hal_amdxdna_native_device_t* native_device;
   iree_hal_amdxdna_native_device_caps_t native_caps;
-  // When true, dispatches are submitted as a single ERT_CMD_CHAIN instead of
-  // per-command issue/wait (see iree_hal_amdxdna_device_params::cmd_chain).
-  bool cmd_chain;
   // Native hardware-context cache for control-packet bootstrap PDIs.
   // Implementation-private so HAL-facing code does not expose STL maps/locks.
   iree_hal_amdxdna_device_context_cache_t* context_cache;

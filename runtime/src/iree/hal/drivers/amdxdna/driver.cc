@@ -100,9 +100,6 @@ iree_status_t iree_hal_amdxdna_device_options_parse(
       IREE_RETURN_IF_ERROR(iree_hal_amdxdna_parse_non_negative_int32_option(
           key, value, &ivalue));
       params->n_core_cols = ivalue;
-    } else if (iree_string_view_equal(key, IREE_SV("amdxdna_cmd_chain"))) {
-      IREE_RETURN_IF_ERROR(
-          iree_hal_amdxdna_parse_bool_option(key, value, &params->cmd_chain));
     } else if (iree_string_view_equal(key, IREE_SV("amdxdna_device_path"))) {
       params->device_path = value;
     } else if (iree_string_view_equal(key, IREE_SV("amdxdna_power_mode"))) {
@@ -257,8 +254,6 @@ static iree_status_t iree_hal_amdxdna_driver_dump_device_info(
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
       builder, "  power_mode: %.*s\n", static_cast<int>(power_mode.size),
       power_mode.data));
-  IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
-      builder, "  cmd_chain: %s\n", params->cmd_chain ? "true" : "false"));
   return iree_ok_status();
 }
 

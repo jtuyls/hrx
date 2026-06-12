@@ -23,13 +23,6 @@ struct iree_hal_amdxdna_device_params {
   // Linux KMQ, or the default NPU adapter on Windows MCDM).
   iree_string_view_t device_path;
   iree_string_view_t power_mode;
-  // When true, batch each dispatch's commands (control-packet reconfig +
-  // kernel exec) into a single ERT_CMD_CHAIN submitted with one issue/wait,
-  // removing the per-command host round-trip. Defaults to true (see
-  // iree_hal_amdxdna_device_options_initialize); requires executables compiled
-  // with the host patch table. Set to false for the per-command ERT_START_CU
-  // path.
-  bool cmd_chain;
 };
 
 IREE_API_EXPORT void iree_hal_amdxdna_device_options_initialize(

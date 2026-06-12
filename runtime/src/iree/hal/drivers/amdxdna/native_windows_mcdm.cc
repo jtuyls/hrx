@@ -643,8 +643,14 @@ iree_status_t stage_windows_dpu_code_buffer(
                   static_cast<size_t>(command->control_buffer_size)) == 0;
   if (same_staged_code) {
     if (is_partial_elf) {
+      const bool session_reuses_current_code =
+          queue->context->pathb_single_aperture_session_active &&
+          queue->context->pathb_single_aperture_session_code_size ==
+              command->control_buffer_size;
       queue->context->pathb_single_aperture_session_active = true;
-      queue->context->pathb_single_aperture_session_presync_sent = false;
+      if (!session_reuses_current_code) {
+        queue->context->pathb_single_aperture_session_presync_sent = false;
+      }
       queue->context->pathb_single_aperture_session_command = command;
       queue->context->pathb_single_aperture_session_code_size =
           command->control_buffer_size;
@@ -695,8 +701,8 @@ iree_status_t stage_windows_dpu_code_buffer(
     IREE_RETURN_IF_ERROR(ensure_pathb_single_aperture_session_presync(queue));
   }
   // Keep the freshly staged control code as the current module image. Repeated
-  // submits with identical bytes can reuse it and only emit the opcode-9 open,
-  // matching XRT module reuse without paying the refresh every iteration.
+  // submits with identical bytes can reuse the open aperture session, matching
+  // XRT module reuse without paying the refresh/open/close every iteration.
   command->pathb_code_staged = true;
   command->pathb_code_staged_size = command->control_buffer_size;
   queue->context->pathb_single_code_staged_size = command->control_buffer_size;
@@ -2646,9 +2652,11 @@ static iree_status_t iree_hal_amdxdna_native_submit_wait(
           bound, iree_hal_amdxdna_native_sync_direction_t::device_to_host));
     }
   }
-  if (skip_non_chain_postsync) {
-    IREE_RETURN_IF_ERROR(close_pathb_single_aperture_session(queue));
-  }
+  // For a state-3 partial-ELF submit, keep the already-open aperture session
+  // alive after the output D2H sync. XRT module reuse opens the module once and
+  // issues many run.start()/wait() calls against it; close only when switching
+  // to a different command-stream shape, staging different code, or destroying
+  // the context.
   {
     SubmitProfileScope profile(SubmitProfilePhase::status_check);
     queue->exec_command_count++;
