@@ -196,6 +196,9 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
 void iree_hal_amdxdna_native_context_destroy(
     iree_hal_amdxdna_native_context_t* context);
 
+iree_status_t iree_hal_amdxdna_native_context_close_single_aperture_session(
+    iree_hal_amdxdna_native_context_t* context);
+
 iree_status_t iree_hal_amdxdna_native_device_query_chain_max_slots(
     iree_hal_amdxdna_native_device_t* device, uint32_t* out_max_slots);
 
@@ -352,5 +355,15 @@ iree_status_t iree_hal_amdxdna_native_submission_query(
 // aperture before they may be freed.
 void iree_hal_amdxdna_native_submission_destroy(
     iree_hal_amdxdna_native_submission_t* submission);
+
+// Diagnostic profiling hook used by benchmark tools. When enabled, native
+// implementations may collect submit subphase timings and print them with
+// iree_hal_amdxdna_native_debug_dump_submit_profile. Default runtime paths
+// remain silent unless a tool explicitly enables this.
+void iree_hal_amdxdna_native_debug_set_submit_profile_enabled(bool enabled);
+
+void iree_hal_amdxdna_native_debug_reset_submit_profile();
+
+void iree_hal_amdxdna_native_debug_dump_submit_profile();
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_NATIVE_H_

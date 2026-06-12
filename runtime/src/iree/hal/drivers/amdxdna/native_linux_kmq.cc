@@ -430,6 +430,12 @@ void iree_hal_amdxdna_native_context_destroy(
   delete context;
 }
 
+iree_status_t iree_hal_amdxdna_native_context_close_single_aperture_session(
+    iree_hal_amdxdna_native_context_t* context) {
+  (void)context;
+  return iree_ok_status();
+}
+
 iree_status_t iree_hal_amdxdna_native_device_query_chain_max_slots(
     iree_hal_amdxdna_native_device_t* device, uint32_t* out_max_slots) {
   IREE_ASSERT_ARGUMENT(device);
@@ -781,3 +787,11 @@ void iree_hal_amdxdna_native_submission_destroy(
     iree_hal_amdxdna_native_submission_t* submission) {
   (void)submission;
 }
+
+void iree_hal_amdxdna_native_debug_set_submit_profile_enabled(bool enabled) {
+  (void)enabled;
+}
+
+void iree_hal_amdxdna_native_debug_reset_submit_profile() {}
+
+void iree_hal_amdxdna_native_debug_dump_submit_profile() {}

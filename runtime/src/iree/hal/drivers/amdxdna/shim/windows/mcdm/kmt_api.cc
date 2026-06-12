@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -140,17 +141,33 @@ uint32_t Flags32(const D3DKMT_CREATEALLOCATIONFLAGS& flags) {
   return value;
 }
 
-bool TraceQhdlEnabled() { return false; }
+bool EnvFlagEnabled(const char* name) {
+  const char* value = std::getenv(name);
+  return value && value[0] && value[0] != '0';
+}
 
-bool PathBPhaseTimingEnabled() { return false; }
+bool TraceQhdlEnabled() {
+  return EnvFlagEnabled("IREE_AMDXDNA_MCDM_TRACE_QHDL");
+}
 
-bool PathBCompletionPollFallbackEnabled() { return false; }
+bool PathBPhaseTimingEnabled() {
+  return EnvFlagEnabled("IREE_AMDXDNA_MCDM_PATHB_PHASE_TIMING");
+}
+
+bool PathBCompletionPollFallbackEnabled() {
+  return EnvFlagEnabled("IREE_AMDXDNA_MCDM_COMPLETION_POLL_FALLBACK");
+}
 
 bool TrustFenceCompletionEnabled() { return true; }
 
 bool CcccCompletionSlotEnabled() { return false; }
 
-bool XrtLockTouchEnabled() { return false; }
+bool XrtLockTouchEnabled() {
+  // TODO(hrx-mcdm): Revisit once the exact XRT rationale is documented. A
+  // disabled probe passed numerics and the full benchmark on 2026-06-12, but
+  // XRT touches the exec BO around path-B submit, so keep parity for now.
+  return true;
+}
 
 void InitializeCompletionSlot(uint8_t* slot_cpu) {
   if (CcccCompletionSlotEnabled()) {

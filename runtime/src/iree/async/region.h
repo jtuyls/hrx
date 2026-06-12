@@ -92,7 +92,11 @@ typedef struct {
 // required.
 static inline iree_async_buffer_recycle_callback_t
 iree_async_buffer_recycle_callback_null(void) {
+#ifdef __cplusplus
+  return iree_async_buffer_recycle_callback_t{NULL, NULL};
+#else
   return (iree_async_buffer_recycle_callback_t){NULL, NULL};
+#endif
 }
 
 // Discriminates the backend-specific handles in the region.

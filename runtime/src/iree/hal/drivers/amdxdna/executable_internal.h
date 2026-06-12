@@ -32,7 +32,6 @@ struct iree_hal_amdxdna_kernel_params {
   // control code, applied by the ERT_CMD_CHAIN path.
   std::vector<std::vector<uint32_t>> patch_runlist;
   std::string kernel_name;
-  uint32_t n_kernel_runs{1};
   uint32_t n_reconfigure_runs{1};
   uint32_t n_pdi_loads{1};
   // Memoized native context + CU index resolved from this entry point's

@@ -426,8 +426,11 @@ static hrx_status_t hrx_create_iree_amdxdna_driver(
 
   struct iree_hal_amdxdna_driver_options driver_options;
   iree_hal_amdxdna_driver_options_initialize(&driver_options);
-  // Command chaining is driven by the amdxdna device default (cmd_chain), not a
-  // public HRX flag; see iree_hal_amdxdna_device_options_initialize.
+  const char* cmd_chain_env = getenv("HRX_AMDXDNA_CMD_CHAIN");
+  if (cmd_chain_env && cmd_chain_env[0]) {
+    driver_options.default_device_params.cmd_chain =
+        cmd_chain_env[0] != '0';
+  }
 
   iree_hal_driver_t* driver = NULL;
   status = iree_hal_amdxdna_driver_create(iree_make_cstring_view("amdxdna"),

@@ -58,6 +58,7 @@ struct iree_hal_amdxdna_direct_command_buffer {
   // Cmd_chain mode: dispatches accumulate sub-commands here and end() flushes
   // them as ERT_CMD_CHAIN(s). Stays empty when cmd_chain is off.
   iree_hal_amdxdna_chain_accum chain_accum;
+
 };
 
 static iree_status_t iree_hal_amdxdna_validate_live_dispatch_bindings(
@@ -605,17 +606,14 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
     return iree_ok_status();
   };
 
-  // Mirror the per-command repeat counts of the default (non-chain) path so the
-  // chain is semantically identical: `n_reconfigure_runs` reconfig slots and
-  // `n_kernel_runs` exec slots (both default to 1).
+  // Emit exactly one kernel slot for this HAL dispatch. Reconfiguration control
+  // packets retain their repeat count for existing multi-PDI artifacts.
   size_t num_reconfigurations = kernel_params.reconf_data_runlist.size();
   if (num_reconfigurations == 0) {
-    for (uint32_t r = 0; r < kernel_params.n_kernel_runs; r++) {
-      IREE_RETURN_AND_END_ZONE_IF_ERROR(
-          z0,
-          emit(/*run_idx=*/0, binding_addrs.data(), binding_buffers.data(),
-               binding_offsets.data(), binding_lengths.data(), bindings.count));
-    }
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0, emit(/*run_idx=*/0, binding_addrs.data(), binding_buffers.data(),
+                 binding_offsets.data(), binding_lengths.data(),
+                 bindings.count));
   } else {
     for (size_t i = 0; i < num_reconfigurations; i++) {
       // Control-packet data buffer for this reconfiguration (reconfig arg[0]).
@@ -649,12 +647,10 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
             z0, emit(/*run_idx=*/2 * i, &reconf_arg, &reconf_buffer,
                      &reconf_offset, &reconf_length, /*arg_count=*/1));
       }
-      for (uint32_t r = 0; r < kernel_params.n_kernel_runs; r++) {
-        IREE_RETURN_AND_END_ZONE_IF_ERROR(
-            z0, emit(/*run_idx=*/2 * i + 1, binding_addrs.data(),
-                     binding_buffers.data(), binding_offsets.data(),
-                     binding_lengths.data(), bindings.count));
-      }
+      IREE_RETURN_AND_END_ZONE_IF_ERROR(
+          z0, emit(/*run_idx=*/2 * i + 1, binding_addrs.data(),
+                   binding_buffers.data(), binding_offsets.data(),
+                   binding_lengths.data(), bindings.count));
     }
   }
 
@@ -993,16 +989,10 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     iree_hal_buffer_ref_list_t& bindings,
     iree_hal_amdxdna_direct_command_buffer* command_buffer,
     iree_hal_amdxdna_native_queue_t* queue,
-    iree_hal_amdxdna_native_cu_index_t cu_idx, uint32_t n_kernel_runs,
-    std::vector<uint32_t>& asm_inst, const std::vector<uint32_t>* patch_table,
-    iree_const_byte_span_t constants, bool use_single_partial_elf) {
+    iree_hal_amdxdna_native_cu_index_t cu_idx, std::vector<uint32_t>& asm_inst,
+    const std::vector<uint32_t>* patch_table, iree_const_byte_span_t constants,
+    bool use_single_partial_elf) {
   IREE_TRACE_ZONE_BEGIN(z0);
-
-  // Check if the kernel should be executed.
-  if (n_kernel_runs == 0) {
-    IREE_TRACE_ZONE_END(z0);
-    return iree_ok_status();
-  }
 
   std::vector<uint64_t> binding_addrs;
   std::vector<iree_hal_amdxdna_native_buffer_t*> binding_buffers;
@@ -1217,12 +1207,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     submit_command = command.get();
   }
 
-  // Repeat the kernel execution `n_kernel_runs` times.
-  for (int i = 0; i < n_kernel_runs; i++) {
-    IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0, iree_hal_amdxdna_native_queue_submit_and_wait(queue, submit_command,
-                                                          IREE_SV("dispatch")));
-  }
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_native_queue_submit_and_wait(queue, submit_command,
+                                                        IREE_SV("dispatch")));
   // Sync the bindings back to the host.
   if (!use_single_partial_elf &&
       command_buffer->device->native_caps.buffer_sync_model !=
@@ -1487,7 +1474,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_dispatch(
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_amdxdna_direct_command_buffer_normal_run(
                 bindings, command_buffer, queue, cu_idx,
-                kernel_params.n_kernel_runs, kernel_params.asm_inst_runlist[0],
+                kernel_params.asm_inst_runlist[0],
                 single_patch_table, constants, use_native_partial_elf_context));
   } else {
     for (size_t i = 0; i < num_reconfigurations; i++) {
@@ -1507,7 +1494,6 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_dispatch(
       IREE_RETURN_AND_END_ZONE_IF_ERROR(
           z0, iree_hal_amdxdna_direct_command_buffer_normal_run(
                   bindings, command_buffer, queue, cu_idx,
-                  kernel_params.n_kernel_runs,
                   kernel_params.asm_inst_runlist[run_idx], patch_table,
                   constants, /*use_single_partial_elf=*/false));
     }
