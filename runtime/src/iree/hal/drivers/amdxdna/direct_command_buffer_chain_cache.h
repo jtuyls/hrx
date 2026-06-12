@@ -56,6 +56,11 @@ struct iree_hal_amdxdna_chain_cmd {
   iree_hal_amdxdna_native_cu_index_t src_cu_idx{};
   bool src_use_native_partial_elf = false;
   bool built = false;
+  // Number of consecutive logical child commands represented by this
+  // descriptor during deferred replay. Cached native chains are stored expanded
+  // (one native child command per logical run), but an incoming replay can stay
+  // compact until it misses the cache.
+  size_t repeat_count = 1;
   // False when metadata was refreshed for a device-visible hit but the native
   // child command still holds older bound-buffer pointers. Safe until the next
   // packet rewrite, which must rebind before BO-table generation dereferences.
@@ -108,6 +113,13 @@ struct iree_hal_amdxdna_device_chain_command_cache_t {
 
 iree_hal_amdxdna_device_chain_command_cache_t*
 iree_hal_amdxdna_get_chain_command_cache(iree_hal_amdxdna_device* device);
+
+size_t iree_hal_amdxdna_chain_group_logical_command_count(
+    const iree_hal_amdxdna_chain_group& group);
+
+bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
+    const iree_hal_amdxdna_chain_cmd& lhs,
+    const iree_hal_amdxdna_chain_cmd& rhs);
 
 bool iree_hal_amdxdna_chain_command_cache_device_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,

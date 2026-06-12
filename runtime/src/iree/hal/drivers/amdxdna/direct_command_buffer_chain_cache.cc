@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include "iree/hal/drivers/amdxdna/device_internal.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
@@ -64,6 +65,31 @@ static bool iree_hal_amdxdna_chain_cmd_shape_matches(
          lhs.binding_lengths == rhs.binding_lengths;
 }
 
+size_t iree_hal_amdxdna_chain_group_logical_command_count(
+    const iree_hal_amdxdna_chain_group& group) {
+  size_t total = 0;
+  for (const iree_hal_amdxdna_chain_cmd& cmd : group.cmds) {
+    const size_t repeat_count = std::max<size_t>(cmd.repeat_count, 1);
+    if (repeat_count > std::numeric_limits<size_t>::max() - total) {
+      return std::numeric_limits<size_t>::max();
+    }
+    total += repeat_count;
+  }
+  return total;
+}
+
+static const iree_hal_amdxdna_chain_cmd*
+iree_hal_amdxdna_chain_group_cmd_at_logical_index(
+    const iree_hal_amdxdna_chain_group& group, size_t logical_index) {
+  size_t cursor = 0;
+  for (const iree_hal_amdxdna_chain_cmd& cmd : group.cmds) {
+    const size_t repeat_count = std::max<size_t>(cmd.repeat_count, 1);
+    if (logical_index < cursor + repeat_count) return &cmd;
+    cursor += repeat_count;
+  }
+  return nullptr;
+}
+
 bool iree_hal_amdxdna_chain_command_cache_device_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,
     const iree_hal_amdxdna_chain_group& group, uint32_t max_slots) {
@@ -107,10 +133,11 @@ bool iree_hal_amdxdna_chain_command_cache_shape_matches(
 // bindings) so flush can reuse an already-built cached chain WITHOUT building
 // this group's deferred children. Equivalent to the ctrl_words signature match
 // but computable on unbuilt descriptors.
-static bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
+bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
     const iree_hal_amdxdna_chain_cmd& lhs,
     const iree_hal_amdxdna_chain_cmd& rhs) {
   return lhs.src_asm_inst == rhs.src_asm_inst &&
+         lhs.src_patches == rhs.src_patches &&
          lhs.src_use_native_partial_elf == rhs.src_use_native_partial_elf &&
          lhs.src_cu_idx.index == rhs.src_cu_idx.index &&
          lhs.src_constants == rhs.src_constants &&
@@ -123,16 +150,25 @@ static bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
 bool iree_hal_amdxdna_chain_command_cache_descriptor_matches(
     const iree_hal_amdxdna_chain_command_cache_entry& cache,
     const iree_hal_amdxdna_chain_group& group, uint32_t max_slots) {
+  const size_t cache_logical_count =
+      iree_hal_amdxdna_chain_group_logical_command_count(cache.group);
+  const size_t group_logical_count =
+      iree_hal_amdxdna_chain_group_logical_command_count(group);
   if (cache.chains.empty() || cache.max_slots != max_slots ||
       cache.group.queue != group.queue ||
       cache.group.native_partial_elf != group.native_partial_elf ||
-      cache.group.cmds.size() != group.cmds.size() ||
+      cache_logical_count != group_logical_count ||
       !cache.group.reconf_buffers.empty() || !group.reconf_buffers.empty()) {
     return false;
   }
-  for (size_t i = 0; i < group.cmds.size(); ++i) {
-    if (!iree_hal_amdxdna_chain_cmd_descriptor_matches(cache.group.cmds[i],
-                                                       group.cmds[i])) {
+  for (size_t i = 0; i < group_logical_count; ++i) {
+    const iree_hal_amdxdna_chain_cmd* cache_cmd =
+        iree_hal_amdxdna_chain_group_cmd_at_logical_index(cache.group, i);
+    const iree_hal_amdxdna_chain_cmd* group_cmd =
+        iree_hal_amdxdna_chain_group_cmd_at_logical_index(group, i);
+    if (!cache_cmd || !group_cmd) return false;
+    if (!iree_hal_amdxdna_chain_cmd_descriptor_matches(*cache_cmd,
+                                                       *group_cmd)) {
       return false;
     }
   }

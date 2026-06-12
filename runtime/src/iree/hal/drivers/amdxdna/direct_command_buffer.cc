@@ -485,6 +485,88 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
   out_cmd->built = true;
   return iree_ok_status();
 }
+
+template <typename T>
+static bool iree_hal_amdxdna_span_equal(const std::vector<T>& lhs,
+                                        const T* rhs, size_t rhs_count) {
+  return lhs.size() == rhs_count &&
+         (rhs_count == 0 || std::equal(lhs.begin(), lhs.end(), rhs));
+}
+
+static bool iree_hal_amdxdna_chain_cmd_matches_raw_descriptor(
+    const iree_hal_amdxdna_chain_cmd& cmd,
+    const std::vector<uint32_t>* asm_inst,
+    const std::vector<uint32_t>* patches,
+    iree_hal_amdxdna_native_cu_index_t cu_idx,
+    iree_const_byte_span_t constants, bool use_native_partial_elf,
+    const uint64_t* args,
+    iree_hal_amdxdna_native_buffer_t* const* arg_buffers,
+    const iree_device_size_t* arg_offsets,
+    const iree_device_size_t* arg_lengths, size_t arg_count) {
+  if (cmd.built || cmd.src_asm_inst != asm_inst ||
+      cmd.src_patches != patches ||
+      cmd.src_use_native_partial_elf != use_native_partial_elf ||
+      cmd.src_cu_idx.index != cu_idx.index ||
+      cmd.src_constants.size() != constants.data_length) {
+    return false;
+  }
+  if (constants.data_length &&
+      std::memcmp(cmd.src_constants.data(), constants.data,
+                  constants.data_length) != 0) {
+    return false;
+  }
+  return iree_hal_amdxdna_span_equal(cmd.binding_buffers, arg_buffers,
+                                     arg_count) &&
+         iree_hal_amdxdna_span_equal(cmd.binding_device_addrs, args,
+                                     arg_count) &&
+         iree_hal_amdxdna_span_equal(cmd.binding_offsets, arg_offsets,
+                                     arg_count) &&
+         iree_hal_amdxdna_span_equal(cmd.binding_lengths, arg_lengths,
+                                     arg_count);
+}
+
+static iree_hal_amdxdna_chain_cmd
+iree_hal_amdxdna_clone_unbuilt_chain_descriptor(
+    const iree_hal_amdxdna_chain_cmd& src) {
+  iree_hal_amdxdna_chain_cmd dst;
+  dst.binding_buffers = src.binding_buffers;
+  dst.binding_device_addrs = src.binding_device_addrs;
+  dst.binding_offsets = src.binding_offsets;
+  dst.binding_lengths = src.binding_lengths;
+  dst.src_asm_inst = src.src_asm_inst;
+  dst.src_patches = src.src_patches;
+  dst.src_constants = src.src_constants;
+  dst.src_cu_idx = src.src_cu_idx;
+  dst.src_use_native_partial_elf = src.src_use_native_partial_elf;
+  dst.repeat_count = 1;
+  return dst;
+}
+
+static iree_status_t iree_hal_amdxdna_expand_repeated_chain_descriptors(
+    iree_hal_amdxdna_chain_group& group) {
+  const size_t logical_count =
+      iree_hal_amdxdna_chain_group_logical_command_count(group);
+  if (logical_count == group.cmds.size()) return iree_ok_status();
+  std::vector<iree_hal_amdxdna_chain_cmd> expanded;
+  expanded.reserve(logical_count);
+  for (iree_hal_amdxdna_chain_cmd& cmd : group.cmds) {
+    if (cmd.built && cmd.repeat_count > 1) {
+      return iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "amdxdna cmd-chain cannot expand a repeated built descriptor");
+    }
+    const size_t repeat_count = std::max<size_t>(cmd.repeat_count, 1);
+    cmd.repeat_count = 1;
+    expanded.push_back(std::move(cmd));
+    const iree_hal_amdxdna_chain_cmd& first = expanded.back();
+    for (size_t i = 1; i < repeat_count; ++i) {
+      expanded.push_back(
+          iree_hal_amdxdna_clone_unbuilt_chain_descriptor(first));
+    }
+  }
+  group.cmds = std::move(expanded);
+  return iree_ok_status();
+}
 }  // namespace
 
 // Accumulate one dispatch's reconfig+exec sub-commands into the command
@@ -570,6 +652,21 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
                   const iree_device_size_t* arg_offsets,
                   const iree_device_size_t* arg_lengths,
                   size_t arg_count) -> iree_status_t {
+    if (defer_build && !group.cmds.empty() &&
+        iree_hal_amdxdna_chain_cmd_matches_raw_descriptor(
+            group.cmds.back(), &kernel_params.asm_inst_runlist[run_idx],
+            &kernel_params.patch_runlist[run_idx], cu_idx, constants,
+            use_native_partial_elf, args, arg_buffers, arg_offsets,
+            arg_lengths, arg_count)) {
+      if (IREE_UNLIKELY(group.cmds.back().repeat_count ==
+                        std::numeric_limits<size_t>::max())) {
+        return iree_make_status(
+            IREE_STATUS_RESOURCE_EXHAUSTED,
+            "amdxdna cmd-chain repeat count overflow");
+      }
+      ++group.cmds.back().repeat_count;
+      return iree_ok_status();
+    }
     iree_hal_amdxdna_chain_cmd cmd;
     // Record the descriptor inputs (used for matching and lazy build).
     cmd.binding_buffers.assign(arg_buffers, arg_buffers + arg_count);
@@ -582,6 +679,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
                              constants.data + constants.data_length);
     cmd.src_cu_idx = cu_idx;
     cmd.src_use_native_partial_elf = use_native_partial_elf;
+    cmd.repeat_count = 1;
     if (!defer_build) {
       IREE_RETURN_IF_ERROR(iree_hal_amdxdna_make_npu_cmd(
           command_buffer, cu_idx, kernel_params.asm_inst_runlist[run_idx],
@@ -730,7 +828,8 @@ static iree_status_t iree_hal_amdxdna_prepare_chain(
 
 static bool iree_hal_amdxdna_chain_group_requires_parent_chain(
     const iree_hal_amdxdna_chain_group& group) {
-  return group.cmds.size() > 1 || !group.reconf_buffers.empty();
+  return iree_hal_amdxdna_chain_group_logical_command_count(group) > 1 ||
+         !group.reconf_buffers.empty();
 }
 
 static iree_status_t
@@ -939,6 +1038,14 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
         };
         bool exact_cache_hit = false;
         bool device_cache_hit = false;
+        bool group_expanded = false;
+        auto expand_group_once = [&]() -> iree_status_t {
+          if (group_expanded) return iree_ok_status();
+          IREE_RETURN_IF_ERROR(
+              iree_hal_amdxdna_expand_repeated_chain_descriptors(group));
+          group_expanded = true;
+          return iree_ok_status();
+        };
         // Deferred-build fast path: reuse an already-built cached chain when
         // the descriptor inputs (control-code template + constants + bindings)
         // match exactly, without building this group's children at all.
@@ -955,6 +1062,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
         // ctrl_words-based device/shape/miss logic below can match, update, or
         // cache them.
         if (!chain_cache) {
+          status = expand_group_once();
+        }
+        if (!chain_cache && iree_status_is_ok(status)) {
           for (iree_hal_amdxdna_chain_cmd& cmd : group.cmds) {
             if (cmd.built) continue;
             status = iree_hal_amdxdna_make_npu_cmd(
