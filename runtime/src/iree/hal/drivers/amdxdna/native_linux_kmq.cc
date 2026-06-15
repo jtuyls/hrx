@@ -133,12 +133,12 @@ shim_xdna::power_mode to_shim_power_mode(
 uint32_t to_shim_buffer_flags(iree_hal_amdxdna_native_buffer_c_type_t type) {
   switch (type) {
     case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_HOST_ONLY:
-      return XCL_BO_FLAGS_HOST_ONLY;
+      return AMDXDNA_BO_FLAGS_HOST_ONLY;
     case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_CACHEABLE:
     case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION:
-      return XCL_BO_FLAGS_CACHEABLE;
+      return AMDXDNA_BO_FLAGS_CACHEABLE;
   }
-  return XCL_BO_FLAGS_HOST_ONLY;
+  return AMDXDNA_BO_FLAGS_HOST_ONLY;
 }
 
 shim_xdna::direction to_shim_sync_direction(
