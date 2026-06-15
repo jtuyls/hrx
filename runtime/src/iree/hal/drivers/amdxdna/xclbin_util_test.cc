@@ -78,11 +78,21 @@ iree_const_byte_span_t Span(const std::vector<uint8_t>& v) {
   return iree_make_const_byte_span(v.data(), v.size());
 }
 
+iree_status_t ExtractPdi(const std::vector<uint8_t>& xclbin,
+                         uint32_t pdi_index, std::vector<uint8_t>* out_pdi) {
+  iree_byte_span_t pdi_span = iree_byte_span_empty();
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_xclbin_extract_pdi(
+      Span(xclbin), pdi_index, iree_allocator_system(), &pdi_span));
+  out_pdi->assign(pdi_span.data, pdi_span.data + pdi_span.data_length);
+  iree_allocator_free(iree_allocator_system(), pdi_span.data);
+  return iree_ok_status();
+}
+
 TEST(XclbinUtilTest, ExtractSinglePdi) {
   std::vector<uint8_t> pdi(64, 0xAB);
   auto xclbin = BuildXclbin({pdi});
   std::vector<uint8_t> out;
-  IREE_ASSERT_OK(iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 0, &out));
+  IREE_ASSERT_OK(ExtractPdi(xclbin, 0, &out));
   EXPECT_EQ(out, pdi);
 }
 
@@ -92,19 +102,18 @@ TEST(XclbinUtilTest, ExtractMultiplePdisByIndex) {
   std::vector<uint8_t> pdi2(100, 0x32);
   auto xclbin = BuildXclbin({pdi0, pdi1, pdi2});
   std::vector<uint8_t> out;
-  IREE_ASSERT_OK(iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 2, &out));
+  IREE_ASSERT_OK(ExtractPdi(xclbin, 2, &out));
   EXPECT_EQ(out, pdi2);
-  IREE_ASSERT_OK(iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 0, &out));
+  IREE_ASSERT_OK(ExtractPdi(xclbin, 0, &out));
   EXPECT_EQ(out, pdi0);
-  IREE_ASSERT_OK(iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 1, &out));
+  IREE_ASSERT_OK(ExtractPdi(xclbin, 1, &out));
   EXPECT_EQ(out, pdi1);
 }
 
 TEST(XclbinUtilTest, PdiIndexOutOfRange) {
   auto xclbin = BuildXclbin({std::vector<uint8_t>(8, 0x01)});
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 5, &out);
+  iree_status_t status = ExtractPdi(xclbin, 5, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_OUT_OF_RANGE);
   iree_status_ignore(status);
 }
@@ -113,8 +122,7 @@ TEST(XclbinUtilTest, RejectsNonXclbinMagic) {
   std::vector<uint8_t> not_xclbin(0x200, 0x00);
   std::memcpy(not_xclbin.data(), "NOTXCLBN", 8);
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(not_xclbin), 0, &out);
+  iree_status_t status = ExtractPdi(not_xclbin, 0, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
   iree_status_ignore(status);
 }
@@ -123,8 +131,7 @@ TEST(XclbinUtilTest, RejectsTooSmallInput) {
   std::vector<uint8_t> tiny(8, 0x00);
   std::memcpy(tiny.data(), "xclbin2\0", 8);
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(tiny), 0, &out);
+  iree_status_t status = ExtractPdi(tiny, 0, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
   iree_status_ignore(status);
 }
@@ -133,8 +140,7 @@ TEST(XclbinUtilTest, RejectsMissingAiePartitionSection) {
   // Valid AXLF with a single section of a non-AIE_PARTITION kind.
   auto xclbin = BuildXclbin({std::vector<uint8_t>(8, 0x01)}, /*kind=*/7u);
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 0, &out);
+  iree_status_t status = ExtractPdi(xclbin, 0, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
   iree_status_ignore(status);
 }
@@ -142,8 +148,7 @@ TEST(XclbinUtilTest, RejectsMissingAiePartitionSection) {
 TEST(XclbinUtilTest, RejectsEmptyPdiImage) {
   auto xclbin = BuildXclbin({std::vector<uint8_t>()});  // zero-length PDI
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 0, &out);
+  iree_status_t status = ExtractPdi(xclbin, 0, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
   iree_status_ignore(status);
 }
@@ -157,8 +162,7 @@ TEST(XclbinUtilTest, RejectsOutOfBoundsPdiOffset) {
   const size_t rec = part_off + kAiePartitionHeaderSize;  // first PDI record
   WriteU32(xclbin, rec + kAiePdiImageOffsetOffset, 0x7FFFFFFFu);
   std::vector<uint8_t> out;
-  iree_status_t status =
-      iree_hal_amdxdna_xclbin_extract_pdi(Span(xclbin), 0, &out);
+  iree_status_t status = ExtractPdi(xclbin, 0, &out);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
   iree_status_ignore(status);
 }

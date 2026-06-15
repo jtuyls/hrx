@@ -66,7 +66,7 @@ iree_cc_library(
     semaphore.c
     semaphore.h
     util.h
-    xclbin_util.cc
+    xclbin_util.c
     xclbin_util.h
   DEPS
     iree::async

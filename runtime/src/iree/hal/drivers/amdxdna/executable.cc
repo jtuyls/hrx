@@ -525,10 +525,16 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
     int32_t pdi_index =
         iree_hal_amdxdna_xclbin_EntryPointDef_pdi_index_get(entry_point);
     if (pdi_index >= 0) {
+      iree_byte_span_t pdi_span = iree_byte_span_empty();
       status = iree_hal_amdxdna_xclbin_extract_pdi(
           iree_make_const_byte_span(params->xclbin.data(),
                                     params->xclbin.size()),
-          static_cast<uint32_t>(pdi_index), &params->pdi);
+          static_cast<uint32_t>(pdi_index), host_allocator, &pdi_span);
+      if (iree_status_is_ok(status)) {
+        params->pdi.assign(pdi_span.data,
+                           pdi_span.data + pdi_span.data_length);
+        iree_allocator_free(host_allocator, pdi_span.data);
+      }
       if (!iree_status_is_ok(status)) goto fail;
     }
 
