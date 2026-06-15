@@ -11,10 +11,10 @@
 #include "iree/hal/drivers/amdxdna/native.h"
 
 #include <cstring>
-#include <memory>
 #include <string>
 
 #include "iree/hal/drivers/amdxdna/native_internal.h"
+#include "iree/base/internal/atomics.h"
 
 namespace {
 
@@ -178,7 +178,8 @@ iree_hal_amdxdna_native_c_device_caps_t to_c_device_caps(
 }  // namespace
 
 struct iree_hal_amdxdna_native_context_ref_t {
-  std::shared_ptr<iree_hal_amdxdna_native_context_t> context;
+  iree_atomic_ref_count_t ref_count;
+  iree_hal_amdxdna_native_context_t* context;
 };
 
 extern "C" iree_status_t iree_hal_amdxdna_native_device_c_resolve_options(
@@ -313,8 +314,8 @@ extern "C" iree_status_t iree_hal_amdxdna_native_device_c_create_context_ref(
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_device_create_context(
       device, &native_image, &raw_context));
   auto* context_ref = new iree_hal_amdxdna_native_context_ref_t();
-  context_ref->context = std::shared_ptr<iree_hal_amdxdna_native_context_t>(
-      raw_context, iree_hal_amdxdna_native_context_destroy);
+  iree_atomic_ref_count_init(&context_ref->ref_count);
+  context_ref->context = raw_context;
   *out_context_ref = context_ref;
   return iree_ok_status();
 }
@@ -323,20 +324,23 @@ extern "C" iree_hal_amdxdna_native_context_ref_t*
 iree_hal_amdxdna_native_context_ref_retain(
     iree_hal_amdxdna_native_context_ref_t* context_ref) {
   if (!context_ref) return nullptr;
-  auto* retained = new iree_hal_amdxdna_native_context_ref_t();
-  retained->context = context_ref->context;
-  return retained;
+  iree_atomic_ref_count_inc(&context_ref->ref_count);
+  return context_ref;
 }
 
 extern "C" void iree_hal_amdxdna_native_context_ref_release(
     iree_hal_amdxdna_native_context_ref_t* context_ref) {
-  delete context_ref;
+  if (!context_ref) return;
+  if (iree_atomic_ref_count_dec(&context_ref->ref_count) == 1) {
+    iree_hal_amdxdna_native_context_destroy(context_ref->context);
+    delete context_ref;
+  }
 }
 
 extern "C" iree_hal_amdxdna_native_context_t*
 iree_hal_amdxdna_native_context_ref_borrow(
     iree_hal_amdxdna_native_context_ref_t* context_ref) {
-  return context_ref ? context_ref->context.get() : nullptr;
+  return context_ref ? context_ref->context : nullptr;
 }
 
 extern "C" iree_status_t iree_hal_amdxdna_native_context_ref_open_cu(
@@ -345,7 +349,7 @@ extern "C" iree_status_t iree_hal_amdxdna_native_context_ref_open_cu(
     iree_hal_amdxdna_native_c_cu_index_t* out_cu_index) {
   iree_hal_amdxdna_native_cu_index_t native_cu_index;
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_context_open_cu(
-      context_ref->context.get(), kernel_name, &native_cu_index));
+      context_ref->context, kernel_name, &native_cu_index));
   out_cu_index->index = native_cu_index.index;
   return iree_ok_status();
 }
@@ -354,13 +358,13 @@ extern "C" iree_status_t
 iree_hal_amdxdna_native_context_ref_close_single_aperture_session(
     iree_hal_amdxdna_native_context_ref_t* context_ref) {
   return iree_hal_amdxdna_native_context_close_single_aperture_session(
-      context_ref->context.get());
+      context_ref->context);
 }
 
 extern "C" iree_hal_amdxdna_native_queue_t*
 iree_hal_amdxdna_native_context_ref_queue(
     iree_hal_amdxdna_native_context_ref_t* context_ref) {
-  return iree_hal_amdxdna_native_context_queue(context_ref->context.get());
+  return iree_hal_amdxdna_native_context_queue(context_ref->context);
 }
 
 extern "C" uint64_t iree_hal_amdxdna_native_queue_c_exec_command_count(
