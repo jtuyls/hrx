@@ -43,8 +43,7 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
 
 const char* ContextBlobInfoKernelName(const ContextBlobInfo* info,
                                       uint32_t index);
-const char* ContextBlobInfoPdiName(const ContextBlobInfo* info,
-                                   uint32_t index);
+const char* ContextBlobInfoPdiName(const ContextBlobInfo* info, uint32_t index);
 void ContextBlobInfoDeinitialize(ContextBlobInfo* info);
 
 }  // namespace iree::hal::amdxdna::mcdm

@@ -203,8 +203,7 @@ bool CreateContext(const KmtApi& api, const Device& device,
                    const uint8_t* private_data, size_t private_data_size,
                    Context* out_context, Error* out_error);
 
-void DestroyContext(const KmtApi& api, const Device& device,
-                    Context* context);
+void DestroyContext(const KmtApi& api, const Device& device, Context* context);
 
 bool CreateCommandAperture(const KmtApi& api, const Device& device,
                            const Context& context,

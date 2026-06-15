@@ -12,8 +12,8 @@
 #include "iree/hal/drivers/amdxdna/device.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 
-static iree_host_size_t iree_hal_amdxdna_max_host_size(
-    iree_host_size_t lhs, iree_host_size_t rhs) {
+static iree_host_size_t iree_hal_amdxdna_max_host_size(iree_host_size_t lhs,
+                                                       iree_host_size_t rhs) {
   return lhs > rhs ? lhs : rhs;
 }
 
@@ -68,7 +68,8 @@ static bool iree_hal_amdxdna_u64_span_equal(const uint64_t* lhs,
 static bool iree_hal_amdxdna_device_size_span_equal(
     const iree_device_size_t* lhs, const iree_device_size_t* rhs,
     iree_host_size_t count) {
-  return count == 0 || memcmp(lhs, rhs, count * sizeof(iree_device_size_t)) == 0;
+  return count == 0 ||
+         memcmp(lhs, rhs, count * sizeof(iree_device_size_t)) == 0;
 }
 
 static void iree_hal_amdxdna_chain_cmd_free_signature(
@@ -99,8 +100,7 @@ static void iree_hal_amdxdna_chain_cmd_free_deferred(
   cmd->repeat_count = 1;
 }
 
-void iree_hal_amdxdna_chain_cmd_initialize(
-    iree_hal_amdxdna_chain_cmd_t* cmd) {
+void iree_hal_amdxdna_chain_cmd_initialize(iree_hal_amdxdna_chain_cmd_t* cmd) {
   memset(cmd, 0, sizeof(*cmd));
   cmd->repeat_count = 1;
   cmd->native_bindings_current = true;
@@ -116,8 +116,8 @@ void iree_hal_amdxdna_chain_cmd_deinitialize(
   iree_hal_amdxdna_chain_cmd_initialize(cmd);
 }
 
-void iree_hal_amdxdna_chain_cmd_move(
-    iree_hal_amdxdna_chain_cmd_t* dst, iree_hal_amdxdna_chain_cmd_t* src) {
+void iree_hal_amdxdna_chain_cmd_move(iree_hal_amdxdna_chain_cmd_t* dst,
+                                     iree_hal_amdxdna_chain_cmd_t* src) {
   *dst = *src;
   iree_hal_amdxdna_chain_cmd_initialize(src);
 }
@@ -138,29 +138,29 @@ iree_status_t iree_hal_amdxdna_chain_cmd_set_signature(
   // Inputs may alias the command being rewritten (deferred descriptors are
   // materialized in place), so copy first and only then release the old arrays.
   if (ctrl_word_count != 0) {
-    status = iree_allocator_malloc_array(
-        host_allocator, ctrl_word_count, sizeof(*new_ctrl_words),
-        (void**)&new_ctrl_words);
+    status = iree_allocator_malloc_array(host_allocator, ctrl_word_count,
+                                         sizeof(*new_ctrl_words),
+                                         (void**)&new_ctrl_words);
     if (!iree_status_is_ok(status)) goto cleanup;
     memcpy(new_ctrl_words, ctrl_words,
            ctrl_word_count * sizeof(*new_ctrl_words));
   }
   if (binding_count != 0) {
-    status = iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*new_binding_buffers),
-        (void**)&new_binding_buffers);
+    status = iree_allocator_malloc_array(host_allocator, binding_count,
+                                         sizeof(*new_binding_buffers),
+                                         (void**)&new_binding_buffers);
     if (!iree_status_is_ok(status)) goto cleanup;
-    status = iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*new_binding_device_addrs),
-        (void**)&new_binding_device_addrs);
+    status = iree_allocator_malloc_array(host_allocator, binding_count,
+                                         sizeof(*new_binding_device_addrs),
+                                         (void**)&new_binding_device_addrs);
     if (!iree_status_is_ok(status)) goto cleanup;
-    status = iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*new_binding_offsets),
-        (void**)&new_binding_offsets);
+    status = iree_allocator_malloc_array(host_allocator, binding_count,
+                                         sizeof(*new_binding_offsets),
+                                         (void**)&new_binding_offsets);
     if (!iree_status_is_ok(status)) goto cleanup;
-    status = iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*new_binding_lengths),
-        (void**)&new_binding_lengths);
+    status = iree_allocator_malloc_array(host_allocator, binding_count,
+                                         sizeof(*new_binding_lengths),
+                                         (void**)&new_binding_lengths);
     if (!iree_status_is_ok(status)) goto cleanup;
     memcpy(new_binding_buffers, binding_buffers,
            binding_count * sizeof(*new_binding_buffers));
@@ -253,8 +253,8 @@ void iree_hal_amdxdna_chain_group_deinitialize(
   iree_hal_amdxdna_chain_group_initialize(group);
 }
 
-void iree_hal_amdxdna_chain_group_move(
-    iree_hal_amdxdna_chain_group_t* dst, iree_hal_amdxdna_chain_group_t* src) {
+void iree_hal_amdxdna_chain_group_move(iree_hal_amdxdna_chain_group_t* dst,
+                                       iree_hal_amdxdna_chain_group_t* src) {
   *dst = *src;
   iree_hal_amdxdna_chain_group_initialize(src);
 }
@@ -292,8 +292,9 @@ iree_status_t iree_hal_amdxdna_chain_group_append_binding_ref_unique(
     }
   }
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_reserve_array(
-      host_allocator, sizeof(*group->binding_refs), group->binding_ref_count + 1,
-      (void**)&group->binding_refs, &group->binding_ref_capacity));
+      host_allocator, sizeof(*group->binding_refs),
+      group->binding_ref_count + 1, (void**)&group->binding_refs,
+      &group->binding_ref_capacity));
   group->binding_refs[group->binding_ref_count++] = binding_ref;
   return iree_ok_status();
 }
@@ -326,8 +327,8 @@ void iree_hal_amdxdna_chain_accum_deinitialize(
   iree_hal_amdxdna_chain_accum_initialize(accum);
 }
 
-void iree_hal_amdxdna_chain_accum_clear(
-    iree_allocator_t host_allocator, iree_hal_amdxdna_chain_accum_t* accum) {
+void iree_hal_amdxdna_chain_accum_clear(iree_allocator_t host_allocator,
+                                        iree_hal_amdxdna_chain_accum_t* accum) {
   for (iree_host_size_t i = 0; i < accum->group_count; ++i) {
     iree_hal_amdxdna_chain_group_deinitialize(host_allocator,
                                               &accum->groups[i]);
@@ -341,8 +342,7 @@ iree_status_t iree_hal_amdxdna_chain_accum_append_group(
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_reserve_array(
       host_allocator, sizeof(*accum->groups), accum->group_count + 1,
       (void**)&accum->groups, &accum->group_capacity));
-  iree_hal_amdxdna_chain_group_t* group =
-      &accum->groups[accum->group_count++];
+  iree_hal_amdxdna_chain_group_t* group = &accum->groups[accum->group_count++];
   iree_hal_amdxdna_chain_group_initialize(group);
   *out_group = group;
   return iree_ok_status();
@@ -386,7 +386,8 @@ void iree_hal_amdxdna_chain_command_cache_entry_clear_chains(
 static void iree_hal_amdxdna_chain_command_cache_entry_deinitialize(
     iree_allocator_t host_allocator,
     iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
-  iree_hal_amdxdna_chain_command_cache_entry_clear_chains(host_allocator, entry);
+  iree_hal_amdxdna_chain_command_cache_entry_clear_chains(host_allocator,
+                                                          entry);
   iree_allocator_free(host_allocator, entry->chains);
   iree_hal_amdxdna_chain_group_deinitialize(host_allocator, &entry->group);
   memset(entry, 0, sizeof(*entry));
@@ -496,8 +497,7 @@ iree_status_t iree_hal_amdxdna_expand_repeated_chain_descriptors(
               host_allocator, cmd, &expanded[cursor + j]);
       if (!iree_status_is_ok(status)) {
         for (iree_host_size_t k = 0; k < cursor + j; ++k) {
-          iree_hal_amdxdna_chain_cmd_deinitialize(host_allocator,
-                                                  &expanded[k]);
+          iree_hal_amdxdna_chain_cmd_deinitialize(host_allocator, &expanded[k]);
         }
         iree_allocator_free(host_allocator, expanded);
         return status;
@@ -527,7 +527,8 @@ bool iree_hal_amdxdna_chain_command_cache_device_matches(
       cache->group.queue != group->queue ||
       cache->group.native_partial_elf != group->native_partial_elf ||
       cache->group.cmd_count != group->cmd_count ||
-      cache->group.reconf_buffer_count != 0 || group->reconf_buffer_count != 0) {
+      cache->group.reconf_buffer_count != 0 ||
+      group->reconf_buffer_count != 0) {
     return false;
   }
   for (iree_host_size_t i = 0; i < group->cmd_count; ++i) {
@@ -546,7 +547,8 @@ bool iree_hal_amdxdna_chain_command_cache_shape_matches(
       cache->group.queue != group->queue ||
       cache->group.native_partial_elf != group->native_partial_elf ||
       cache->group.cmd_count != group->cmd_count ||
-      cache->group.reconf_buffer_count != 0 || group->reconf_buffer_count != 0) {
+      cache->group.reconf_buffer_count != 0 ||
+      group->reconf_buffer_count != 0) {
     return false;
   }
   for (iree_host_size_t i = 0; i < group->cmd_count; ++i) {
@@ -607,8 +609,7 @@ bool iree_hal_amdxdna_chain_cmd_matches_raw_descriptor(
              (const void* const*)cmd->binding_buffers,
              (const void* const*)binding_buffers, binding_count) &&
          iree_hal_amdxdna_u64_span_equal(cmd->binding_device_addrs,
-                                         binding_device_addrs,
-                                         binding_count) &&
+                                         binding_device_addrs, binding_count) &&
          iree_hal_amdxdna_device_size_span_equal(
              cmd->binding_offsets, binding_offsets, binding_count) &&
          iree_hal_amdxdna_device_size_span_equal(
@@ -626,7 +627,8 @@ bool iree_hal_amdxdna_chain_command_cache_descriptor_matches(
       cache->group.queue != group->queue ||
       cache->group.native_partial_elf != group->native_partial_elf ||
       cache_logical_count != group_logical_count ||
-      cache->group.reconf_buffer_count != 0 || group->reconf_buffer_count != 0) {
+      cache->group.reconf_buffer_count != 0 ||
+      group->reconf_buffer_count != 0) {
     return false;
   }
   for (iree_host_size_t i = 0; i < group_logical_count; ++i) {
@@ -664,12 +666,12 @@ iree_status_t iree_hal_amdxdna_update_cached_chain_cmd(
       !iree_hal_amdxdna_u64_span_equal(cached->binding_device_addrs,
                                        fresh->binding_device_addrs,
                                        cached->binding_count) ||
-      !iree_hal_amdxdna_device_size_span_equal(
-          cached->binding_offsets, fresh->binding_offsets,
-          cached->binding_count) ||
-      !iree_hal_amdxdna_device_size_span_equal(
-          cached->binding_lengths, fresh->binding_lengths,
-          cached->binding_count);
+      !iree_hal_amdxdna_device_size_span_equal(cached->binding_offsets,
+                                               fresh->binding_offsets,
+                                               cached->binding_count) ||
+      !iree_hal_amdxdna_device_size_span_equal(cached->binding_lengths,
+                                               fresh->binding_lengths,
+                                               cached->binding_count);
   const bool native_bindings_changed =
       !iree_hal_amdxdna_ptr_span_equal(
           (const void* const*)cached->binding_buffers,
@@ -743,8 +745,8 @@ iree_hal_amdxdna_chain_command_cache_allocate_entry(
       entry = &cache->entries[i];
     }
   }
-  iree_hal_amdxdna_chain_command_cache_entry_deinitialize(
-      cache->host_allocator, entry);
+  iree_hal_amdxdna_chain_command_cache_entry_deinitialize(cache->host_allocator,
+                                                          entry);
   iree_hal_amdxdna_chain_group_initialize(&entry->group);
   return entry;
 }

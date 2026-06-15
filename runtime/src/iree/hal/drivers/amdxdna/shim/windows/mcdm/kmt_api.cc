@@ -11,8 +11,8 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
-#include <cwchar>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 
 namespace iree::hal::amdxdna::mcdm {
@@ -133,8 +133,7 @@ uint64_t AlignUpToPage(uint64_t value) {
   return (value + 4095u) & ~uint64_t{4095u};
 }
 
-void CloseAdapterHandles(const KmtApi& api,
-                         const D3DKMT_ADAPTERINFO* adapters,
+void CloseAdapterHandles(const KmtApi& api, const D3DKMT_ADAPTERINFO* adapters,
                          UINT adapter_count, D3DKMT_HANDLE keep = 0) {
   for (UINT i = 0; i < adapter_count; ++i) {
     const D3DKMT_ADAPTERINFO& adapter = adapters[i];
@@ -157,9 +156,10 @@ bool AppendRetainedAdapterHandle(Adapter* adapter, D3DKMT_HANDLE handle,
   return true;
 }
 
-bool SelectNpuAdapterFromOpenHandles(
-    const KmtApi& api, const D3DKMT_ADAPTERINFO* adapters, UINT adapter_count,
-    Adapter* out_adapter, bool stop_after_match = false) {
+bool SelectNpuAdapterFromOpenHandles(const KmtApi& api,
+                                     const D3DKMT_ADAPTERINFO* adapters,
+                                     UINT adapter_count, Adapter* out_adapter,
+                                     bool stop_after_match = false) {
   Adapter exact;
   Adapter fallback;
   Adapter loose;
@@ -265,15 +265,14 @@ void QueryDriverStorePathForWarmup(const KmtApi& api, D3DKMT_HANDLE adapter) {
   if (query_info.OutputValueSize > kMaxDriverStorePathWarmupBytes) {
     return;
   }
-  alignas(D3DDDI_QUERYREGISTRY_INFO) uint8_t
-      buffer[sizeof(D3DDDI_QUERYREGISTRY_INFO) +
-             kMaxDriverStorePathWarmupBytes] = {};
+  alignas(D3DDDI_QUERYREGISTRY_INFO)
+      uint8_t buffer[sizeof(D3DDDI_QUERYREGISTRY_INFO) +
+                     kMaxDriverStorePathWarmupBytes] = {};
   auto* expanded = reinterpret_cast<D3DDDI_QUERYREGISTRY_INFO*>(buffer);
   expanded->QueryType = D3DDDI_QUERYREGISTRY_DRIVERSTOREPATH;
   query.pPrivateDriverData = expanded;
-  query.PrivateDriverDataSize =
-      static_cast<UINT>(sizeof(D3DDDI_QUERYREGISTRY_INFO) +
-                        query_info.OutputValueSize);
+  query.PrivateDriverDataSize = static_cast<UINT>(
+      sizeof(D3DDDI_QUERYREGISTRY_INFO) + query_info.OutputValueSize);
   api.query_adapter_info(&query);
 }
 
@@ -358,12 +357,12 @@ bool KmtApi::Load(Error* out_error) {
     return true;
   }
 
-  SetError(out_error, "failed to resolve one or more required KMT entry points");
+  SetError(out_error,
+           "failed to resolve one or more required KMT entry points");
   return false;
 }
 
-bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter,
-                    Error* out_error) {
+bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter, Error* out_error) {
   D3DKMT_ADAPTERINFO adapters[kMaxComputeAdapters] = {};
   UINT adapter_count = 0;
   if (!EnumerateComputeAdapters(api, adapters, kMaxComputeAdapters,
@@ -534,8 +533,8 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
     // bytes (~0x148, single 4 KiB page), packing multiple parents' exec BOs
     // into one coherence granule and racing the firmware on multi-parent
     // re-runs. The HAL still sees only the logical command capacity.
-    requested_size =
-        std::max<uint64_t>(requested_size, 0x1000) + kPathBSubmitPrivatePrefixSize;
+    requested_size = std::max<uint64_t>(requested_size, 0x1000) +
+                     kPathBSubmitPrivatePrefixSize;
   }
   uint64_t aligned_size = AlignUpToPage(requested_size);
   uint64_t size_pages = aligned_size / 4096;
@@ -640,8 +639,7 @@ bool SyncCommandApertureCode(const KmtApi& api, const Device& device,
                              const CommandAperture& aperture, uint64_t offset,
                              uint64_t length, Error* out_error) {
   if (!aperture.gpu_allocation) {
-    SetError(out_error,
-             "SyncCommandApertureCode called before aperture setup");
+    SetError(out_error, "SyncCommandApertureCode called before aperture setup");
     return false;
   }
   D3DKMT_INVALIDATECACHE invalidate = {};
@@ -710,8 +708,7 @@ bool RefreshBufferCpuMapping(const KmtApi& api, const Device& device,
       buffer->cpu_ptr = restore_lock.pData;
     } else {
       SetErrorFormat(out_error, "%s; restore failed: %s",
-                     ErrorMessage(&relock_error),
-                     ErrorMessage(&restore_error));
+                     ErrorMessage(&relock_error), ErrorMessage(&restore_error));
     }
     return false;
   }
@@ -852,8 +849,7 @@ bool CreateContext(const KmtApi& api, const Device& device,
   return true;
 }
 
-void DestroyContext(const KmtApi& api, const Device& device,
-                    Context* context) {
+void DestroyContext(const KmtApi& api, const Device& device, Context* context) {
   if (!context) return;
   // The status ring is a context-owned KMT allocation created lazily by the
   // path-B submit path. Tear it down before destroying the HW queue/context
@@ -879,8 +875,7 @@ void DestroyContext(const KmtApi& api, const Device& device,
 
 bool CreateCommandAperture(const KmtApi& api, const Device& device,
                            const Context& context,
-                           CommandAperture* out_aperture,
-                           Error* out_error) {
+                           CommandAperture* out_aperture, Error* out_error) {
   if (!out_aperture) {
     SetError(out_error, "CreateCommandAperture called with null output");
     return false;
@@ -1129,8 +1124,7 @@ bool WaitForHwQueueFenceCpu(const KmtApi& api, const Device& device,
 bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
                              Context* context, CommandAperture* aperture,
                              const void* aperture_payload,
-                             size_t aperture_payload_size,
-                             Error* out_error) {
+                             size_t aperture_payload_size, Error* out_error) {
   if (!context || !context->hw_queue || !aperture ||
       !aperture->gpu_allocation || !aperture->allocation ||
       !aperture->cpu_ptr) {
@@ -1209,8 +1203,7 @@ bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
                              uint64_t offset, bool wait_for_cpu,
                              Error* out_error) {
   if (!context || !context->hw_queue || !aperture.gpu_allocation) {
-    SetError(out_error,
-             "SubmitPathBApertureSync called before aperture setup");
+    SetError(out_error, "SubmitPathBApertureSync called before aperture setup");
     return false;
   }
   uint64_t sync_private[kSubmitPrivateQwords] = {};
@@ -1454,8 +1447,7 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
   // cache-visible read from the explicit protocol locations here.
   volatile uint32_t* const volatile_packet_header = packet_header;
   uint32_t slot_state = 0;
-  uint32_t packet_state =
-      volatile_packet_header ? *volatile_packet_header : 0;
+  uint32_t packet_state = volatile_packet_header ? *volatile_packet_header : 0;
   const bool trust_fence_completion = TrustFenceCompletionEnabled();
   auto read_completion_once = [&]() -> bool {
     if (trust_fence_completion) {
@@ -1512,8 +1504,7 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
                            uint32_t command_state,
                            const PathBChainSubmitInfo* chain_info,
                            uint32_t* packet_header,
-                           PathBPendingSubmit* out_pending,
-                           Error* out_error) {
+                           PathBPendingSubmit* out_pending, Error* out_error) {
   if (!out_pending) {
     SetError(out_error, "SubmitPathB called without pending storage");
     return false;
@@ -1693,8 +1684,7 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
       uint32_t delta = (*packet_header ^ completion_state) & 0xFu;
       *packet_header ^= delta;
     }
-    const uint32_t final_state =
-        packet_header ? *packet_header : slot_state;
+    const uint32_t final_state = packet_header ? *packet_header : slot_state;
     if ((final_state & 0xFu) < 4) {
       SetErrorFormat(out_error,
                      "pathb batch command %zu did not complete after final "

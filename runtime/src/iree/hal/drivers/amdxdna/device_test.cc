@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/hal/drivers/amdxdna/api.h"
-
 #include "iree/testing/gtest.h"
 
 namespace {

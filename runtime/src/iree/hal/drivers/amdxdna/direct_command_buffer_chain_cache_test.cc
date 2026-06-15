@@ -28,9 +28,9 @@ const iree_hal_amdxdna_u32_list_t* FakeU32List(uintptr_t value) {
   return reinterpret_cast<const iree_hal_amdxdna_u32_list_t*>(value);
 }
 
-iree_hal_amdxdna_chain_cmd_t MakeCmd(
-    iree_hal_amdxdna_native_buffer_t* buffer, uint64_t device_addr,
-    size_t repeat_count = 1) {
+iree_hal_amdxdna_chain_cmd_t MakeCmd(iree_hal_amdxdna_native_buffer_t* buffer,
+                                     uint64_t device_addr,
+                                     size_t repeat_count = 1) {
   iree_hal_amdxdna_chain_cmd_t cmd;
   iree_hal_amdxdna_chain_cmd_initialize(&cmd);
   const uint32_t ctrl_words[] = {0xA, 0xB, 0xC};
@@ -66,12 +66,11 @@ iree_hal_amdxdna_chain_group_t MakeEmptyGroup() {
 
 void AppendCmd(iree_hal_amdxdna_chain_group_t* group,
                iree_hal_amdxdna_chain_cmd_t* cmd) {
-  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_cmd_move(
-      TestAllocator(), group, cmd));
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_cmd_move(TestAllocator(),
+                                                             group, cmd));
 }
 
-iree_hal_amdxdna_chain_group_t MakeGroup1(
-    iree_hal_amdxdna_chain_cmd_t* cmd) {
+iree_hal_amdxdna_chain_group_t MakeGroup1(iree_hal_amdxdna_chain_cmd_t* cmd) {
   iree_hal_amdxdna_chain_group_t group = MakeEmptyGroup();
   AppendCmd(&group, cmd);
   return group;

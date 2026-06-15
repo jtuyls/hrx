@@ -50,8 +50,7 @@ bool Fail(const char* message, Error* out_error) {
   return false;
 }
 
-bool FailStatus(iree_status_t status, const char* message,
-                Error* out_error) {
+bool FailStatus(iree_status_t status, const char* message, Error* out_error) {
   if (iree_status_is_ok(status)) return true;
   iree_status_ignore(status);
   return Fail(message, out_error);
@@ -180,8 +179,8 @@ bool ParseSections(const uint8_t* xclbin, size_t xclbin_size,
     section->kind = ReadU32(xclbin, record);
     section->offset = ReadU64(xclbin, record + 24);
     section->size = ReadU64(xclbin, record + 32);
-    if (!CheckRange(xclbin_size, section->offset, section->size,
-                    "AXLF section", out_error)) {
+    if (!CheckRange(xclbin_size, section->offset, section->size, "AXLF section",
+                    out_error)) {
       return false;
     }
   }
@@ -208,8 +207,8 @@ size_t FindBytes(const uint8_t* data, size_t size, const char* needle,
   return size;
 }
 
-bool ExtractJsonStringAfter(const uint8_t* json, size_t json_size,
-                            size_t start, const char* key, char* out_value) {
+bool ExtractJsonStringAfter(const uint8_t* json, size_t json_size, size_t start,
+                            const char* key, char* out_value) {
   size_t key_pos = FindBytes(json, json_size, key, start);
   if (key_pos == json_size) return false;
   size_t colon = FindBytes(json, json_size, ":", key_pos + std::strlen(key));
@@ -255,8 +254,7 @@ void NormalizeIpName(char* name) {
 
 bool DeriveKernelNameFromMetadata(const uint8_t* xclbin,
                                   const AxlfSectionList& sections,
-                                  char* out_name,
-                                  Error* out_error) {
+                                  char* out_name, Error* out_error) {
   const AxlfSection* section =
       FindFirstSection(sections, kBuildMetadataSection);
   if (!section) return CopyLiteralName("kernel", out_name, out_error);
@@ -271,8 +269,7 @@ bool DeriveKernelNameFromMetadata(const uint8_t* xclbin,
     return true;
   }
 
-  if (ExtractJsonStringAfter(json, json_size, 0, "\"xclbin_name\"",
-                             out_name) &&
+  if (ExtractJsonStringAfter(json, json_size, 0, "\"xclbin_name\"", out_name) &&
       out_name[0] != 0) {
     StripLinkSuffix(out_name);
     return true;
@@ -282,12 +279,11 @@ bool DeriveKernelNameFromMetadata(const uint8_t* xclbin,
 }
 
 bool AllocateNameTable(iree_allocator_t allocator, uint32_t count,
-                       char** out_names, const char* what,
-                       Error* out_error) {
+                       char** out_names, const char* what, Error* out_error) {
   if (count == 0) return true;
-  iree_status_t status = iree_allocator_malloc_array(
-      allocator, count, kContextBlobNameCapacity,
-      reinterpret_cast<void**>(out_names));
+  iree_status_t status =
+      iree_allocator_malloc_array(allocator, count, kContextBlobNameCapacity,
+                                  reinterpret_cast<void**>(out_names));
   return FailStatus(status, what, out_error);
 }
 
@@ -333,8 +329,8 @@ bool ParseIpLayout(const uint8_t* xclbin, size_t xclbin_size,
   for (uint32_t i = 0; i < count; ++i) {
     size_t record = records_offset + size_t{i} * kIpDataRecordSize;
     char name[kContextBlobNameCapacity] = {};
-    if (!CopyFixedName(data + record + kIpDataNameOffset, kIpDataNameSize,
-                       name, "IP_LAYOUT name", out_error)) {
+    if (!CopyFixedName(data + record + kIpDataNameOffset, kIpDataNameSize, name,
+                       "IP_LAYOUT name", out_error)) {
       return false;
     }
     NormalizeIpName(name);
@@ -501,8 +497,7 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
   }
 
   if (xclbin_size >
-      std::numeric_limits<size_t>::max() - kAxlfBaseOffset -
-          kContextTailSize) {
+      std::numeric_limits<size_t>::max() - kAxlfBaseOffset - kContextTailSize) {
     Fail("context blob size overflows size_t", out_error);
     goto fail;
   }

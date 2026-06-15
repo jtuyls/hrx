@@ -133,8 +133,7 @@ TEST(ContextBlobTest, ParsesMultiPdiIpLayoutAndAiePartition) {
 TEST(ContextBlobTest, RejectsExcessiveAxlfSectionCount) {
   constexpr uint32_t kMaxAxlfSections = 4096;
   constexpr size_t kSectionTableOffset = 0x1C8;
-  std::vector<uint8_t> xclbin(kSectionTableOffset +
-                                  (kMaxAxlfSections + 1) * 40,
+  std::vector<uint8_t> xclbin(kSectionTableOffset + (kMaxAxlfSections + 1) * 40,
                               0);
   WriteString(&xclbin, 0, 8, "xclbin2");
   WriteU32(&xclbin, 0x1C0, kMaxAxlfSections + 1);
