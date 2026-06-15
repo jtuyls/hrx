@@ -51,6 +51,7 @@ static bool iree_hal_amdxdna_chain_cmd_device_signature_matches(
     const iree_hal_amdxdna_chain_cmd& lhs,
     const iree_hal_amdxdna_chain_cmd& rhs) {
   return lhs.ctrl_words == rhs.ctrl_words &&
+         lhs.binding_buffers == rhs.binding_buffers &&
          lhs.binding_device_addrs == rhs.binding_device_addrs &&
          lhs.binding_offsets == rhs.binding_offsets &&
          lhs.binding_lengths == rhs.binding_lengths;
@@ -209,7 +210,7 @@ iree_status_t iree_hal_amdxdna_update_cached_chain_cmd(
         iree_hal_amdxdna_native_command_mark_code_dirty(cached.command.get()));
     cached.ctrl_words = fresh.ctrl_words;
   }
-  if (native_bindings_changed && (code_changed || device_bindings_changed)) {
+  if (native_bindings_changed) {
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_command_reset_bound_buffers(
         cached.command.get()));
     for (size_t i = 0; i < fresh.binding_buffers.size(); ++i) {
@@ -225,7 +226,8 @@ iree_status_t iree_hal_amdxdna_update_cached_chain_cmd(
   cached.binding_offsets = fresh.binding_offsets;
   cached.binding_lengths = fresh.binding_lengths;
   if (out_packet_changed) {
-    *out_packet_changed = code_changed || device_bindings_changed;
+    *out_packet_changed = code_changed || device_bindings_changed ||
+                          native_bindings_changed;
   }
   if (out_code_changed) *out_code_changed = code_changed;
   if (out_device_bindings_changed) {

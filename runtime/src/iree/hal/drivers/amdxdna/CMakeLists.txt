@@ -122,6 +122,19 @@ iree_cc_test(
 
 iree_cc_test(
   NAME
+    direct_command_buffer_chain_cache_test
+  SRCS
+    "direct_command_buffer_chain_cache_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
     direct_command_buffer_planning_test
   SRCS
     "direct_command_buffer_planning_test.cc"

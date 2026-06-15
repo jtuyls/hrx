@@ -519,7 +519,6 @@ struct iree_hal_amdxdna_native_command_t {
   uint64_t pathb_chain_code_used_size = 0;
   uint64_t pathb_chain_code_aperture_offset = 0;
   uint64_t pathb_chain_descriptor_aperture_offset = 0;
-  bool pathb_chain_allow_code_dedup = true;
   bool pathb_chain_prepared_valid = false;
   bool pathb_chain_code_dirty = false;
   bool pathb_chain_descriptor_dirty = false;
@@ -1327,41 +1326,25 @@ iree_status_t prepare_pathb_chain_code(
   size_t code_offset = 0;
   size_t code_used = 0;
   std::vector<size_t> child_code_offsets;
-  std::vector<bool> child_code_needs_copy;
-  struct UniqueChainCodeSlot {
-    iree_hal_amdxdna_native_command_t* child = nullptr;
-    size_t offset = 0;
-  };
-  std::vector<UniqueChainCodeSlot> unique_code_slots;
   child_code_offsets.reserve(chain_command->chain_children.size());
-  child_code_needs_copy.reserve(chain_command->chain_children.size());
-  unique_code_slots.reserve(chain_command->chain_children.size());
-  const bool allow_code_dedup = chain_command->pathb_chain_allow_code_dedup;
   for (iree_hal_amdxdna_native_command_t* child :
        chain_command->chain_children) {
+    if (IREE_UNLIKELY(!child || !child->control_buffer ||
+                      !child->control_buffer->buffer.cpu_ptr ||
+                      child->control_buffer_size == 0)) {
+      return iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "amdxdna Windows MCDM path-B chain child has no control-code "
+          "buffer");
+    }
+    if (IREE_UNLIKELY(child->control_buffer_size % sizeof(uint32_t) != 0)) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "amdxdna Windows MCDM path-B chain child control-code size is not "
+          "word aligned");
+    }
     const size_t child_code_size =
         static_cast<size_t>(child->control_buffer_size);
-    bool found_duplicate_code = false;
-    if (allow_code_dedup) {
-      for (const UniqueChainCodeSlot& slot : unique_code_slots) {
-        iree_hal_amdxdna_native_command_t* previous = slot.child;
-        if (!previous ||
-            previous->control_buffer_size != child->control_buffer_size) {
-          continue;
-        }
-        if (std::memcmp(previous->control_buffer->buffer.cpu_ptr,
-                        child->control_buffer->buffer.cpu_ptr,
-                        child_code_size) != 0) {
-          continue;
-        }
-        child_code_offsets.push_back(slot.offset);
-        child_code_needs_copy.push_back(false);
-        found_duplicate_code = true;
-        break;
-      }
-    }
-    if (found_duplicate_code) continue;
-
     code_offset = align_up_size(code_offset, kWindowsDpuChainCodeAlignment);
     if (IREE_UNLIKELY(code_offset > code_capacity ||
                       child_code_size > code_capacity - code_offset)) {
@@ -1372,8 +1355,6 @@ iree_status_t prepare_pathb_chain_code(
           child_code_size, code_offset, code_capacity);
     }
     child_code_offsets.push_back(code_offset);
-    child_code_needs_copy.push_back(true);
-    unique_code_slots.push_back(UniqueChainCodeSlot{child, code_offset});
     code_used = code_offset + child_code_size;
     code_offset = code_used;
   }
@@ -1459,10 +1440,8 @@ iree_status_t prepare_pathb_chain_code(
     code_offset = child_code_offsets[child_index];
     const size_t child_code_size =
         static_cast<size_t>(child->control_buffer_size);
-    if (child_code_needs_copy[child_index]) {
-      std::memcpy(code + code_offset, child->control_buffer->buffer.cpu_ptr,
-                  child_code_size);
-    }
+    std::memcpy(code + code_offset, child->control_buffer->buffer.cpu_ptr,
+                child_code_size);
     const uint64_t instruction_va =
         aperture.code_gpu_va + code_base_offset + code_offset;
     if (is_start_cu_child) {
@@ -1524,9 +1503,7 @@ iree_status_t prepare_pathb_chain_code(
   chain_command->pathb_chain_descriptor_bytes =
       static_cast<uint32_t>(descriptor_used);
   chain_command->pathb_chain_code_used_size =
-      allow_code_dedup
-          ? code_used
-          : align_up_size(code_used, kWindowsDpuChainCodeAlignment);
+      align_up_size(code_used, kWindowsDpuChainCodeAlignment);
   chain_command->pathb_chain_child_code_offsets = std::move(child_code_offsets);
   chain_command->pathb_chain_prepared_valid = true;
   chain_command->pathb_chain_code_dirty = true;
@@ -2844,11 +2821,6 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
   std::vector<size_t> descriptor_sizes(command_count);
   size_t code_cursor = 0;
   for (iree_host_size_t i = 0; i < command_count; ++i) {
-    // XRT's module runlist path gives every child run its own 0x8000-spaced
-    // instruction slot. Keep the Windows MCDM shim structurally identical here:
-    // descriptor-level dedup is tempting, but it changes the sync9 slot topology
-    // and makes KMT captures harder to compare against XRT.
-    commands[i]->pathb_chain_allow_code_dedup = false;
     IREE_RETURN_IF_ERROR(get_pathb_chain_region_sizes(
         commands[i], &code_sizes[i], &descriptor_sizes[i]));
     const size_t code_base = align_up_size(code_cursor, 0x1000);

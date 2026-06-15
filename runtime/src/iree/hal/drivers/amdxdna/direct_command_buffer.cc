@@ -1092,17 +1092,6 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
           if (chain_cache) {
             device_cache_hit = true;
             touch_chain_cache_entry();
-            for (size_t i = 0; i < group.cmds.size(); ++i) {
-              chain_cache->group.cmds[i].binding_buffers =
-                  group.cmds[i].binding_buffers;
-              chain_cache->group.cmds[i].binding_device_addrs =
-                  group.cmds[i].binding_device_addrs;
-              chain_cache->group.cmds[i].binding_offsets =
-                  group.cmds[i].binding_offsets;
-              chain_cache->group.cmds[i].binding_lengths =
-                  group.cmds[i].binding_lengths;
-              chain_cache->group.cmds[i].native_bindings_current = false;
-            }
           }
         }
         if (iree_status_is_ok(status) && !chain_cache &&

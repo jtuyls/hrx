@@ -29,6 +29,10 @@ static uint32_t iree_hal_amdxdna_read_u32(const uint8_t* p) {
   return value;
 }
 
+static void iree_hal_amdxdna_write_u32(uint8_t* p, uint32_t value) {
+  std::memcpy(p, &value, sizeof(value));
+}
+
 uint32_t iree_hal_amdxdna_txn_op_size(const uint8_t* b, size_t total,
                                       size_t p) {
   if (p >= total) return 0;
@@ -69,9 +73,9 @@ iree_status_t iree_hal_amdxdna_patch_write32_constants(
           i, p);
     }
     if (b[p] == 0) {  // WRITE32: patch sentinel values from HAL constants.
-      uint32_t* value = reinterpret_cast<uint32_t*>(b + p + 16);
-      if ((*value & kWrite32ConstantMask) == kWrite32ConstantSentinel) {
-        uint32_t constant_index = *value & ~kWrite32ConstantMask;
+      uint32_t value = iree_hal_amdxdna_read_u32(b + p + 16);
+      if ((value & kWrite32ConstantMask) == kWrite32ConstantSentinel) {
+        uint32_t constant_index = value & ~kWrite32ConstantMask;
         iree_host_size_t byte_offset =
             static_cast<iree_host_size_t>(constant_index) * sizeof(uint32_t);
         if (byte_offset + sizeof(uint32_t) > constants.data_length) {
@@ -81,7 +85,8 @@ iree_status_t iree_hal_amdxdna_patch_write32_constants(
               "%zu-byte constants block",
               constant_index, constants.data_length);
         }
-        memcpy(value, constants.data + byte_offset, sizeof(uint32_t));
+        std::memcpy(&value, constants.data + byte_offset, sizeof(uint32_t));
+        iree_hal_amdxdna_write_u32(b + p + 16, value);
       }
     }
     p += sz;
@@ -105,11 +110,14 @@ bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
     if (static_cast<size_t>(offset) + 12 > total || (offset & 0x3u) != 0) {
       return false;
     }
-    uint32_t* bd = reinterpret_cast<uint32_t*>(b + offset);
-    uint64_t base = (static_cast<uint64_t>(bd[2] & 0xFFFF) << 32) | bd[1];
+    uint32_t bd1 = iree_hal_amdxdna_read_u32(b + offset + 4);
+    uint32_t bd2 = iree_hal_amdxdna_read_u32(b + offset + 8);
+    uint64_t base = (static_cast<uint64_t>(bd2 & 0xFFFF) << 32) | bd1;
     base += args[arg_idx] + arg_plus + kDdrAieAddrOffset;
-    bd[1] = static_cast<uint32_t>(base & 0xFFFFFFFC);
-    bd[2] = (bd[2] & 0xFFFF0000) | static_cast<uint32_t>(base >> 32);
+    bd1 = static_cast<uint32_t>(base & 0xFFFFFFFC);
+    bd2 = (bd2 & 0xFFFF0000) | static_cast<uint32_t>(base >> 32);
+    iree_hal_amdxdna_write_u32(b + offset + 4, bd1);
+    iree_hal_amdxdna_write_u32(b + offset + 8, bd2);
   }
   return true;
 }

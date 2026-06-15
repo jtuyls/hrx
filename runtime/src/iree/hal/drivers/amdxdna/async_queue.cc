@@ -475,6 +475,8 @@ void iree_hal_amdxdna_async_queue_destroy(
     iree_hal_amdxdna_async_queue_t* queue) {
   if (!queue) return;
 
+  iree_atomic_store(&queue->shutdown_requested, 1, iree_memory_order_release);
+
   // Cancel any timepoints still pending so destroy doesn't hang waiting for
   // wait semaphores that callers might have already given up on. Failed ops
   // get CANCELLED and the worker drains them normally.
@@ -486,7 +488,6 @@ void iree_hal_amdxdna_async_queue_destroy(
                           iree_hal_amdxdna_async_queue_is_drained, queue,
                           iree_infinite_timeout());
 
-  iree_atomic_store(&queue->shutdown_requested, 1, iree_memory_order_release);
   iree_notification_post(&queue->worker_notification, IREE_ALL_WAITERS);
   // iree_thread_release() joins the worker on the final reference (see
   // iree_thread_delete). Calling iree_thread_join() here as well double-joins
@@ -510,6 +511,11 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     iree_host_size_t retained_resource_count) {
   IREE_ASSERT_ARGUMENT(queue);
   IREE_ASSERT_ARGUMENT(!retained_resource_count || retained_resources);
+
+  if (iree_atomic_load(&queue->shutdown_requested,
+                       iree_memory_order_acquire) != 0) {
+    return make_cancelled_status();
+  }
 
   // Allocate the op + arena. Each op gets its own arena (from the shared
   // block pool); deinitialize returns blocks to the pool.
@@ -572,6 +578,14 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     }
     iree_arena_deinitialize(&arena);
     return status;
+  }
+
+  if (iree_atomic_load(&queue->shutdown_requested,
+                       iree_memory_order_acquire) != 0) {
+    iree_hal_semaphore_list_free(op->signal_list, queue->host_allocator);
+    iree_hal_semaphore_list_free(op->wait_list, queue->host_allocator);
+    iree_arena_deinitialize(&arena);
+    return make_cancelled_status();
   }
 
   iree_atomic_fetch_add(&queue->inflight_count, 1, iree_memory_order_acq_rel);
