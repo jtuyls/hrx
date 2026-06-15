@@ -40,7 +40,7 @@ iree_cc_library(
     api.h
     async_queue.c
     async_queue.h
-    buffer.cc
+    buffer.c
     buffer.h
     context_cache.cc
     context_cache.h
@@ -61,11 +61,13 @@ iree_cc_library(
     executable.h
     executable_internal.h
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
+    native_buffer.h
     nop_executable_cache.c
     nop_executable_cache.h
     semaphore.c
     semaphore.h
     util.h
+    shim/native_buffer_bridge.cc
     xclbin_util.c
     xclbin_util.h
   DEPS

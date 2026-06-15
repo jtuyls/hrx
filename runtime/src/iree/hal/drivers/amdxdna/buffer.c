@@ -6,16 +6,14 @@
 
 #include "iree/hal/drivers/amdxdna/buffer.h"
 
-#include <cstring>
-#include <limits>
+#include <inttypes.h>
+#include <string.h>
 
 #include "iree/hal/drivers/amdxdna/util.h"
 
-namespace {
-extern const iree_hal_buffer_vtable_t iree_hal_amdxdna_buffer_vtable;
-}
+static const iree_hal_buffer_vtable_t iree_hal_amdxdna_buffer_vtable;
 
-struct iree_hal_amdxdna_buffer {
+typedef struct iree_hal_amdxdna_buffer_t {
   iree_hal_buffer_t base;
   iree_hal_amdxdna_native_buffer_t* native_buffer;
   iree_allocator_t host_allocator;
@@ -23,7 +21,7 @@ struct iree_hal_amdxdna_buffer {
   // Set to 1 by iree_hal_amdxdna_buffer_mark_deallocated when the
   // queue_dealloca task fires. Subsequent queue ops on this buffer will fail.
   iree_atomic_uint32_t deallocated;
-};
+} iree_hal_amdxdna_buffer_t;
 
 static iree_status_t iree_hal_amdxdna_buffer_resolve_root_range(
     iree_hal_buffer_t* base_buffer, iree_device_size_t local_byte_offset,
@@ -53,8 +51,7 @@ static iree_status_t iree_hal_amdxdna_buffer_resolve_root_range(
   iree_device_size_t buffer_byte_offset =
       iree_hal_buffer_byte_offset(base_buffer);
   if (IREE_UNLIKELY(local_byte_offset >
-                    std::numeric_limits<iree_device_size_t>::max() -
-                        buffer_byte_offset)) {
+                    IREE_DEVICE_SIZE_MAX - buffer_byte_offset)) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "buffer root offset overflow");
   }
@@ -68,8 +65,8 @@ iree_status_t iree_hal_amdxdna_buffer_invalidate_range(
     iree_device_size_t local_byte_length) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   if (IREE_UNLIKELY(!buffer->native_buffer)) {
     IREE_TRACE_ZONE_END(z0);
     return iree_make_status(
@@ -83,10 +80,10 @@ iree_status_t iree_hal_amdxdna_buffer_invalidate_range(
               base_buffer, local_byte_offset, local_byte_length,
               &root_byte_offset, &byte_length));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_amdxdna_native_buffer_sync(
+      z0, iree_hal_amdxdna_native_buffer_c_sync(
               buffer->native_buffer,
-              iree_hal_amdxdna_native_sync_direction_t::device_to_host,
-              byte_length, root_byte_offset));
+              IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_DEVICE_TO_HOST, byte_length,
+              root_byte_offset));
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -99,17 +96,17 @@ static iree_status_t iree_hal_amdxdna_buffer_map_range(
     iree_hal_buffer_mapping_t* mapping) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_buffer_validate_memory_type(
               iree_hal_buffer_memory_type(
-                  reinterpret_cast<const iree_hal_buffer_t*>(buffer)),
+                  (const iree_hal_buffer_t*)buffer),
               IREE_HAL_MEMORY_TYPE_HOST_VISIBLE));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_buffer_validate_usage(
               iree_hal_buffer_allowed_usage(
-                  reinterpret_cast<const iree_hal_buffer_t*>(buffer)),
+                  (const iree_hal_buffer_t*)buffer),
               mapping_mode == IREE_HAL_MAPPING_MODE_PERSISTENT
                   ? IREE_HAL_BUFFER_USAGE_MAPPING_PERSISTENT
                   : IREE_HAL_BUFFER_USAGE_MAPPING_SCOPED));
@@ -120,16 +117,17 @@ static iree_status_t iree_hal_amdxdna_buffer_map_range(
         IREE_STATUS_FAILED_PRECONDITION,
         "buffer does not have device memory attached and cannot be mapped");
   }
-  void* host_ptr = nullptr;
+  void* host_ptr = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_amdxdna_native_buffer_map(buffer->native_buffer, &host_ptr));
+      z0,
+      iree_hal_amdxdna_native_buffer_c_map(buffer->native_buffer, &host_ptr));
   iree_device_size_t root_byte_offset = 0;
   iree_device_size_t byte_length = 0;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_buffer_resolve_root_range(
               base_buffer, local_byte_offset, local_byte_length,
               &root_byte_offset, &byte_length));
-  uint8_t* data_ptr = reinterpret_cast<uint8_t*>(host_ptr) + root_byte_offset;
+  uint8_t* data_ptr = (uint8_t*)host_ptr + root_byte_offset;
   iree_status_t status = iree_ok_status();
   if (iree_any_bit_set(memory_access, IREE_HAL_MEMORY_ACCESS_READ)) {
     status = iree_hal_amdxdna_buffer_invalidate_range(
@@ -155,8 +153,8 @@ iree_status_t iree_hal_amdxdna_buffer_flush_range(
     iree_device_size_t local_byte_length) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   if (IREE_UNLIKELY(!buffer->native_buffer)) {
     IREE_TRACE_ZONE_END(z0);
     return iree_make_status(
@@ -171,10 +169,10 @@ iree_status_t iree_hal_amdxdna_buffer_flush_range(
               base_buffer, local_byte_offset, local_byte_length,
               &root_byte_offset, &byte_length));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_amdxdna_native_buffer_sync(
+      z0, iree_hal_amdxdna_native_buffer_c_sync(
               buffer->native_buffer,
-              iree_hal_amdxdna_native_sync_direction_t::host_to_device,
-              byte_length, root_byte_offset));
+              IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE, byte_length,
+              root_byte_offset));
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -200,13 +198,13 @@ iree_status_t iree_hal_amdxdna_buffer_wrap(
     iree_hal_buffer_release_callback_t release_callback,
     iree_allocator_t host_allocator, iree_hal_buffer_t** out_buffer) {
   IREE_ASSERT_ARGUMENT(out_buffer);
-  *out_buffer = nullptr;
+  *out_buffer = NULL;
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = nullptr;
+  iree_hal_amdxdna_buffer_t* buffer = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, sizeof(*buffer),
-                                reinterpret_cast<void**>(&buffer)));
+                                (void**)&buffer));
   memset(buffer, 0, sizeof(*buffer));
   iree_hal_buffer_initialize(placement, &buffer->base, allocation_size,
                              byte_offset, byte_length, memory_type,
@@ -224,8 +222,8 @@ iree_status_t iree_hal_amdxdna_buffer_wrap(
 }
 
 static void iree_hal_amdxdna_buffer_destroy(iree_hal_buffer_t* base_buffer) {
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   IREE_TRACE_ZONE_BEGIN(z0);
 
   iree_allocator_t host_allocator = buffer->host_allocator;
@@ -235,7 +233,7 @@ static void iree_hal_amdxdna_buffer_destroy(iree_hal_buffer_t* base_buffer) {
   }
 
   if (buffer->native_buffer) {
-    iree_hal_amdxdna_native_buffer_destroy(buffer->native_buffer);
+    iree_hal_amdxdna_native_buffer_c_destroy(buffer->native_buffer);
   }
   iree_allocator_free(host_allocator, buffer);
 
@@ -246,8 +244,8 @@ iree_hal_amdxdna_native_buffer_t* iree_hal_amdxdna_buffer_handle(
     iree_hal_buffer_t* base_buffer) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
 
   IREE_TRACE_ZONE_END(z0);
   return buffer->native_buffer;
@@ -257,10 +255,10 @@ iree_hal_amdxdna_native_buffer_t* iree_hal_amdxdna_buffer_steal_native_buffer(
     iree_hal_buffer_t* base_buffer) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   iree_hal_amdxdna_native_buffer_t* native_buffer = buffer->native_buffer;
-  buffer->native_buffer = nullptr;
+  buffer->native_buffer = NULL;
 
   IREE_TRACE_ZONE_END(z0);
   return native_buffer;
@@ -268,15 +266,15 @@ iree_hal_amdxdna_native_buffer_t* iree_hal_amdxdna_buffer_steal_native_buffer(
 
 bool iree_hal_amdxdna_buffer_is_deallocated(iree_hal_buffer_t* base_buffer) {
   if (!base_buffer) return false;
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   return iree_atomic_load(&buffer->deallocated, iree_memory_order_acquire) != 0;
 }
 
 void iree_hal_amdxdna_buffer_mark_allocated(iree_hal_buffer_t* base_buffer) {
   if (!base_buffer) return;
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   iree_atomic_store(&buffer->deallocated, (uint32_t)0,
                     iree_memory_order_release);
 }
@@ -287,14 +285,13 @@ void iree_hal_amdxdna_buffer_mark_deallocated(iree_hal_buffer_t* base_buffer) {
   // no backend reset hook. Avoid leaving a one-way backend marker on objects
   // that may be returned as fresh allocations from a pooling allocator.
   if (base_buffer->pooling_allocator) return;
-  iree_hal_amdxdna_buffer* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer);
+  iree_hal_amdxdna_buffer_t* buffer = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_buffer, iree_hal_amdxdna_buffer_vtable, iree_hal_amdxdna_buffer_t);
   iree_atomic_store(&buffer->deallocated, (uint32_t)1,
                     iree_memory_order_release);
 }
 
-namespace {
-const iree_hal_buffer_vtable_t iree_hal_amdxdna_buffer_vtable = {
+static const iree_hal_buffer_vtable_t iree_hal_amdxdna_buffer_vtable = {
     iree_hal_buffer_recycle,
     iree_hal_amdxdna_buffer_destroy,
     iree_hal_amdxdna_buffer_map_range,
@@ -302,4 +299,3 @@ const iree_hal_buffer_vtable_t iree_hal_amdxdna_buffer_vtable = {
     iree_hal_amdxdna_buffer_invalidate_range,
     iree_hal_amdxdna_buffer_flush_range,
 };
-}

@@ -9,7 +9,11 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
-#include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_buffer.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
 
 iree_status_t iree_hal_amdxdna_buffer_wrap(
     iree_hal_amdxdna_native_buffer_t* native_buffer,
@@ -45,5 +49,9 @@ void iree_hal_amdxdna_buffer_mark_allocated(iree_hal_buffer_t* base_buffer);
 // Marks the buffer as deallocated. Called by the queue_dealloca async task
 // after its wait_semaphore_list is satisfied. Idempotent.
 void iree_hal_amdxdna_buffer_mark_deallocated(iree_hal_buffer_t* base_buffer);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_BUFFER_H_
