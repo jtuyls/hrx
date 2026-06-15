@@ -42,6 +42,8 @@ iree_cc_library(
     async_queue.h
     buffer.cc
     buffer.h
+    context_cache.cc
+    context_cache.h
     direct_command_buffer.cc
     direct_command_buffer.h
     direct_command_buffer_chain_cache.cc
