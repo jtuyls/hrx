@@ -102,6 +102,49 @@ struct AmdxdnaSlimMutexLock {
   ~AmdxdnaSlimMutexLock() { iree_slim_mutex_unlock(mutex); }
   iree_slim_mutex_t* mutex = nullptr;
 };
+
+struct AmdxdnaSlimMutexUniqueLock {
+  AmdxdnaSlimMutexUniqueLock() = default;
+  explicit AmdxdnaSlimMutexUniqueLock(iree_slim_mutex_t* mutex)
+      : mutex(mutex), owns(true) {
+    iree_slim_mutex_lock(mutex);
+  }
+  ~AmdxdnaSlimMutexUniqueLock() {
+    if (owns) iree_slim_mutex_unlock(mutex);
+  }
+  AmdxdnaSlimMutexUniqueLock(const AmdxdnaSlimMutexUniqueLock&) = delete;
+  AmdxdnaSlimMutexUniqueLock& operator=(
+      const AmdxdnaSlimMutexUniqueLock&) = delete;
+  AmdxdnaSlimMutexUniqueLock(AmdxdnaSlimMutexUniqueLock&& other) noexcept
+      : mutex(other.mutex), owns(other.owns) {
+    other.mutex = nullptr;
+    other.owns = false;
+  }
+  AmdxdnaSlimMutexUniqueLock& operator=(
+      AmdxdnaSlimMutexUniqueLock&& other) noexcept {
+    if (this == &other) return *this;
+    if (owns) iree_slim_mutex_unlock(mutex);
+    mutex = other.mutex;
+    owns = other.owns;
+    other.mutex = nullptr;
+    other.owns = false;
+    return *this;
+  }
+  void lock(iree_slim_mutex_t* new_mutex) {
+    if (owns) iree_slim_mutex_unlock(mutex);
+    mutex = new_mutex;
+    owns = true;
+    iree_slim_mutex_lock(mutex);
+  }
+  void unlock() {
+    if (!owns) return;
+    iree_slim_mutex_unlock(mutex);
+    owns = false;
+  }
+  bool owns_lock() const { return owns; }
+  iree_slim_mutex_t* mutex = nullptr;
+  bool owns = false;
+};
 }  // namespace
 
 iree_status_t iree_hal_amdxdna_direct_command_buffer_create(
@@ -925,18 +968,24 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
 
   iree_hal_amdxdna_device_single_command_cache_t* single_command_cache =
       iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
-  std::unique_lock<std::mutex> single_cache_lock(single_command_cache->mutex);
-  iree_hal_amdxdna_single_command_cache_entry* single_cache_entry = nullptr;
+  if (!single_command_cache) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "failed to allocate amdxdna single command cache");
+  }
+  AmdxdnaSlimMutexUniqueLock single_cache_lock(&single_command_cache->mutex);
+  iree_hal_amdxdna_single_command_cache_entry_t* single_cache_entry = nullptr;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_find_single_command_cache_entry(
               single_command_cache, group.queue, cmd.src_cu_idx.index,
-              prepared_ctrl_words, cmd.binding_buffers,
-              cmd.binding_device_addrs, cmd.binding_offsets,
-              cmd.binding_lengths, &single_cache_entry));
+              prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+              cmd.binding_buffers.data(), cmd.binding_device_addrs.data(),
+              cmd.binding_offsets.data(), cmd.binding_lengths.data(),
+              cmd.binding_device_addrs.size(), &single_cache_entry));
 
   iree_hal_amdxdna_native_command_t* submit_command = nullptr;
   if (single_cache_entry) {
-    submit_command = single_cache_entry->command.get();
+    submit_command = single_cache_entry->command;
   } else {
     const size_t ctrl_code_size =
         prepared_ctrl_words.size() * sizeof(uint32_t);
@@ -984,11 +1033,19 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
     std::vector<iree_device_size_t> binding_lengths = cmd.binding_lengths;
     single_cache_entry = iree_hal_amdxdna_store_single_command_cache_entry(
         single_command_cache, group.queue, cmd.src_cu_idx.index,
-        std::move(prepared_ctrl_words), std::move(binding_buffers),
-        std::move(binding_device_addrs), std::move(binding_offsets),
-        std::move(binding_lengths), std::move(ctrl_code_buffer),
-        std::move(command));
-    submit_command = single_cache_entry->command.get();
+        prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+        binding_buffers.data(), binding_device_addrs.data(),
+        binding_offsets.data(), binding_lengths.data(),
+        binding_device_addrs.size(), ctrl_code_buffer.get(), command.get());
+    if (!single_cache_entry) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                              "failed to store amdxdna single command cache "
+                              "entry");
+    }
+    (void)ctrl_code_buffer.release();
+    (void)command.release();
+    submit_command = single_cache_entry->command;
   }
 
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
@@ -1304,8 +1361,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
   const bool use_single_command_cache = true;
   iree_hal_amdxdna_device_single_command_cache_t* single_command_cache =
       nullptr;
-  iree_hal_amdxdna_single_command_cache_entry* single_cache_entry = nullptr;
-  std::unique_lock<std::mutex> single_cache_lock;
+  iree_hal_amdxdna_single_command_cache_entry_t* single_cache_entry = nullptr;
+  AmdxdnaSlimMutexUniqueLock single_cache_lock;
   if (use_single_partial_elf) {
     prepared_ctrl_words.assign(asm_inst.data, asm_inst.data + asm_inst.count);
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
@@ -1325,15 +1382,22 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     if (use_single_command_cache) {
       single_command_cache =
           iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
-      single_cache_lock =
-          std::unique_lock<std::mutex>(single_command_cache->mutex);
+      if (!single_command_cache) {
+        IREE_TRACE_ZONE_END(z0);
+        return iree_make_status(
+            IREE_STATUS_RESOURCE_EXHAUSTED,
+            "failed to allocate amdxdna single command cache");
+      }
+      single_cache_lock.lock(&single_command_cache->mutex);
       IREE_RETURN_AND_END_ZONE_IF_ERROR(
           z0, iree_hal_amdxdna_find_single_command_cache_entry(
                   single_command_cache, queue, cu_idx.index,
-                  prepared_ctrl_words, binding_buffers, binding_addrs,
-                  binding_offsets, binding_lengths, &single_cache_entry));
+                  prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+                  binding_buffers.data(), binding_addrs.data(),
+                  binding_offsets.data(), binding_lengths.data(),
+                  binding_addrs.size(), &single_cache_entry));
       if (single_cache_entry) {
-        submit_command = single_cache_entry->command.get();
+        submit_command = single_cache_entry->command;
       } else {
         single_cache_lock.unlock();
       }
@@ -1455,27 +1519,42 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     if (!single_command_cache) {
       single_command_cache =
           iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
+      if (!single_command_cache) {
+        IREE_TRACE_ZONE_END(z0);
+        return iree_make_status(
+            IREE_STATUS_RESOURCE_EXHAUSTED,
+            "failed to allocate amdxdna single command cache");
+      }
     }
     if (!single_cache_lock.owns_lock()) {
-      single_cache_lock =
-          std::unique_lock<std::mutex>(single_command_cache->mutex);
+      single_cache_lock.lock(&single_command_cache->mutex);
     }
     // Another queue worker may have populated the entry while this thread was
     // building the native command. Recheck under the cache lock before storing.
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_amdxdna_find_single_command_cache_entry(
-                single_command_cache, queue, cu_idx.index, prepared_ctrl_words,
-                binding_buffers, binding_addrs, binding_offsets,
-                binding_lengths, &single_cache_entry));
+                single_command_cache, queue, cu_idx.index,
+                prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+                binding_buffers.data(), binding_addrs.data(),
+                binding_offsets.data(), binding_lengths.data(),
+                binding_addrs.size(), &single_cache_entry));
     if (!single_cache_entry) {
       single_cache_entry = iree_hal_amdxdna_store_single_command_cache_entry(
           single_command_cache, queue, cu_idx.index,
-          std::move(prepared_ctrl_words), std::move(binding_buffers),
-          std::move(binding_addrs), std::move(binding_offsets),
-          std::move(binding_lengths), std::move(ctrl_code_buffer),
-          std::move(command));
+          prepared_ctrl_words.data(), prepared_ctrl_words.size(),
+          binding_buffers.data(), binding_addrs.data(), binding_offsets.data(),
+          binding_lengths.data(), binding_addrs.size(), ctrl_code_buffer.get(),
+          command.get());
+      if (!single_cache_entry) {
+        IREE_TRACE_ZONE_END(z0);
+        return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                                "failed to store amdxdna single command cache "
+                                "entry");
+      }
+      (void)ctrl_code_buffer.release();
+      (void)command.release();
     }
-    submit_command = single_cache_entry->command.get();
+    submit_command = single_cache_entry->command;
   }
 
   if (!submit_command) {

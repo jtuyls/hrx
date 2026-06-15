@@ -7,52 +7,48 @@
 #ifndef IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_SINGLE_CACHE_H_
 #define IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_SINGLE_CACHE_H_
 
-#include <cstdint>
-#include <memory>
-#include <mutex>
-#include <vector>
+#include <stdint.h>
 
 #include "iree/base/api.h"
+#include "iree/base/threading/mutex.h"
 #include "iree/hal/api.h"
-#include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_buffer.h"
+#include "iree/hal/drivers/amdxdna/native_device.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
 
 // Device-global cache of prepared single-dispatch native commands (ERT_START_CU
 // / START_NPU path), reused across one-shot command-buffer instances and
 // rebound/rewritten in place to match a freshly recorded dispatch.
-//
-// Ownership/threading contract: like the chain command cache, this is
-// intentionally DEVICE-GLOBAL. On the PARTIAL_ELF dispatch path (the only
-// single-dispatch path the Windows MCDM backend enables) the cache mutex is
-// held across the cached command's submit, so it ALSO serializes the
-// aperture-touching submit on a context (required by the native.h Windows MCDM
-// contract). The non-PARTIAL_ELF single path (Linux KMQ) does not stage into a
-// shared aperture and is intentionally unlocked. Re-owning prepared commands
-// per executable entry point would need a separate per-context submit lock to
-// preserve that serialization on the MCDM path; that is tracked as the
-// prepared-command revisit in the native-DDI follow-ups doc.
+enum { kAmdxdnaSingleCommandCacheCapacity = 8 };
 
-struct iree_hal_amdxdna_device;
+typedef struct iree_hal_amdxdna_single_command_cache_entry_t {
+  iree_hal_amdxdna_native_queue_t* queue;
+  uint32_t cu_index;
+  uint32_t* ctrl_words;
+  iree_host_size_t ctrl_word_count;
+  iree_hal_amdxdna_native_buffer_t** binding_buffers;
+  uint64_t* binding_device_addrs;
+  iree_device_size_t* binding_offsets;
+  iree_device_size_t* binding_lengths;
+  iree_host_size_t binding_count;
+  iree_hal_amdxdna_native_buffer_t* ctrl_code_buffer;
+  iree_hal_amdxdna_native_command_t* command;
+  uint64_t last_use;
+} iree_hal_amdxdna_single_command_cache_entry_t;
 
-struct iree_hal_amdxdna_single_command_cache_entry {
-  iree_hal_amdxdna_native_queue_t* queue = nullptr;
-  uint32_t cu_index = 0;
-  std::vector<uint32_t> ctrl_words;
-  std::vector<iree_hal_amdxdna_native_buffer_t*> binding_buffers;
-  std::vector<uint64_t> binding_device_addrs;
-  std::vector<iree_device_size_t> binding_offsets;
-  std::vector<iree_device_size_t> binding_lengths;
-  iree_hal_amdxdna_native_buffer_ptr ctrl_code_buffer;
-  iree_hal_amdxdna_native_command_ptr command;
-  uint64_t last_use = 0;
-};
+typedef struct iree_hal_amdxdna_device_single_command_cache_t {
+  iree_allocator_t host_allocator;
+  iree_slim_mutex_t mutex;
+  iree_hal_amdxdna_single_command_cache_entry_t
+      entries[kAmdxdnaSingleCommandCacheCapacity];
+  iree_host_size_t entry_count;
+  uint64_t use_clock;
+} iree_hal_amdxdna_device_single_command_cache_t;
 
-constexpr size_t kAmdxdnaSingleCommandCacheCapacity = 8;
-
-struct iree_hal_amdxdna_device_single_command_cache_t {
-  std::mutex mutex;
-  std::vector<iree_hal_amdxdna_single_command_cache_entry> entries;
-  uint64_t use_clock = 0;
-};
+typedef struct iree_hal_amdxdna_device iree_hal_amdxdna_device;
 
 iree_hal_amdxdna_device_single_command_cache_t*
 iree_hal_amdxdna_get_single_command_cache(iree_hal_amdxdna_device* device);
@@ -60,23 +56,27 @@ iree_hal_amdxdna_get_single_command_cache(iree_hal_amdxdna_device* device);
 iree_status_t iree_hal_amdxdna_find_single_command_cache_entry(
     iree_hal_amdxdna_device_single_command_cache_t* cache,
     iree_hal_amdxdna_native_queue_t* queue, uint32_t cu_index,
-    const std::vector<uint32_t>& ctrl_words,
-    const std::vector<iree_hal_amdxdna_native_buffer_t*>& binding_buffers,
-    const std::vector<uint64_t>& binding_device_addrs,
-    const std::vector<iree_device_size_t>& binding_offsets,
-    const std::vector<iree_device_size_t>& binding_lengths,
-    iree_hal_amdxdna_single_command_cache_entry** out_entry);
+    const uint32_t* ctrl_words, iree_host_size_t ctrl_word_count,
+    iree_hal_amdxdna_native_buffer_t* const* binding_buffers,
+    const uint64_t* binding_device_addrs,
+    const iree_device_size_t* binding_offsets,
+    const iree_device_size_t* binding_lengths, iree_host_size_t binding_count,
+    iree_hal_amdxdna_single_command_cache_entry_t** out_entry);
 
-iree_hal_amdxdna_single_command_cache_entry*
+iree_hal_amdxdna_single_command_cache_entry_t*
 iree_hal_amdxdna_store_single_command_cache_entry(
     iree_hal_amdxdna_device_single_command_cache_t* cache,
     iree_hal_amdxdna_native_queue_t* queue, uint32_t cu_index,
-    std::vector<uint32_t> ctrl_words,
-    std::vector<iree_hal_amdxdna_native_buffer_t*> binding_buffers,
-    std::vector<uint64_t> binding_device_addrs,
-    std::vector<iree_device_size_t> binding_offsets,
-    std::vector<iree_device_size_t> binding_lengths,
-    iree_hal_amdxdna_native_buffer_ptr ctrl_code_buffer,
-    iree_hal_amdxdna_native_command_ptr command);
+    const uint32_t* ctrl_words, iree_host_size_t ctrl_word_count,
+    iree_hal_amdxdna_native_buffer_t* const* binding_buffers,
+    const uint64_t* binding_device_addrs,
+    const iree_device_size_t* binding_offsets,
+    const iree_device_size_t* binding_lengths, iree_host_size_t binding_count,
+    iree_hal_amdxdna_native_buffer_t* ctrl_code_buffer,
+    iree_hal_amdxdna_native_command_t* command);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_SINGLE_CACHE_H_

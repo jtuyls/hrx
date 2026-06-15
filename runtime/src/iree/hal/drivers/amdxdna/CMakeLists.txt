@@ -50,7 +50,7 @@ iree_cc_library(
     direct_command_buffer_chain_cache.h
     direct_command_buffer_planning.c
     direct_command_buffer_planning.h
-    direct_command_buffer_single_cache.cc
+    direct_command_buffer_single_cache.c
     direct_command_buffer_single_cache.h
     device.c
     device_internal.h

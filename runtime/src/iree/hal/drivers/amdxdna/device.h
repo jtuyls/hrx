@@ -9,6 +9,7 @@
 
 #include "iree/base/internal/arena.h"
 #include "iree/base/internal/atomics.h"
+#include "iree/base/threading/mutex.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/async_queue.h"
@@ -72,6 +73,8 @@ typedef struct iree_hal_amdxdna_device {
   // This owns prepared command/control BOs keyed by the device-visible dispatch
   // signature and is destroyed before the native device.
   iree_hal_amdxdna_device_single_command_cache_t* single_command_cache;
+  // Serializes lazy command-cache allocation on this device.
+  iree_slim_mutex_t command_cache_mutex;
   // Maximum slots that fit in one ERT_CMD_CHAIN exec BO (constant per device).
   // Lazily computed on first flush; the chain flush splits into this many
   // slots per submitted chain. Atomic because a multi-worker submission path

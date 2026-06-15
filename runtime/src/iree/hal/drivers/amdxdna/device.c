@@ -43,6 +43,7 @@ static void iree_hal_amdxdna_device_initialize(
   memset(device, 0, sizeof(*device));
   device->context_cache =
       iree_hal_amdxdna_device_context_cache_create(host_allocator);
+  iree_slim_mutex_initialize(&device->command_cache_mutex);
   iree_atomic_store(&device->chain_max_slots, 0, iree_memory_order_relaxed);
 
   iree_hal_resource_initialize(&iree_hal_amdxdna_device_vtable,
@@ -61,6 +62,7 @@ static void iree_hal_amdxdna_device_deinitialize(
   iree_hal_amdxdna_device_destroy_single_command_cache(device);
   iree_hal_amdxdna_device_destroy_chain_command_cache(device);
   iree_hal_amdxdna_device_context_cache_destroy(device->context_cache);
+  iree_slim_mutex_deinitialize(&device->command_cache_mutex);
   device->context_cache = NULL;
 }
 
