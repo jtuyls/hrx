@@ -720,6 +720,18 @@ bool RefreshBufferCpuMapping(const KmtApi& api, const Device& device,
   lock.hAllocation = buffer->allocation;
   status = api.lock2(&lock);
   if (!CheckStatus("D3DKMTLock2(refresh buffer)", status, out_error)) {
+    std::string relock_error = out_error ? *out_error : std::string();
+    D3DKMT_LOCK2 restore_lock = {};
+    restore_lock.hDevice = device.device;
+    restore_lock.hAllocation = buffer->allocation;
+    NTSTATUS restore_status = api.lock2(&restore_lock);
+    std::string restore_error;
+    if (CheckStatus("D3DKMTLock2(refresh buffer restore)", restore_status,
+                    &restore_error)) {
+      buffer->cpu_ptr = restore_lock.pData;
+    } else if (out_error) {
+      *out_error = relock_error + "; restore failed: " + restore_error;
+    }
     return false;
   }
   buffer->cpu_ptr = lock.pData;
@@ -1610,13 +1622,18 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
   // nibble from the completion slot into the packet header. Do one
   // cache-visible read from the explicit protocol locations here. A bounded
   // poll remains available only as an opt-in bring-up diagnostic.
+  volatile uint32_t* const volatile_packet_header = packet_header;
   uint32_t slot_state = 0;
-  uint32_t packet_state = packet_header ? *packet_header : 0;
+  uint32_t packet_state =
+      volatile_packet_header ? *volatile_packet_header : 0;
   const bool trust_fence_completion = TrustFenceCompletionEnabled();
   auto read_completion_once = [&]() -> bool {
     if (trust_fence_completion) {
+      // WaitForHwQueueFenceCpu above is the GPU->CPU ordering point. The
+      // volatile read prevents the compiler from reusing a stale packet header
+      // value while the fast path trusts the post-fence host mapping.
       std::atomic_thread_fence(std::memory_order_seq_cst);
-      packet_state = packet_header ? *packet_header : 0;
+      packet_state = volatile_packet_header ? *volatile_packet_header : 0;
       std::memcpy(&slot_state, slot_cpu, sizeof(slot_state));
       return true;
     }
@@ -1634,7 +1651,7 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
       RecordPhase(phases->sync_exec, NowNs() - sync_t0);
     }
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    packet_state = packet_header ? *packet_header : 0;
+    packet_state = volatile_packet_header ? *volatile_packet_header : 0;
 
     std::string ring_sync_err;
     sync_t0 = phase_timing ? NowNs() : 0;
@@ -1662,11 +1679,11 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
       if (!read_completion_once()) return false;
     }
   }
-  if (packet_header) {
+  if (volatile_packet_header) {
     const uint32_t completion_state =
         ((packet_state & 0xFu) >= 4) ? packet_state : slot_state;
-    uint32_t delta = (*packet_header ^ completion_state) & 0xFu;
-    *packet_header ^= delta;
+    uint32_t delta = (*volatile_packet_header ^ completion_state) & 0xFu;
+    *volatile_packet_header ^= delta;
   }
   if (TraceQhdlEnabled()) {
     std::fprintf(stderr,
@@ -1675,7 +1692,8 @@ bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
                  packet_state, slot_state);
     std::fflush(stderr);
   }
-  const uint32_t final_state = packet_header ? *packet_header : slot_state;
+  const uint32_t final_state =
+      volatile_packet_header ? *volatile_packet_header : slot_state;
   if ((final_state & 0xFu) < 4) {
     if (out_error) {
       std::ostringstream os;
@@ -1874,11 +1892,15 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
   const bool trust_fence_completion = TrustFenceCompletionEnabled();
   for (size_t i = 0; i < pending_count; ++i) {
     PathBPendingSubmit& p = pending[i];
+    volatile uint32_t* const packet_header = p.packet_header;
     uint32_t slot_state = 0;
-    uint32_t packet_state = p.packet_header ? *p.packet_header : 0;
+    uint32_t packet_state = packet_header ? *packet_header : 0;
     if (trust_fence_completion) {
+      // WaitForHwQueueFenceCpu above is the GPU->CPU ordering point for all
+      // parent chunks. Keep command-packet header reads volatile while the fast
+      // path trusts the post-fence host mapping.
       std::atomic_thread_fence(std::memory_order_seq_cst);
-      packet_state = p.packet_header ? *p.packet_header : 0;
+      packet_state = packet_header ? *packet_header : 0;
       std::memcpy(&slot_state, p.slot_cpu, sizeof(slot_state));
     } else {
       std::string command_sync_err;
@@ -1891,7 +1913,7 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
         return false;
       }
       std::atomic_thread_fence(std::memory_order_seq_cst);
-      packet_state = p.packet_header ? *p.packet_header : 0;
+      packet_state = packet_header ? *packet_header : 0;
 
       std::string ring_sync_err;
       if (!SyncBuffer(api, device, p.ring, 0, p.ring.size, &ring_sync_err)) {
@@ -1905,11 +1927,11 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
       std::memcpy(&slot_state, p.slot_cpu, sizeof(slot_state));
     }
 
-    if (p.packet_header) {
+    if (packet_header) {
       const uint32_t completion_state =
           ((packet_state & 0xFu) >= 4) ? packet_state : slot_state;
-      uint32_t delta = (*p.packet_header ^ completion_state) & 0xFu;
-      *p.packet_header ^= delta;
+      uint32_t delta = (*packet_header ^ completion_state) & 0xFu;
+      *packet_header ^= delta;
     }
     if (TraceQhdlEnabled()) {
       std::fprintf(stderr,
@@ -1919,7 +1941,7 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
       std::fflush(stderr);
     }
     const uint32_t final_state =
-        p.packet_header ? *p.packet_header : slot_state;
+        packet_header ? *packet_header : slot_state;
     if ((final_state & 0xFu) < 4) {
       if (out_error) {
         std::ostringstream os;

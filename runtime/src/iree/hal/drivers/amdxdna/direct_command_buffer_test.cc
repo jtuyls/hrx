@@ -67,4 +67,45 @@ TEST_F(DirectCommandBufferTest, CreateAllowsRetainedMode) {
   iree_hal_command_buffer_release(command_buffer);
 }
 
+TEST_F(DirectCommandBufferTest, VtableHasOptionalOperationStubs) {
+  iree_hal_command_buffer_t* command_buffer = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_direct_command_buffer_create(
+      device_,
+      IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
+          IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED,
+      IREE_HAL_COMMAND_CATEGORY_DISPATCH | IREE_HAL_COMMAND_CATEGORY_TRANSFER,
+      /*binding_capacity=*/0, &block_pool_, iree_allocator_system(),
+      &command_buffer));
+
+  ASSERT_NE(command_buffer, nullptr);
+  const auto* vtable = reinterpret_cast<const iree_hal_command_buffer_vtable_t*>(
+      command_buffer->resource.vtable);
+  EXPECT_NE(vtable->begin_debug_group, nullptr);
+  EXPECT_NE(vtable->end_debug_group, nullptr);
+  EXPECT_NE(vtable->advise_buffer, nullptr);
+  EXPECT_NE(vtable->collective, nullptr);
+
+  iree_hal_command_buffer_release(command_buffer);
+}
+
+TEST_F(DirectCommandBufferTest, DebugGroupsAreNoOp) {
+  iree_hal_command_buffer_t* command_buffer = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_direct_command_buffer_create(
+      device_,
+      IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
+          IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED,
+      IREE_HAL_COMMAND_CATEGORY_DISPATCH, /*binding_capacity=*/0, &block_pool_,
+      iree_allocator_system(), &command_buffer));
+
+  ASSERT_NE(command_buffer, nullptr);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(command_buffer));
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin_debug_group(
+      command_buffer, IREE_SV("trace-region"),
+      iree_hal_label_color_unspecified(), /*location=*/nullptr));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end_debug_group(command_buffer));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(command_buffer));
+
+  iree_hal_command_buffer_release(command_buffer);
+}
+
 }  // namespace

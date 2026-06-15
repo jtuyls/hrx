@@ -156,7 +156,7 @@ struct PathBPendingSubmit {
   uint64_t fence_id = 0;
   uint8_t* slot_cpu = nullptr;
   uint32_t slot_offset = 0;
-  uint32_t* packet_header = nullptr;
+  volatile uint32_t* packet_header = nullptr;
   Buffer exec_buffer;
   Buffer ring;
 };

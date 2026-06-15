@@ -576,7 +576,7 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
       // Note: do NOT release retained_resources here. The contract is that
       // on enqueue error the caller still owns its +1 retains.
     }
-    iree_arena_deinitialize(&arena);
+    iree_arena_deinitialize(op ? &op->arena : &arena);
     return status;
   }
 
@@ -584,7 +584,7 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
                        iree_memory_order_acquire) != 0) {
     iree_hal_semaphore_list_free(op->signal_list, queue->host_allocator);
     iree_hal_semaphore_list_free(op->wait_list, queue->host_allocator);
-    iree_arena_deinitialize(&arena);
+    iree_arena_deinitialize(&op->arena);
     return make_cancelled_status();
   }
 
