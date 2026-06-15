@@ -98,7 +98,7 @@ static_assert(offsetof(WindowsDpuChainNpuDescriptor, selector) == 0x34,
 // descriptor envelope has observed headroom up to 34 children, but 34 is not
 // the default until we can prove it is compatible with XRT's intended contract.
 // This is a per-native-submit chunk size, not a logical command-chain limit;
-// larger logical chains are split by direct_command_buffer.cc before reaching
+// larger logical chains are split by direct_command_buffer.c before reaching
 // this layer.
 constexpr size_t kWindowsDpuRunlistSubmitSize = 24;
 constexpr uint64_t kWindowsDpuPathBExecBoSize = 0x1000;

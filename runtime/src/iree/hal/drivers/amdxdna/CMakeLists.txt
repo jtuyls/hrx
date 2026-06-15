@@ -44,7 +44,7 @@ iree_cc_library(
     buffer.h
     context_cache.c
     context_cache.h
-    direct_command_buffer.cc
+    direct_command_buffer.c
     direct_command_buffer.h
     direct_command_buffer_chain_cache.c
     direct_command_buffer_chain_cache.h

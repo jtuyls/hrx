@@ -10,6 +10,5 @@
 #include "iree/base/api.h"
 #include "iree/hal/drivers/amdxdna/context_cache.h"
 #include "iree/hal/drivers/amdxdna/device.h"
-#include "iree/hal/drivers/amdxdna/native.h"
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_DEVICE_INTERNAL_H_
