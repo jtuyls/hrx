@@ -84,6 +84,24 @@ extern "C" iree_status_t iree_hal_amdxdna_native_buffer_c_sync(
                                             offset);
 }
 
+extern "C" iree_status_t iree_hal_amdxdna_native_buffer_c_sync_all(
+    iree_hal_amdxdna_native_buffer_t* buffer,
+    iree_hal_amdxdna_native_buffer_sync_direction_t direction) {
+  iree_hal_amdxdna_native_sync_direction_t native_direction;
+  IREE_RETURN_IF_ERROR(to_native_sync_direction(direction, &native_direction));
+  return iree_hal_amdxdna_native_buffer_sync_all(buffer, native_direction);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_buffer_c_ensure_allocated(
+    iree_hal_amdxdna_native_buffer_t* buffer) {
+  return iree_hal_amdxdna_native_buffer_ensure_allocated(buffer);
+}
+
+extern "C" uint64_t iree_hal_amdxdna_native_buffer_c_device_address(
+    iree_hal_amdxdna_native_buffer_t* buffer) {
+  return iree_hal_amdxdna_native_buffer_device_address(buffer);
+}
+
 extern "C" iree_device_size_t iree_hal_amdxdna_native_buffer_c_size(
     iree_hal_amdxdna_native_buffer_t* buffer) {
   return iree_hal_amdxdna_native_buffer_size(buffer);

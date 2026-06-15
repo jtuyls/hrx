@@ -4,8 +4,8 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <cstddef>
-#include <cstring>
+#include <stddef.h>
+#include <string.h>
 
 #include "iree/base/api.h"
 #include "iree/hal/drivers/amdxdna/executable_internal.h"
@@ -16,18 +16,16 @@
 #include "iree/schemas/pdi_executable_def_reader.h"
 #include "iree/schemas/pdi_executable_def_verifier.h"
 
-namespace {
-extern const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable;
+static const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable;
 
-static const iree_string_view_t kAmdxdnaPdiExecutableFormat =
-    iree_string_view_literal("amdxdna-pdi-fb");
-static const iree_string_view_t kAmdxdnaXclbinExecutableFormat =
-    iree_string_view_literal("amdxdna-xclbin-fb");
-static const iree_string_view_t kAmdxdnaXclbinExecutableCompatFormat =
-    iree_string_view_literal("amdaie-amdxdna-xclbin-fb");
-}  // namespace
+static const iree_string_view_t kAmdxdnaPdiExecutableFormat = {
+    "amdxdna-pdi-fb", 14};
+static const iree_string_view_t kAmdxdnaXclbinExecutableFormat = {
+    "amdxdna-xclbin-fb", 17};
+static const iree_string_view_t kAmdxdnaXclbinExecutableCompatFormat = {
+    "amdaie-amdxdna-xclbin-fb", 24};
 
-iree_string_view_t iree_hal_amdxdna_executable_format() {
+iree_string_view_t iree_hal_amdxdna_executable_format(void) {
   return kAmdxdnaPdiExecutableFormat;
 }
 
@@ -53,61 +51,148 @@ iree_hal_amdxdna_executable_control_context_borrow(
     iree_hal_executable_t* base_executable) {
   iree_hal_amdxdna_executable* executable =
       iree_hal_amdxdna_executable_cast(base_executable);
-  std::lock_guard<std::mutex> lock(executable->context_mutex);
-  return executable->context.get();
+  iree_slim_mutex_lock(&executable->context_mutex);
+  iree_hal_amdxdna_native_context_t* context =
+      iree_hal_amdxdna_native_context_ref_borrow(executable->context);
+  iree_slim_mutex_unlock(&executable->context_mutex);
+  return context;
 }
 
-static std::vector<uint32_t> iree_hal_amdxdna_uint32_vec_to_vector(
-    flatbuffers_uint32_vec_t vec) {
-  if (!vec) return {};
-  size_t length = flatbuffers_uint32_vec_len(vec);
-  return std::vector<uint32_t>(vec, vec + length);
+static void iree_hal_amdxdna_u8_list_deinitialize(
+    iree_allocator_t host_allocator, iree_hal_amdxdna_u8_list_t* list) {
+  iree_allocator_free(host_allocator, list->data);
+  list->data = NULL;
+  list->count = 0;
 }
 
-static std::vector<uint8_t> iree_hal_amdxdna_string_to_bytes(
-    flatbuffers_string_t value) {
-  if (!value) return {};
-  return std::vector<uint8_t>(value, value + flatbuffers_string_len(value));
+static void iree_hal_amdxdna_u32_list_deinitialize(
+    iree_allocator_t host_allocator, iree_hal_amdxdna_u32_list_t* list) {
+  iree_allocator_free(host_allocator, list->data);
+  list->data = NULL;
+  list->count = 0;
+}
+
+static iree_status_t iree_hal_amdxdna_copy_u8_span(
+    iree_allocator_t host_allocator, iree_const_byte_span_t source,
+    iree_hal_amdxdna_u8_list_t* out_list) {
+  out_list->data = NULL;
+  out_list->count = 0;
+  if (source.data_length == 0) return iree_ok_status();
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(host_allocator,
+                                             source.data_length,
+                                             (void**)&out_list->data));
+  memcpy(out_list->data, source.data, source.data_length);
+  out_list->count = source.data_length;
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_copy_u32_vec(
+    iree_allocator_t host_allocator, flatbuffers_uint32_vec_t source,
+    iree_hal_amdxdna_u32_list_t* out_list) {
+  out_list->data = NULL;
+  out_list->count = 0;
+  if (!source) return iree_ok_status();
+  const iree_host_size_t count = flatbuffers_uint32_vec_len(source);
+  if (count == 0) return iree_ok_status();
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, count * sizeof(uint32_t), (void**)&out_list->data));
+  memcpy(out_list->data, source, count * sizeof(uint32_t));
+  out_list->count = count;
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_copy_string_view(
+    iree_allocator_t host_allocator, iree_string_view_t source,
+    iree_string_view_t* out_string) {
+  *out_string = iree_string_view_empty();
+  if (source.size == 0) return iree_ok_status();
+  char* storage = NULL;
+  IREE_RETURN_IF_ERROR(
+      iree_allocator_malloc(host_allocator, source.size, (void**)&storage));
+  memcpy(storage, source.data, source.size);
+  *out_string = iree_make_string_view(storage, source.size);
+  return iree_ok_status();
+}
+
+static void iree_hal_amdxdna_kernel_params_deinitialize(
+    iree_allocator_t host_allocator,
+    iree_hal_amdxdna_kernel_params_t* params) {
+  iree_hal_amdxdna_u8_list_deinitialize(host_allocator, &params->pdi);
+  iree_hal_amdxdna_u8_list_deinitialize(host_allocator, &params->xclbin);
+  for (iree_host_size_t i = 0; i < params->asm_inst_runlist_count; ++i) {
+    iree_hal_amdxdna_u32_list_deinitialize(host_allocator,
+                                           &params->asm_inst_runlist[i]);
+  }
+  iree_allocator_free(host_allocator, params->asm_inst_runlist);
+  params->asm_inst_runlist = NULL;
+  params->asm_inst_runlist_count = 0;
+  for (iree_host_size_t i = 0; i < params->reconf_data_runlist_count; ++i) {
+    iree_hal_amdxdna_u32_list_deinitialize(host_allocator,
+                                           &params->reconf_data_runlist[i]);
+  }
+  iree_allocator_free(host_allocator, params->reconf_data_runlist);
+  params->reconf_data_runlist = NULL;
+  params->reconf_data_runlist_count = 0;
+  for (iree_host_size_t i = 0; i < params->patch_runlist_count; ++i) {
+    iree_hal_amdxdna_u32_list_deinitialize(host_allocator,
+                                           &params->patch_runlist[i]);
+  }
+  iree_allocator_free(host_allocator, params->patch_runlist);
+  params->patch_runlist = NULL;
+  params->patch_runlist_count = 0;
+  iree_allocator_free(host_allocator, (void*)params->kernel_name.data);
+  params->kernel_name = iree_string_view_empty();
+  iree_hal_amdxdna_native_context_ref_release(params->cached_context);
+  params->cached_context = NULL;
+  params->cached_context_valid = false;
+  IREE_TRACE({
+    iree_allocator_free(host_allocator, (void*)params->source_filename.data);
+    params->source_filename = iree_string_view_empty();
+  });
+}
+
+static void iree_hal_amdxdna_executable_deinitialize(
+    iree_hal_amdxdna_executable* executable) {
+  for (iree_host_size_t i = 0; i < executable->entry_point_count; ++i) {
+    iree_hal_amdxdna_kernel_params_deinitialize(executable->host_allocator,
+                                                &executable->entry_points[i]);
+  }
+  iree_allocator_free(executable->host_allocator, executable->entry_points);
+  executable->entry_points = NULL;
+  executable->entry_point_count = 0;
+  iree_hal_amdxdna_native_context_ref_release(executable->context);
+  executable->context = NULL;
+  iree_slim_mutex_deinitialize(&executable->context_mutex);
 }
 
 static iree_status_t iree_hal_amdxdna_verify_run_list(
     const char* format_name, iree_host_size_t entry_index,
-    iree_host_size_t run_count,
-    const std::vector<std::vector<uint32_t>>& control_codes,
-    const std::vector<std::vector<uint32_t>>& payloads,
-    const std::vector<std::vector<uint32_t>>& patch_tables) {
-  size_t payload_run_count = 0;
+    iree_host_size_t run_count, iree_host_size_t payload_run_count,
+    const iree_host_size_t* control_code_counts,
+    const iree_host_size_t* patch_table_counts) {
   for (iree_host_size_t run_i = 0; run_i < run_count; ++run_i) {
-    if (control_codes[run_i].empty()) {
+    if (control_code_counts[run_i] == 0) {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "%s entry point %" PRIhsz " run %" PRIhsz
                               " has no control code",
                               format_name, entry_index, run_i);
     }
-    if (patch_tables[run_i].size() % 3 != 0) {
+    if (patch_table_counts[run_i] % 3 != 0) {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "%s entry point %" PRIhsz " run %" PRIhsz
-                              " patch_table length %zu is not a multiple of 3",
+                              " patch_table length %" PRIhsz
+                              " is not a multiple of 3",
                               format_name, entry_index, run_i,
-                              patch_tables[run_i].size());
-    }
-    if (!payloads[run_i].empty()) {
-      if ((run_i & 1) != 0) {
-        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                                "%s entry point %" PRIhsz
-                                " reconfiguration payload run %" PRIhsz
-                                " is not in an even reconfiguration slot",
-                                format_name, entry_index, run_i);
-      }
-      ++payload_run_count;
+                              patch_table_counts[run_i]);
     }
   }
   if (payload_run_count != 0 && run_count != 2 * payload_run_count) {
     return iree_make_status(
         IREE_STATUS_INVALID_ARGUMENT,
         "%s entry point %" PRIhsz " has %" PRIhsz
-        " runs but %zu reconfiguration payloads; expected paired "
-        "reconfiguration/execution runs",
+        " runs but %" PRIhsz
+        " reconfiguration payloads; expected paired reconfiguration/execution "
+        "runs",
         format_name, entry_index, run_count, payload_run_count);
   }
   return iree_ok_status();
@@ -178,7 +263,7 @@ static iree_status_t iree_hal_amdxdna_pdi_flatbuffer_verify(
     }
     int32_t pdi_index =
         iree_hal_amdxdna_EntryPointDef_pdi_index_get(entry_point);
-    if (pdi_index >= 0 && static_cast<size_t>(pdi_index) >= pdi_count) {
+    if (pdi_index >= 0 && (size_t)pdi_index >= pdi_count) {
       IREE_TRACE_ZONE_END(z0);
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "entry point %zu pdi index %d out of range; "
@@ -195,22 +280,39 @@ static iree_status_t iree_hal_amdxdna_pdi_flatbuffer_verify(
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "entry point %zu has no runs", i);
     }
-    std::vector<std::vector<uint32_t>> control_codes(run_count);
-    std::vector<std::vector<uint32_t>> payloads(run_count);
-    std::vector<std::vector<uint32_t>> patch_tables(run_count);
+    iree_host_size_t control_code_counts[64];
+    iree_host_size_t patch_table_counts[64];
+    if (run_count > IREE_ARRAYSIZE(control_code_counts)) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                              "too many amdxdna runs: %zu", run_count);
+    }
+    iree_host_size_t payload_run_count = 0;
     for (size_t run_i = 0; run_i < run_count; ++run_i) {
       iree_hal_amdxdna_RunDef_table_t run =
           iree_hal_amdxdna_RunDef_vec_at(runs, run_i);
-      control_codes[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      control_code_counts[run_i] = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_RunDef_control_code_get(run));
-      payloads[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      iree_host_size_t payload_count = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_RunDef_data_payload_get(run));
-      patch_tables[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      patch_table_counts[run_i] = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_RunDef_patch_table_get(run));
+      if (payload_count != 0) {
+        if ((run_i & 1) != 0) {
+          IREE_TRACE_ZONE_END(z0);
+          return iree_make_status(
+              IREE_STATUS_INVALID_ARGUMENT,
+              "%s entry point %zu reconfiguration payload run %zu is not in "
+              "an even reconfiguration slot",
+              "PDIX", i, run_i);
+        }
+        ++payload_run_count;
+      }
     }
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_amdxdna_verify_run_list(
-                "PDIX", i, run_count, control_codes, payloads, patch_tables));
+                "PDIX", i, run_count, payload_run_count, control_code_counts,
+                patch_table_counts));
   }
   if (!has_pdi_entry_point) {
     IREE_TRACE_ZONE_END(z0);
@@ -299,8 +401,7 @@ static iree_status_t iree_hal_amdxdna_xclbin_flatbuffer_verify(
           "index or neither",
           i);
     }
-    if (xclbin_index >= 0 &&
-        static_cast<size_t>(xclbin_index) >= xclbin_count) {
+    if (xclbin_index >= 0 && (size_t)xclbin_index >= xclbin_count) {
       IREE_TRACE_ZONE_END(z0);
       return iree_make_status(
           IREE_STATUS_INVALID_ARGUMENT,
@@ -318,22 +419,39 @@ static iree_status_t iree_hal_amdxdna_xclbin_flatbuffer_verify(
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "entry point %zu has no runs", i);
     }
-    std::vector<std::vector<uint32_t>> control_codes(run_count);
-    std::vector<std::vector<uint32_t>> payloads(run_count);
-    std::vector<std::vector<uint32_t>> patch_tables(run_count);
+    iree_host_size_t control_code_counts[64];
+    iree_host_size_t patch_table_counts[64];
+    if (run_count > IREE_ARRAYSIZE(control_code_counts)) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                              "too many amdxdna runs: %zu", run_count);
+    }
+    iree_host_size_t payload_run_count = 0;
     for (size_t run_i = 0; run_i < run_count; ++run_i) {
       iree_hal_amdxdna_xclbin_RunDef_table_t run =
           iree_hal_amdxdna_xclbin_RunDef_vec_at(runs, run_i);
-      control_codes[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      control_code_counts[run_i] = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_xclbin_RunDef_control_code_get(run));
-      payloads[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      iree_host_size_t payload_count = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_xclbin_RunDef_data_payload_get(run));
-      patch_tables[run_i] = iree_hal_amdxdna_uint32_vec_to_vector(
+      patch_table_counts[run_i] = flatbuffers_uint32_vec_len(
           iree_hal_amdxdna_xclbin_RunDef_patch_table_get(run));
+      if (payload_count != 0) {
+        if ((run_i & 1) != 0) {
+          IREE_TRACE_ZONE_END(z0);
+          return iree_make_status(
+              IREE_STATUS_INVALID_ARGUMENT,
+              "%s entry point %zu reconfiguration payload run %zu is not in "
+              "an even reconfiguration slot",
+              "XADX", i, run_i);
+        }
+        ++payload_run_count;
+      }
     }
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_amdxdna_verify_run_list(
-                "XADX", i, run_count, control_codes, payloads, patch_tables));
+                "XADX", i, run_count, payload_run_count, control_code_counts,
+                patch_table_counts));
   }
   if (!has_context_entry_point) {
     IREE_TRACE_ZONE_END(z0);
@@ -363,35 +481,82 @@ iree_status_t iree_hal_amdxdna_native_executable_infer_format(
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "executable format buffer too small");
   }
-  memcpy(executable_format, format.data, format.size + /*NUL*/ 1);
+  memcpy(executable_format, format.data, format.size + 1);
   *out_inferred_size = executable_data.data_length;
   return iree_ok_status();
-}
-
-static void iree_hal_amdxdna_append_run_params(
-    iree_hal_amdxdna_kernel_params* params, std::vector<uint32_t> control_code,
-    std::vector<uint32_t> data_payload, std::vector<uint32_t> patch_table) {
-  params->asm_inst_runlist.push_back(std::move(control_code));
-  params->patch_runlist.push_back(std::move(patch_table));
-  if (!data_payload.empty()) {
-    params->reconf_data_runlist.push_back(std::move(data_payload));
-  }
 }
 
 static iree_status_t iree_hal_amdxdna_executable_allocate(
     iree_allocator_t host_allocator, iree_host_size_t entry_point_count,
     iree_hal_amdxdna_executable** out_executable) {
-  iree_hal_amdxdna_executable* executable = nullptr;
-  IREE_RETURN_IF_ERROR(
-      iree_allocator_malloc(host_allocator, sizeof(*executable),
-                            reinterpret_cast<void**>(&executable)));
-  new (executable) iree_hal_amdxdna_executable();
+  iree_hal_amdxdna_executable* executable = NULL;
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(host_allocator,
+                                             sizeof(*executable),
+                                             (void**)&executable));
+  memset(executable, 0, sizeof(*executable));
   iree_hal_resource_initialize(&iree_hal_amdxdna_executable_vtable,
                                &executable->resource);
   executable->host_allocator = host_allocator;
   executable->entry_point_count = entry_point_count;
-  executable->entry_points.resize(entry_point_count);
+  iree_slim_mutex_initialize(&executable->context_mutex);
+  if (entry_point_count > 0) {
+    iree_status_t status = iree_allocator_malloc(
+        host_allocator, entry_point_count * sizeof(*executable->entry_points),
+        (void**)&executable->entry_points);
+    if (!iree_status_is_ok(status)) {
+      iree_slim_mutex_deinitialize(&executable->context_mutex);
+      iree_allocator_free(host_allocator, executable);
+      return status;
+    }
+    memset(executable->entry_points, 0,
+           entry_point_count * sizeof(*executable->entry_points));
+    for (iree_host_size_t i = 0; i < entry_point_count; ++i) {
+      executable->entry_points[i].n_reconfigure_runs = 1;
+      executable->entry_points[i].n_pdi_loads = 1;
+    }
+  }
   *out_executable = executable;
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_append_run_params(
+    iree_allocator_t host_allocator, iree_hal_amdxdna_kernel_params_t* params,
+    iree_host_size_t run_ordinal, flatbuffers_uint32_vec_t control_code,
+    flatbuffers_uint32_vec_t data_payload,
+    flatbuffers_uint32_vec_t patch_table) {
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_copy_u32_vec(
+      host_allocator, control_code, &params->asm_inst_runlist[run_ordinal]));
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_copy_u32_vec(
+      host_allocator, patch_table, &params->patch_runlist[run_ordinal]));
+  if (data_payload && flatbuffers_uint32_vec_len(data_payload) != 0) {
+    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_copy_u32_vec(
+        host_allocator, data_payload,
+        &params->reconf_data_runlist[params->reconf_data_runlist_count++]));
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_kernel_params_allocate_runlists(
+    iree_allocator_t host_allocator, iree_hal_amdxdna_kernel_params_t* params,
+    iree_host_size_t run_count) {
+  if (run_count == 0) return iree_ok_status();
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, run_count * sizeof(*params->asm_inst_runlist),
+      (void**)&params->asm_inst_runlist));
+  memset(params->asm_inst_runlist, 0,
+         run_count * sizeof(*params->asm_inst_runlist));
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, run_count * sizeof(*params->patch_runlist),
+      (void**)&params->patch_runlist));
+  memset(params->patch_runlist, 0,
+         run_count * sizeof(*params->patch_runlist));
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, run_count * sizeof(*params->reconf_data_runlist),
+      (void**)&params->reconf_data_runlist));
+  memset(params->reconf_data_runlist, 0,
+         run_count * sizeof(*params->reconf_data_runlist));
+  params->asm_inst_runlist_count = run_count;
+  params->patch_runlist_count = run_count;
   return iree_ok_status();
 }
 
@@ -400,7 +565,7 @@ static iree_status_t iree_hal_amdxdna_pdi_executable_create(
     iree_allocator_t host_allocator, iree_hal_executable_t** out_executable) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  *out_executable = nullptr;
+  *out_executable = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(z0,
                                     iree_hal_amdxdna_pdi_flatbuffer_verify(
                                         executable_params->executable_data));
@@ -415,20 +580,25 @@ static iree_status_t iree_hal_amdxdna_pdi_executable_create(
   iree_host_size_t entry_point_count =
       iree_hal_amdxdna_EntryPointDef_vec_len(entry_points_vec);
 
-  iree_hal_amdxdna_executable* executable = nullptr;
+  iree_hal_amdxdna_executable* executable = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_executable_allocate(host_allocator,
                                                entry_point_count, &executable));
 
+  iree_status_t status = iree_ok_status();
   for (iree_host_size_t entry_ordinal = 0; entry_ordinal < entry_point_count;
        ++entry_ordinal) {
     iree_hal_amdxdna_EntryPointDef_table_t entry_point_def =
         iree_hal_amdxdna_EntryPointDef_vec_at(entry_points_vec, entry_ordinal);
-    iree_hal_amdxdna_kernel_params* params =
+    iree_hal_amdxdna_kernel_params_t* params =
         &executable->entry_points[entry_ordinal];
     flatbuffers_string_t name =
         iree_hal_amdxdna_EntryPointDef_name_get(entry_point_def);
-    params->kernel_name.assign(name, flatbuffers_string_len(name));
+    status = iree_hal_amdxdna_copy_string_view(
+        host_allocator,
+        iree_make_string_view(name, flatbuffers_string_len(name)),
+        &params->kernel_name);
+    if (!iree_status_is_ok(status)) break;
 
     int32_t pdi_index =
         iree_hal_amdxdna_EntryPointDef_pdi_index_get(entry_point_def);
@@ -436,26 +606,30 @@ static iree_status_t iree_hal_amdxdna_pdi_executable_create(
       iree_hal_amdxdna_PdiDef_table_t pdi_def =
           iree_hal_amdxdna_PdiDef_vec_at(pdis_vec, pdi_index);
       flatbuffers_uint8_vec_t pdi_fb = iree_hal_amdxdna_PdiDef_pdi_get(pdi_def);
-      params->pdi.assign(pdi_fb, pdi_fb + flatbuffers_uint8_vec_len(pdi_fb));
+      status = iree_hal_amdxdna_copy_u8_span(
+          host_allocator, iree_make_const_byte_span(
+                              pdi_fb, flatbuffers_uint8_vec_len(pdi_fb)),
+          &params->pdi);
+      if (!iree_status_is_ok(status)) break;
     }
 
     iree_hal_amdxdna_RunDef_vec_t runs_vec =
         iree_hal_amdxdna_EntryPointDef_runs_get(entry_point_def);
-    size_t run_count = iree_hal_amdxdna_RunDef_vec_len(runs_vec);
-    params->asm_inst_runlist.reserve(run_count);
-    params->patch_runlist.reserve(run_count);
-    for (size_t run_i = 0; run_i < run_count; ++run_i) {
+    iree_host_size_t run_count = iree_hal_amdxdna_RunDef_vec_len(runs_vec);
+    status = iree_hal_amdxdna_kernel_params_allocate_runlists(
+        host_allocator, params, run_count);
+    if (!iree_status_is_ok(status)) break;
+    for (iree_host_size_t run_i = 0; run_i < run_count; ++run_i) {
       iree_hal_amdxdna_RunDef_table_t run_def =
           iree_hal_amdxdna_RunDef_vec_at(runs_vec, run_i);
-      iree_hal_amdxdna_append_run_params(
-          params,
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_RunDef_control_code_get(run_def)),
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_RunDef_data_payload_get(run_def)),
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_RunDef_patch_table_get(run_def)));
+      status = iree_hal_amdxdna_append_run_params(
+          host_allocator, params, run_i,
+          iree_hal_amdxdna_RunDef_control_code_get(run_def),
+          iree_hal_amdxdna_RunDef_data_payload_get(run_def),
+          iree_hal_amdxdna_RunDef_patch_table_get(run_def));
+      if (!iree_status_is_ok(status)) break;
     }
+    if (!iree_status_is_ok(status)) break;
 
     IREE_TRACE({
       iree_hal_amdxdna_FileLineLocDef_table_t source_loc =
@@ -465,15 +639,26 @@ static iree_status_t iree_hal_amdxdna_pdi_executable_create(
             iree_hal_amdxdna_FileLineLocDef_filename_get(source_loc);
         uint32_t line = iree_hal_amdxdna_FileLineLocDef_line_get(source_loc);
         if (filename) {
-          params->source_filename.assign(filename,
-                                         flatbuffers_string_len(filename));
+          status = iree_hal_amdxdna_copy_string_view(
+              host_allocator,
+              iree_make_string_view(filename,
+                                    flatbuffers_string_len(filename)),
+              &params->source_filename);
         }
         params->source_line = line;
       }
     });
+    if (!iree_status_is_ok(status)) break;
   }
 
-  *out_executable = reinterpret_cast<iree_hal_executable_t*>(executable);
+  if (!iree_status_is_ok(status)) {
+    iree_hal_amdxdna_executable_deinitialize(executable);
+    iree_allocator_free(host_allocator, executable);
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  *out_executable = (iree_hal_executable_t*)executable;
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
@@ -483,7 +668,7 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
     iree_allocator_t host_allocator, iree_hal_executable_t** out_executable) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  *out_executable = nullptr;
+  *out_executable = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(z0,
                                     iree_hal_amdxdna_xclbin_flatbuffer_verify(
                                         executable_params->executable_data));
@@ -498,63 +683,74 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
   iree_host_size_t entry_point_count =
       iree_hal_amdxdna_xclbin_EntryPointDef_vec_len(entry_points_vec);
 
-  iree_hal_amdxdna_executable* executable = nullptr;
+  iree_hal_amdxdna_executable* executable = NULL;
   iree_status_t status = iree_hal_amdxdna_executable_allocate(
       host_allocator, entry_point_count, &executable);
   IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, status);
 
   for (iree_host_size_t entry_ordinal = 0; entry_ordinal < entry_point_count;
        ++entry_ordinal) {
-    iree_hal_amdxdna_kernel_params* params =
+    iree_hal_amdxdna_kernel_params_t* params =
         &executable->entry_points[entry_ordinal];
     iree_hal_amdxdna_xclbin_EntryPointDef_table_t entry_point =
         iree_hal_amdxdna_xclbin_EntryPointDef_vec_at(entry_points_vec,
                                                      entry_ordinal);
     flatbuffers_string_t name =
         iree_hal_amdxdna_xclbin_EntryPointDef_name_get(entry_point);
-    params->kernel_name.assign(name, flatbuffers_string_len(name));
+    status = iree_hal_amdxdna_copy_string_view(
+        host_allocator,
+        iree_make_string_view(name, flatbuffers_string_len(name)),
+        &params->kernel_name);
+    if (!iree_status_is_ok(status)) break;
 
     int32_t xclbin_index =
         iree_hal_amdxdna_xclbin_EntryPointDef_xclbin_index_get(entry_point);
     if (xclbin_index >= 0) {
       iree_hal_amdxdna_xclbin_XclbinDef_table_t xclbin_def =
           iree_hal_amdxdna_xclbin_XclbinDef_vec_at(xclbins_vec, xclbin_index);
-      params->xclbin = iree_hal_amdxdna_string_to_bytes(
-          iree_hal_amdxdna_xclbin_XclbinDef_xclbin_get(xclbin_def));
+      flatbuffers_string_t xclbin_fb =
+          iree_hal_amdxdna_xclbin_XclbinDef_xclbin_get(xclbin_def);
+      status = iree_hal_amdxdna_copy_u8_span(
+          host_allocator,
+          iree_make_const_byte_span((const uint8_t*)xclbin_fb,
+                                    flatbuffers_string_len(xclbin_fb)),
+          &params->xclbin);
+      if (!iree_status_is_ok(status)) break;
     }
     int32_t pdi_index =
         iree_hal_amdxdna_xclbin_EntryPointDef_pdi_index_get(entry_point);
     if (pdi_index >= 0) {
       iree_byte_span_t pdi_span = iree_byte_span_empty();
       status = iree_hal_amdxdna_xclbin_extract_pdi(
-          iree_make_const_byte_span(params->xclbin.data(),
-                                    params->xclbin.size()),
-          static_cast<uint32_t>(pdi_index), host_allocator, &pdi_span);
+          iree_make_const_byte_span(params->xclbin.data,
+                                    params->xclbin.count),
+          (uint32_t)pdi_index, host_allocator, &pdi_span);
       if (iree_status_is_ok(status)) {
-        params->pdi.assign(pdi_span.data,
-                           pdi_span.data + pdi_span.data_length);
-        iree_allocator_free(host_allocator, pdi_span.data);
+        params->pdi.data = pdi_span.data;
+        params->pdi.count = pdi_span.data_length;
       }
-      if (!iree_status_is_ok(status)) goto fail;
+      if (!iree_status_is_ok(status)) break;
     }
 
     iree_hal_amdxdna_xclbin_RunDef_vec_t runs =
         iree_hal_amdxdna_xclbin_EntryPointDef_runs_get(entry_point);
-    size_t run_count = iree_hal_amdxdna_xclbin_RunDef_vec_len(runs);
-    params->asm_inst_runlist.reserve(run_count);
-    params->patch_runlist.reserve(run_count);
-    for (size_t run_ordinal = 0; run_ordinal < run_count; ++run_ordinal) {
+    iree_host_size_t run_count =
+        iree_hal_amdxdna_xclbin_RunDef_vec_len(runs);
+    status = iree_hal_amdxdna_kernel_params_allocate_runlists(
+        host_allocator, params, run_count);
+    if (!iree_status_is_ok(status)) break;
+    for (iree_host_size_t run_ordinal = 0; run_ordinal < run_count;
+         ++run_ordinal) {
       iree_hal_amdxdna_xclbin_RunDef_table_t run =
           iree_hal_amdxdna_xclbin_RunDef_vec_at(runs, run_ordinal);
-      iree_hal_amdxdna_append_run_params(
-          params,
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_xclbin_RunDef_control_code_get(run)),
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_xclbin_RunDef_data_payload_get(run)),
-          iree_hal_amdxdna_uint32_vec_to_vector(
-              iree_hal_amdxdna_xclbin_RunDef_patch_table_get(run)));
+      status = iree_hal_amdxdna_append_run_params(
+          host_allocator, params, run_ordinal,
+          iree_hal_amdxdna_xclbin_RunDef_control_code_get(run),
+          iree_hal_amdxdna_xclbin_RunDef_data_payload_get(run),
+          iree_hal_amdxdna_xclbin_RunDef_patch_table_get(run));
+      if (!iree_status_is_ok(status)) break;
     }
+    if (!iree_status_is_ok(status)) break;
 
     IREE_TRACE({
       iree_hal_amdxdna_xclbin_FileLineLocDef_table_t source_loc =
@@ -566,23 +762,28 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
         uint32_t line =
             iree_hal_amdxdna_xclbin_FileLineLocDef_line_get(source_loc);
         if (filename) {
-          params->source_filename.assign(filename,
-                                         flatbuffers_string_len(filename));
+          status = iree_hal_amdxdna_copy_string_view(
+              host_allocator,
+              iree_make_string_view(filename,
+                                    flatbuffers_string_len(filename)),
+              &params->source_filename);
         }
         params->source_line = line;
       }
     });
+    if (!iree_status_is_ok(status)) break;
   }
 
-  *out_executable = reinterpret_cast<iree_hal_executable_t*>(executable);
+  if (!iree_status_is_ok(status)) {
+    iree_hal_amdxdna_executable_deinitialize(executable);
+    iree_allocator_free(host_allocator, executable);
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  *out_executable = (iree_hal_executable_t*)executable;
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
-
-fail:
-  executable->~iree_hal_amdxdna_executable();
-  iree_allocator_free(host_allocator, executable);
-  IREE_TRACE_ZONE_END(z0);
-  return status;
 }
 
 iree_status_t iree_hal_amdxdna_native_executable_create(
@@ -613,7 +814,7 @@ static void iree_hal_amdxdna_native_executable_destroy(
                                            iree_hal_amdxdna_executable_vtable,
                                            iree_hal_amdxdna_executable);
   iree_allocator_t host_allocator = executable->host_allocator;
-  executable->~iree_hal_amdxdna_executable();
+  iree_hal_amdxdna_executable_deinitialize(executable);
   iree_allocator_free(host_allocator, executable);
 
   IREE_TRACE_ZONE_END(z0);
@@ -641,11 +842,10 @@ static iree_status_t iree_hal_amdxdna_native_executable_function_info(
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "amdxdna executable function out of range");
   }
-  const auto& entry_point =
-      executable->entry_points[iree_hal_executable_function_index(function)];
+  const iree_hal_amdxdna_kernel_params_t* entry_point =
+      &executable->entry_points[iree_hal_executable_function_index(function)];
   memset(out_info, 0, sizeof(*out_info));
-  out_info->name = iree_make_string_view(entry_point.kernel_name.data(),
-                                         entry_point.kernel_name.size());
+  out_info->name = entry_point->kernel_name;
   out_info->workgroup_size[0] = 1;
   out_info->workgroup_size[1] = 1;
   out_info->workgroup_size[2] = 1;
@@ -678,19 +878,17 @@ static iree_status_t iree_hal_amdxdna_native_executable_lookup_function_by_name(
                                            iree_hal_amdxdna_executable_vtable,
                                            iree_hal_amdxdna_executable);
   for (iree_host_size_t i = 0; i < executable->entry_point_count; ++i) {
-    const auto& entry_point = executable->entry_points[i];
-    if (iree_string_view_equal(
-            name, iree_make_string_view(entry_point.kernel_name.data(),
-                                        entry_point.kernel_name.size()))) {
-      *out_function =
-          iree_hal_executable_function_from_index(static_cast<uint32_t>(i));
+    const iree_hal_amdxdna_kernel_params_t* entry_point =
+        &executable->entry_points[i];
+    if (iree_string_view_equal(name, entry_point->kernel_name)) {
+      *out_function = iree_hal_executable_function_from_index((uint32_t)i);
       return iree_ok_status();
     }
   }
   *out_function = iree_hal_executable_function_invalid();
   return iree_make_status(IREE_STATUS_NOT_FOUND,
                           "amdxdna executable function '%.*s' not found",
-                          static_cast<int>(name.size), name.data);
+                          (int)name.size, name.data);
 }
 
 static iree_status_t iree_hal_amdxdna_native_executable_lookup_global_by_name(
@@ -699,13 +897,12 @@ static iree_status_t iree_hal_amdxdna_native_executable_lookup_global_by_name(
   (void)base_executable;
   (void)name;
   (void)queue_affinity;
-  *out_buffer = nullptr;
+  *out_buffer = NULL;
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                           "amdxdna executables do not expose globals");
 }
 
-namespace {
-const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable = {
+static const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable = {
     iree_hal_amdxdna_native_executable_destroy,
     iree_hal_amdxdna_native_executable_function_count,
     iree_hal_amdxdna_native_executable_function_info,
@@ -713,4 +910,3 @@ const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable = {
     iree_hal_amdxdna_native_executable_lookup_function_by_name,
     iree_hal_amdxdna_native_executable_lookup_global_by_name,
 };
-}  // namespace

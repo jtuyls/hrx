@@ -42,7 +42,7 @@ iree_cc_library(
     async_queue.h
     buffer.c
     buffer.h
-    context_cache.cc
+    context_cache.c
     context_cache.h
     direct_command_buffer.cc
     direct_command_buffer.h
@@ -57,7 +57,7 @@ iree_cc_library(
     driver.c
     event.c
     event.h
-    executable.cc
+    executable.c
     executable.h
     executable_internal.h
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}

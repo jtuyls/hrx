@@ -18,6 +18,19 @@
 extern "C" {
 #endif  // __cplusplus
 
+typedef struct iree_hal_amdxdna_native_context_ref_t
+    iree_hal_amdxdna_native_context_ref_t;
+typedef struct iree_hal_amdxdna_native_context_t
+    iree_hal_amdxdna_native_context_t;
+typedef struct iree_hal_amdxdna_native_queue_t
+    iree_hal_amdxdna_native_queue_t;
+typedef struct iree_hal_amdxdna_native_command_t
+    iree_hal_amdxdna_native_command_t;
+
+typedef struct iree_hal_amdxdna_native_c_cu_index_t {
+  uint32_t index;
+} iree_hal_amdxdna_native_c_cu_index_t;
+
 typedef enum iree_hal_amdxdna_native_c_command_opcode_t {
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU = 0,
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU = 1,
@@ -32,6 +45,11 @@ typedef enum iree_hal_amdxdna_native_c_power_mode_t {
   IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_HIGH = 3,
   IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_TURBO = 4,
 } iree_hal_amdxdna_native_c_power_mode_t;
+
+typedef enum iree_hal_amdxdna_native_c_context_image_type_t {
+  IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_PDI = 0,
+  IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN = 1,
+} iree_hal_amdxdna_native_c_context_image_type_t;
 
 typedef enum iree_hal_amdxdna_native_c_buffer_sync_model_t {
   IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS = 0,
@@ -74,6 +92,13 @@ typedef struct iree_hal_amdxdna_native_c_device_caps_t {
   iree_hal_amdxdna_native_c_command_opcode_t default_dispatch_opcode;
 } iree_hal_amdxdna_native_c_device_caps_t;
 
+typedef struct iree_hal_amdxdna_native_c_context_image_t {
+  iree_hal_amdxdna_native_c_context_image_type_t type;
+  iree_const_byte_span_t pdi;
+  iree_const_byte_span_t xclbin;
+  iree_string_view_t kernel_name;
+} iree_hal_amdxdna_native_c_context_image_t;
+
 iree_status_t iree_hal_amdxdna_native_device_c_resolve_options(
     const struct iree_hal_amdxdna_device_params* options,
     iree_allocator_t host_allocator,
@@ -97,6 +122,101 @@ iree_status_t iree_hal_amdxdna_native_device_c_set_power_mode(
 iree_status_t iree_hal_amdxdna_native_device_c_query_caps(
     iree_hal_amdxdna_native_device_t* device,
     iree_hal_amdxdna_native_c_device_caps_t* out_caps);
+
+iree_status_t iree_hal_amdxdna_native_device_c_create_context_ref(
+    iree_hal_amdxdna_native_device_t* device,
+    const iree_hal_amdxdna_native_c_context_image_t* image,
+    iree_hal_amdxdna_native_context_ref_t** out_context_ref);
+
+iree_hal_amdxdna_native_context_ref_t*
+iree_hal_amdxdna_native_context_ref_retain(
+    iree_hal_amdxdna_native_context_ref_t* context_ref);
+
+void iree_hal_amdxdna_native_context_ref_release(
+    iree_hal_amdxdna_native_context_ref_t* context_ref);
+
+iree_hal_amdxdna_native_context_t*
+iree_hal_amdxdna_native_context_ref_borrow(
+    iree_hal_amdxdna_native_context_ref_t* context_ref);
+
+iree_status_t iree_hal_amdxdna_native_context_ref_open_cu(
+    iree_hal_amdxdna_native_context_ref_t* context_ref,
+    iree_string_view_t kernel_name,
+    iree_hal_amdxdna_native_c_cu_index_t* out_cu_index);
+
+iree_status_t iree_hal_amdxdna_native_context_ref_close_single_aperture_session(
+    iree_hal_amdxdna_native_context_ref_t* context_ref);
+
+iree_hal_amdxdna_native_queue_t*
+iree_hal_amdxdna_native_context_ref_queue(
+    iree_hal_amdxdna_native_context_ref_t* context_ref);
+
+uint64_t iree_hal_amdxdna_native_queue_c_exec_command_count(
+    iree_hal_amdxdna_native_queue_t* queue);
+
+iree_status_t iree_hal_amdxdna_native_device_c_query_chain_max_slots(
+    iree_hal_amdxdna_native_device_t* device, uint32_t* out_max_slots);
+
+iree_host_size_t iree_hal_amdxdna_native_command_c_arg_binding_capacity(void);
+
+iree_status_t iree_hal_amdxdna_native_command_c_create(
+    iree_hal_amdxdna_native_device_t* device,
+    iree_hal_amdxdna_native_c_command_opcode_t opcode,
+    iree_hal_amdxdna_native_command_t** out_command);
+
+void iree_hal_amdxdna_native_command_c_destroy(
+    iree_hal_amdxdna_native_command_t* command);
+
+iree_status_t iree_hal_amdxdna_native_command_c_set_cu_index(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_c_cu_index_t cu_index);
+
+iree_status_t iree_hal_amdxdna_native_command_c_add_control_buffer(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size);
+
+iree_status_t iree_hal_amdxdna_native_command_c_add_arg_32(
+    iree_hal_amdxdna_native_command_t* command, uint32_t value);
+
+iree_status_t iree_hal_amdxdna_native_command_c_add_arg_64(
+    iree_hal_amdxdna_native_command_t* command, uint64_t value);
+
+iree_status_t iree_hal_amdxdna_native_command_c_add_buffer_arg(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* buffer);
+
+iree_status_t iree_hal_amdxdna_native_command_c_add_buffer_arg_at_offset(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* buffer, uint64_t offset);
+
+iree_status_t iree_hal_amdxdna_native_command_c_bind_buffer(
+    iree_hal_amdxdna_native_command_t* command, iree_host_size_t position,
+    iree_hal_amdxdna_native_buffer_t* buffer, iree_device_size_t offset,
+    iree_device_size_t size);
+
+iree_status_t iree_hal_amdxdna_native_command_c_reset_bound_buffers(
+    iree_hal_amdxdna_native_command_t* command);
+
+iree_status_t iree_hal_amdxdna_native_command_c_mark_code_dirty(
+    iree_hal_amdxdna_native_command_t* command);
+
+iree_status_t iree_hal_amdxdna_native_command_c_mark_chain_code_dirty(
+    iree_hal_amdxdna_native_command_t* command);
+
+iree_status_t iree_hal_amdxdna_native_command_c_prepare_chain(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count);
+
+iree_status_t iree_hal_amdxdna_native_queue_c_submit_and_wait(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label);
+
+iree_status_t iree_hal_amdxdna_native_queue_c_submit_all_and_wait(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count, iree_string_view_t label);
 
 #ifdef __cplusplus
 }  // extern "C"

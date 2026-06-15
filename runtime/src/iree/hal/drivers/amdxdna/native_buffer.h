@@ -46,6 +46,16 @@ iree_status_t iree_hal_amdxdna_native_buffer_c_sync(
     iree_hal_amdxdna_native_buffer_sync_direction_t direction,
     iree_device_size_t size, iree_device_size_t offset);
 
+iree_status_t iree_hal_amdxdna_native_buffer_c_sync_all(
+    iree_hal_amdxdna_native_buffer_t* buffer,
+    iree_hal_amdxdna_native_buffer_sync_direction_t direction);
+
+iree_status_t iree_hal_amdxdna_native_buffer_c_ensure_allocated(
+    iree_hal_amdxdna_native_buffer_t* buffer);
+
+uint64_t iree_hal_amdxdna_native_buffer_c_device_address(
+    iree_hal_amdxdna_native_buffer_t* buffer);
+
 iree_device_size_t iree_hal_amdxdna_native_buffer_c_size(
     iree_hal_amdxdna_native_buffer_t* buffer);
 

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "iree/base/api.h"
@@ -17,6 +18,18 @@
 #include "iree/testing/status_matchers.h"
 
 namespace {
+
+static std::string ToString(iree_string_view_t value) {
+  return std::string(value.data, value.size);
+}
+
+static std::vector<uint8_t> ToVector(iree_hal_amdxdna_u8_list_t value) {
+  return std::vector<uint8_t>(value.data, value.data + value.count);
+}
+
+static std::vector<uint32_t> ToVector(iree_hal_amdxdna_u32_list_t value) {
+  return std::vector<uint32_t>(value.data, value.data + value.count);
+}
 
 struct TestRunDef {
   std::vector<uint32_t> control_code;
@@ -236,18 +249,20 @@ TEST(ExecutableXclbinTest, ParsesXadxXclbinDefinitions) {
   iree_hal_amdxdna_executable* executable =
       iree_hal_amdxdna_executable_cast(base_executable);
 
-  ASSERT_EQ(executable->entry_points.size(), 2u);
+  ASSERT_EQ(executable->entry_point_count, 2u);
   const auto& e0 = executable->entry_points[0];
-  EXPECT_EQ(e0.kernel_name, "xadx0");
-  EXPECT_EQ(e0.pdi, pdi0);       // extracted from the AIE_PARTITION by index
-  EXPECT_EQ(e0.xclbin, xclbin);  // raw AXLF context wrapper retained
-  ASSERT_EQ(e0.asm_inst_runlist.size(), 1u);
-  EXPECT_EQ(e0.asm_inst_runlist[0], std::vector<uint32_t>({10, 11}));
+  EXPECT_EQ(ToString(e0.kernel_name), "xadx0");
+  EXPECT_EQ(ToVector(e0.pdi),
+            pdi0);  // extracted from the AIE_PARTITION by index
+  EXPECT_EQ(ToVector(e0.xclbin), xclbin);  // raw AXLF context wrapper retained
+  ASSERT_EQ(e0.asm_inst_runlist_count, 1u);
+  EXPECT_EQ(ToVector(e0.asm_inst_runlist[0]),
+            std::vector<uint32_t>({10, 11}));
   const auto& e1 = executable->entry_points[1];
-  EXPECT_EQ(e1.kernel_name, "xadx1");
-  EXPECT_EQ(e1.pdi, pdi1);
-  ASSERT_EQ(e1.asm_inst_runlist.size(), 1u);
-  EXPECT_EQ(e1.asm_inst_runlist[0], std::vector<uint32_t>({20}));
+  EXPECT_EQ(ToString(e1.kernel_name), "xadx1");
+  EXPECT_EQ(ToVector(e1.pdi), pdi1);
+  ASSERT_EQ(e1.asm_inst_runlist_count, 1u);
+  EXPECT_EQ(ToVector(e1.asm_inst_runlist[0]), std::vector<uint32_t>({20}));
 
   iree_hal_executable_release(base_executable);
 }

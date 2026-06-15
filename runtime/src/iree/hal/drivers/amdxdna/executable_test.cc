@@ -7,6 +7,7 @@
 #include "iree/hal/drivers/amdxdna/executable.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "iree/base/api.h"
@@ -17,6 +18,18 @@
 #include "iree/testing/status_matchers.h"
 
 namespace {
+
+static std::string ToString(iree_string_view_t value) {
+  return std::string(value.data, value.size);
+}
+
+static std::vector<uint8_t> ToVector(iree_hal_amdxdna_u8_list_t value) {
+  return std::vector<uint8_t>(value.data, value.data + value.count);
+}
+
+static std::vector<uint32_t> ToVector(iree_hal_amdxdna_u32_list_t value) {
+  return std::vector<uint32_t>(value.data, value.data + value.count);
+}
 
 struct TestRunDef {
   std::vector<uint32_t> control_code;
@@ -229,38 +242,44 @@ TEST(ExecutableTest, ParsesSharedPdiAndRunDefinitions) {
   iree_hal_amdxdna_executable* executable =
       iree_hal_amdxdna_executable_cast(base_executable);
 
-  ASSERT_EQ(executable->entry_points.size(), 3u);
+  ASSERT_EQ(executable->entry_point_count, 3u);
 
   const auto& entry0 = executable->entry_points[0];
-  EXPECT_EQ(entry0.kernel_name, "entry0");
-  EXPECT_EQ(entry0.pdi, std::vector<uint8_t>({0x50, 0x44, 0x49, 0x00}));
-  EXPECT_TRUE(entry0.xclbin.empty());
-  ASSERT_EQ(entry0.asm_inst_runlist.size(), 2u);
-  ASSERT_EQ(entry0.reconf_data_runlist.size(), 1u);
-  ASSERT_EQ(entry0.patch_runlist.size(), 2u);
-  EXPECT_EQ(entry0.asm_inst_runlist[0], std::vector<uint32_t>({10, 11}));
-  EXPECT_EQ(entry0.reconf_data_runlist[0],
+  EXPECT_EQ(ToString(entry0.kernel_name), "entry0");
+  EXPECT_EQ(ToVector(entry0.pdi),
+            std::vector<uint8_t>({0x50, 0x44, 0x49, 0x00}));
+  EXPECT_EQ(entry0.xclbin.count, 0u);
+  ASSERT_EQ(entry0.asm_inst_runlist_count, 2u);
+  ASSERT_EQ(entry0.reconf_data_runlist_count, 1u);
+  ASSERT_EQ(entry0.patch_runlist_count, 2u);
+  EXPECT_EQ(ToVector(entry0.asm_inst_runlist[0]),
+            std::vector<uint32_t>({10, 11}));
+  EXPECT_EQ(ToVector(entry0.reconf_data_runlist[0]),
             std::vector<uint32_t>({100, 101, 102}));
-  EXPECT_EQ(entry0.patch_runlist[0], std::vector<uint32_t>({0, 0, 4}));
-  EXPECT_EQ(entry0.asm_inst_runlist[1], std::vector<uint32_t>({20, 21}));
-  EXPECT_EQ(entry0.patch_runlist[1],
+  EXPECT_EQ(ToVector(entry0.patch_runlist[0]),
+            std::vector<uint32_t>({0, 0, 4}));
+  EXPECT_EQ(ToVector(entry0.asm_inst_runlist[1]),
+            std::vector<uint32_t>({20, 21}));
+  EXPECT_EQ(ToVector(entry0.patch_runlist[1]),
             std::vector<uint32_t>({8, 1, 0, 12, 2, 16}));
 
   const auto& shared_pdi = executable->entry_points[1];
-  EXPECT_EQ(shared_pdi.kernel_name, "shared_pdi");
-  EXPECT_EQ(shared_pdi.pdi, entry0.pdi);
-  EXPECT_TRUE(shared_pdi.xclbin.empty());
-  ASSERT_EQ(shared_pdi.asm_inst_runlist.size(), 1u);
-  EXPECT_TRUE(shared_pdi.reconf_data_runlist.empty());
-  EXPECT_EQ(shared_pdi.asm_inst_runlist[0], std::vector<uint32_t>({30}));
+  EXPECT_EQ(ToString(shared_pdi.kernel_name), "shared_pdi");
+  EXPECT_EQ(ToVector(shared_pdi.pdi), ToVector(entry0.pdi));
+  EXPECT_EQ(shared_pdi.xclbin.count, 0u);
+  ASSERT_EQ(shared_pdi.asm_inst_runlist_count, 1u);
+  EXPECT_EQ(shared_pdi.reconf_data_runlist_count, 0u);
+  EXPECT_EQ(ToVector(shared_pdi.asm_inst_runlist[0]),
+            std::vector<uint32_t>({30}));
 
   const auto& reuse_context = executable->entry_points[2];
-  EXPECT_EQ(reuse_context.kernel_name, "reuse_context");
-  EXPECT_TRUE(reuse_context.pdi.empty());
-  EXPECT_TRUE(reuse_context.xclbin.empty());
-  ASSERT_EQ(reuse_context.asm_inst_runlist.size(), 1u);
-  EXPECT_TRUE(reuse_context.reconf_data_runlist.empty());
-  EXPECT_EQ(reuse_context.asm_inst_runlist[0], std::vector<uint32_t>({40, 41}));
+  EXPECT_EQ(ToString(reuse_context.kernel_name), "reuse_context");
+  EXPECT_EQ(reuse_context.pdi.count, 0u);
+  EXPECT_EQ(reuse_context.xclbin.count, 0u);
+  ASSERT_EQ(reuse_context.asm_inst_runlist_count, 1u);
+  EXPECT_EQ(reuse_context.reconf_data_runlist_count, 0u);
+  EXPECT_EQ(ToVector(reuse_context.asm_inst_runlist[0]),
+            std::vector<uint32_t>({40, 41}));
 
   EXPECT_EQ(iree_hal_executable_function_count(base_executable), 3u);
   iree_hal_executable_function_info_t function_info;

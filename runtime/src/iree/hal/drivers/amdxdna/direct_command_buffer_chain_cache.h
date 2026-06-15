@@ -14,7 +14,9 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
+#include "iree/hal/drivers/amdxdna/executable_internal.h"
 #include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_device.h"
 
 // Chain (ERT_CMD_CHAIN / runlist) building blocks and the device-global chain
 // command cache.
@@ -50,8 +52,8 @@ struct iree_hal_amdxdna_chain_cmd {
   // together with the constants and binding addresses it determines the patched
   // `ctrl_words`, so the exact-match fast path compares these cheap inputs
   // instead of building and comparing the streams.
-  const std::vector<uint32_t>* src_asm_inst = nullptr;
-  const std::vector<uint32_t>* src_patches = nullptr;
+  const iree_hal_amdxdna_u32_list_t* src_asm_inst = nullptr;
+  const iree_hal_amdxdna_u32_list_t* src_patches = nullptr;
   std::vector<uint8_t> src_constants;
   iree_hal_amdxdna_native_cu_index_t src_cu_idx{};
   bool src_use_native_partial_elf = false;
@@ -72,8 +74,42 @@ struct iree_hal_amdxdna_chain_cmd {
 // exec buffer). A chain runs on a single native context, so a queue change
 // between dispatches starts a new group.
 struct iree_hal_amdxdna_chain_group {
+  iree_hal_amdxdna_chain_group() = default;
+  iree_hal_amdxdna_chain_group(const iree_hal_amdxdna_chain_group&) = delete;
+  iree_hal_amdxdna_chain_group& operator=(
+      const iree_hal_amdxdna_chain_group&) = delete;
+  iree_hal_amdxdna_chain_group(iree_hal_amdxdna_chain_group&& other) noexcept
+      : context(other.context),
+        queue(other.queue),
+        cmds(std::move(other.cmds)),
+        reconf_buffers(std::move(other.reconf_buffers)),
+        binding_refs(std::move(other.binding_refs)),
+        native_partial_elf(other.native_partial_elf) {
+    other.context = nullptr;
+    other.queue = nullptr;
+    other.native_partial_elf = false;
+  }
+  iree_hal_amdxdna_chain_group& operator=(
+      iree_hal_amdxdna_chain_group&& other) noexcept {
+    if (this == &other) return *this;
+    iree_hal_amdxdna_native_context_ref_release(context);
+    context = other.context;
+    queue = other.queue;
+    cmds = std::move(other.cmds);
+    reconf_buffers = std::move(other.reconf_buffers);
+    binding_refs = std::move(other.binding_refs);
+    native_partial_elf = other.native_partial_elf;
+    other.context = nullptr;
+    other.queue = nullptr;
+    other.native_partial_elf = false;
+    return *this;
+  }
+  ~iree_hal_amdxdna_chain_group() {
+    iree_hal_amdxdna_native_context_ref_release(context);
+  }
+
   // Retains the native context owning `queue` until the chain flushes.
-  std::shared_ptr<iree_hal_amdxdna_native_context_t> context;
+  iree_hal_amdxdna_native_context_ref_t* context = nullptr;
   iree_hal_amdxdna_native_queue_t* queue = nullptr;
   std::vector<iree_hal_amdxdna_chain_cmd> cmds;
   // Control-packet sequence BOs (reconfig arg buffers): referenced by address

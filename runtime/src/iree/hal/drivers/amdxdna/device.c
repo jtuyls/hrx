@@ -41,7 +41,8 @@ static void iree_hal_amdxdna_device_initialize(
   IREE_TRACE_ZONE_BEGIN(z0);
 
   memset(device, 0, sizeof(*device));
-  device->context_cache = iree_hal_amdxdna_device_context_cache_create();
+  device->context_cache =
+      iree_hal_amdxdna_device_context_cache_create(host_allocator);
   iree_atomic_store(&device->chain_max_slots, 0, iree_memory_order_relaxed);
 
   iree_hal_resource_initialize(&iree_hal_amdxdna_device_vtable,
@@ -1102,9 +1103,8 @@ static void iree_hal_amdxdna_device_destroy(iree_hal_device_t* base_device) {
   // safe if an earlier failure path already cleared the caches.
   iree_hal_amdxdna_device_destroy_single_command_cache(device);
   iree_hal_amdxdna_device_destroy_chain_command_cache(device);
-  // Drop the cache's shared_ptr<native_context> refs before the native device
-  // they reference is torn down. Per the IREE HAL lifetime contract,
-  // executables (which co-own these via executable->context) are released
+  // Drop cached native context refs before the native device they reference is
+  // torn down. Per the IREE HAL lifetime contract, executables are released
   // before their device, so by the time we get here the cache holds the last
   // refs and clear() runs the native context destructors cleanly.
   // Lock defensively against the contract being violated (zero cost
