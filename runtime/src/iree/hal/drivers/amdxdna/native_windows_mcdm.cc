@@ -246,12 +246,6 @@ uint32_t chain_slot_capacity(size_t exec_bo_size) {
              : 1;
 }
 
-bool partial_elf_dummy_bos_enabled() { return true; }
-
-bool partial_elf_bo_table_enabled() { return true; }
-
-bool compact_execbuf_enabled() { return true; }
-
 void flush_host_writes_to_mcdm() {
   std::atomic_thread_fence(std::memory_order_seq_cst);
   FlushProcessWriteBuffers();
@@ -821,8 +815,7 @@ bool uses_partial_elf_npu_packet(iree_hal_amdxdna_native_command_t* command) {
 
 iree_status_t ensure_partial_elf_dummy_buffers(
     iree_hal_amdxdna_native_command_t* command) {
-  if (!uses_partial_elf_npu_packet(command) ||
-      !partial_elf_dummy_bos_enabled()) {
+  if (!uses_partial_elf_npu_packet(command)) {
     return iree_ok_status();
   }
   auto& dummy_buffers = command->device->partial_elf_dummy_buffers;
@@ -843,8 +836,7 @@ iree_status_t ensure_partial_elf_dummy_buffers(
 
 iree_status_t maybe_write_partial_elf_bo_table(
     iree_hal_amdxdna_native_command_t* command) {
-  if (!uses_partial_elf_npu_packet(command) ||
-      !partial_elf_bo_table_enabled()) {
+  if (!uses_partial_elf_npu_packet(command)) {
     return iree_ok_status();
   }
 
@@ -2112,7 +2104,7 @@ iree_status_t iree_hal_amdxdna_native_command_create(
   uint64_t exec_buffer_size = kMaxExecBoSize;
   if (handler.is_chain) {
     exec_buffer_size = windows_dpu_pathb_chain_exec_bo_size();
-  } else if (compact_execbuf_enabled()) {
+  } else {
     exec_buffer_size = kWindowsDpuPathBExecBoSize;
   }
   exec_buffer.reset(new iree_hal_amdxdna_native_buffer_t(
@@ -2424,7 +2416,6 @@ struct iree_hal_amdxdna_native_submission_t {
   ert_packet* packet = nullptr;
   bool is_pathb_chain = false;
   bool is_pathb_partial_elf = false;
-  bool skip_bound_sync = false;
   bool issued = false;
   bool waited = false;
   iree_status_t status = iree_ok_status();
@@ -2543,10 +2534,9 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
     IREE_RETURN_IF_ERROR(close_pathb_single_aperture_session(queue));
   }
   const uint32_t command_bytes = (packet->count + 1) * sizeof(uint32_t);
-  const bool skip_bound_sync = false;
   // The NPU is not cache-coherent: flush every bound buffer host->device BEFORE
   // the dispatch so the firmware reads real data.
-  if (!skip_bound_sync) {
+  {
     SubmitProfileScope profile(SubmitProfilePhase::bound_presync);
     for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
       iree_hal_amdxdna_native_buffer_t* bound =
@@ -2607,7 +2597,6 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
   s->packet = packet;
   s->is_pathb_chain = is_pathb_chain;
   s->is_pathb_partial_elf = is_pathb_partial_elf;
-  s->skip_bound_sync = skip_bound_sync;
   s->issued = true;
   return iree_ok_status();
 }
@@ -2647,7 +2636,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_wait(
   }
   // The NPU is not cache-coherent: invalidate every bound buffer device->host
   // so the host reads the firmware's results, not stale cache.
-  if (!s->skip_bound_sync) {
+  {
     SubmitProfileScope profile(SubmitProfilePhase::bound_postsync);
     for (size_t i = 0; i < command->bound_buffers.size(); ++i) {
       iree_hal_amdxdna_native_buffer_t* bound =
