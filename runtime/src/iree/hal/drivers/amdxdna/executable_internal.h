@@ -14,7 +14,7 @@
 #include "iree/base/threading/mutex.h"
 #include "iree/base/tracing.h"
 #include "iree/hal/drivers/amdxdna/executable.h"
-#include "iree/hal/drivers/amdxdna/native_device.h"
+#include "iree/hal/drivers/amdxdna/native.h"
 
 typedef struct iree_hal_amdxdna_u8_list_t {
   uint8_t* data;

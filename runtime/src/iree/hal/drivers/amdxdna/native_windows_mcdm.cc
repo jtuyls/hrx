@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_internal.h"
 #include "iree/hal/drivers/amdxdna/shim/ert.h"
 #include "iree/hal/drivers/amdxdna/shim/windows/mcdm/context_blob.h"
 #include "iree/hal/drivers/amdxdna/shim/windows/mcdm/kmt_api.h"
@@ -3007,3 +3007,5 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
   }
   return iree_ok_status();
 }
+
+#include "iree/hal/drivers/amdxdna/native_c_api_impl.inc"

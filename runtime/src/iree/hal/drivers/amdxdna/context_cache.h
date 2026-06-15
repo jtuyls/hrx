@@ -8,7 +8,7 @@
 #define IREE_HAL_DRIVERS_AMDXDNA_CONTEXT_CACHE_H_
 
 #include "iree/base/api.h"
-#include "iree/hal/drivers/amdxdna/native_device.h"
+#include "iree/hal/drivers/amdxdna/native.h"
 
 #ifdef __cplusplus
 extern "C" {

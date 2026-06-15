@@ -12,8 +12,7 @@
 #include "iree/base/api.h"
 #include "iree/base/threading/mutex.h"
 #include "iree/hal/api.h"
-#include "iree/hal/drivers/amdxdna/native_buffer.h"
-#include "iree/hal/drivers/amdxdna/native_device.h"
+#include "iree/hal/drivers/amdxdna/native.h"
 
 #ifdef __cplusplus
 extern "C" {

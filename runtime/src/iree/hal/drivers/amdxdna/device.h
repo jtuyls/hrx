@@ -13,7 +13,7 @@
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/async_queue.h"
-#include "iree/hal/drivers/amdxdna/native_device.h"
+#include "iree/hal/drivers/amdxdna/native.h"
 
 struct iree_async_proactor_pool_t;
 struct iree_async_proactor_t;

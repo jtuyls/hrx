@@ -13,7 +13,7 @@ endif()
 iree_add_all_subdirs()
 
 set(IREE_HAL_AMDXDNA_NATIVE_SRCS
-  native.h
+  native_internal.h
 )
 if(WIN32)
   set(IREE_HAL_AMDXDNA_NATIVE_DEPS
@@ -60,16 +60,14 @@ iree_cc_library(
     executable.c
     executable.h
     executable_internal.h
+    native.h
+    native_c_api_impl.inc
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
-    native_buffer.h
-    native_device.h
     nop_executable_cache.c
     nop_executable_cache.h
     semaphore.c
     semaphore.h
     util.h
-    shim/native_buffer_bridge.cc
-    shim/native_device_bridge.cc
     xclbin_util.c
     xclbin_util.h
   DEPS

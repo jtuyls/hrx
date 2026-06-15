@@ -15,7 +15,7 @@
 #include <string>
 #include <utility>
 
-#include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_internal.h"
 #include "iree/hal/drivers/amdxdna/shim/linux/kmq/bo.h"
 #include "iree/hal/drivers/amdxdna/shim/linux/kmq/device.h"
 #include "iree/hal/drivers/amdxdna/shim/linux/kmq/hwctx.h"
@@ -795,3 +795,5 @@ void iree_hal_amdxdna_native_debug_set_submit_profile_enabled(bool enabled) {
 void iree_hal_amdxdna_native_debug_reset_submit_profile() {}
 
 void iree_hal_amdxdna_native_debug_dump_submit_profile() {}
+
+#include "iree/hal/drivers/amdxdna/native_c_api_impl.inc"
