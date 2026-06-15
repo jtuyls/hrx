@@ -54,16 +54,16 @@ iree_cc_library(
     direct_command_buffer_single_cache.h
     device.cc
     device_internal.h
-    driver.cc
-    event.cc
+    driver.c
+    event.c
     event.h
     executable.cc
     executable.h
     executable_internal.h
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
-    nop_executable_cache.cc
+    nop_executable_cache.c
     nop_executable_cache.h
-    semaphore.cc
+    semaphore.c
     semaphore.h
     util.h
     xclbin_util.cc

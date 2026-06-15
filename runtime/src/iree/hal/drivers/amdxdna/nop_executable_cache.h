@@ -9,13 +9,22 @@
 
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
-#include "iree/hal/drivers/amdxdna/native.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
+
+struct iree_hal_amdxdna_native_device_t;
 
 // `out_executable_cache` must be released by the caller (see
 // iree_hal_executable_cache_release).
 iree_status_t iree_hal_amdxdna_nop_executable_cache_create(
-    iree_hal_amdxdna_native_device_t* native_device,
+    struct iree_hal_amdxdna_native_device_t* native_device,
     iree_string_view_t identifier, iree_allocator_t host_allocator,
     iree_hal_executable_cache_t** out_executable_cache);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_NOP_EXECUTABLE_CACHE_H_

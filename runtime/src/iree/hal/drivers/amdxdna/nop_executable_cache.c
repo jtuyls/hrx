@@ -11,47 +11,35 @@
 #include "iree/hal/drivers/amdxdna/executable.h"
 #include "iree/hal/drivers/amdxdna/util.h"
 
-namespace {
-extern const iree_hal_executable_cache_vtable_t
+static const iree_hal_executable_cache_vtable_t
     iree_hal_amdxdna_nop_executable_cache_vtable;
-}  // namespace
 
-struct iree_hal_amdxdna_nop_executable_cache {
+typedef struct iree_hal_amdxdna_nop_executable_cache_t {
   // Abstract resource used for injecting reference counting and vtable; must be
   // at offset 0.
   iree_hal_resource_t resource;
-  iree_hal_amdxdna_native_device_t* native_device;
+  struct iree_hal_amdxdna_native_device_t* native_device;
   iree_allocator_t host_allocator;
-
-  iree_hal_amdxdna_nop_executable_cache(
-      iree_hal_amdxdna_native_device_t* native_device,
-      iree_allocator_t host_allocator)
-      : native_device(native_device), host_allocator(host_allocator) {
-    IREE_TRACE_ZONE_BEGIN(z0);
-
-    iree_hal_resource_initialize(&iree_hal_amdxdna_nop_executable_cache_vtable,
-                                 &resource);
-
-    IREE_TRACE_ZONE_END(z0);
-  }
-};
+} iree_hal_amdxdna_nop_executable_cache_t;
 
 iree_status_t iree_hal_amdxdna_nop_executable_cache_create(
-    iree_hal_amdxdna_native_device_t* native_device,
+    struct iree_hal_amdxdna_native_device_t* native_device,
     iree_string_view_t identifier, iree_allocator_t host_allocator,
     iree_hal_executable_cache_t** out_executable_cache) {
+  (void)identifier;
   IREE_ASSERT_ARGUMENT(out_executable_cache);
-  *out_executable_cache = nullptr;
+  *out_executable_cache = NULL;
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_nop_executable_cache* executable_cache = nullptr;
+  iree_hal_amdxdna_nop_executable_cache_t* executable_cache = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, sizeof(*executable_cache),
-                                reinterpret_cast<void**>(&executable_cache)));
-  executable_cache = new (executable_cache)
-      iree_hal_amdxdna_nop_executable_cache(native_device, host_allocator);
-  *out_executable_cache =
-      reinterpret_cast<iree_hal_executable_cache_t*>(executable_cache);
+                                (void**)&executable_cache));
+  iree_hal_resource_initialize(&iree_hal_amdxdna_nop_executable_cache_vtable,
+                               &executable_cache->resource);
+  executable_cache->native_device = native_device;
+  executable_cache->host_allocator = host_allocator;
+  *out_executable_cache = (iree_hal_executable_cache_t*)executable_cache;
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -61,10 +49,10 @@ static void iree_hal_amdxdna_nop_executable_cache_destroy(
     iree_hal_executable_cache_t* base_executable_cache) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_nop_executable_cache* executable_cache =
+  iree_hal_amdxdna_nop_executable_cache_t* executable_cache =
       IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
           base_executable_cache, iree_hal_amdxdna_nop_executable_cache_vtable,
-          iree_hal_amdxdna_nop_executable_cache);
+          iree_hal_amdxdna_nop_executable_cache_t);
   iree_allocator_free(executable_cache->host_allocator, executable_cache);
 
   IREE_TRACE_ZONE_END(z0);
@@ -97,10 +85,10 @@ static iree_status_t iree_hal_amdxdna_nop_executable_cache_prepare_executable(
     iree_hal_executable_t** out_executable) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_hal_amdxdna_nop_executable_cache* executable_cache =
+  iree_hal_amdxdna_nop_executable_cache_t* executable_cache =
       IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
           base_executable_cache, iree_hal_amdxdna_nop_executable_cache_vtable,
-          iree_hal_amdxdna_nop_executable_cache);
+          iree_hal_amdxdna_nop_executable_cache_t);
   if (!iree_hal_amdxdna_nop_executable_cache_can_prepare_format(
           base_executable_cache, executable_params->caching_mode,
           executable_params->executable_format)) {
@@ -119,12 +107,10 @@ static iree_status_t iree_hal_amdxdna_nop_executable_cache_prepare_executable(
       executable_cache->host_allocator, out_executable);
 }
 
-namespace {
-const iree_hal_executable_cache_vtable_t
+static const iree_hal_executable_cache_vtable_t
     iree_hal_amdxdna_nop_executable_cache_vtable = {
         iree_hal_amdxdna_nop_executable_cache_destroy,
         iree_hal_amdxdna_nop_executable_cache_infer_format,
         iree_hal_amdxdna_nop_executable_cache_can_prepare_format,
         iree_hal_amdxdna_nop_executable_cache_prepare_executable,
 };
-}  // namespace

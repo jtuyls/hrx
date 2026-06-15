@@ -20,10 +20,10 @@ static inline iree_status_t iree_hal_amdxdna_status_from_errno(
 #ifndef NDEBUG
 #define IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(base_value, vtable, subvalue_t) \
   (IREE_HAL_ASSERT_TYPE(base_value, &vtable),                                \
-   reinterpret_cast<subvalue_t*>(base_value))
+   (subvalue_t*)(base_value))
 #else
 #define IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(base_value, vtable, subvalue_t) \
-  (reinterpret_cast<subvalue_t*>(base_value))
+  ((subvalue_t*)(base_value))
 #endif
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_UTIL_H_

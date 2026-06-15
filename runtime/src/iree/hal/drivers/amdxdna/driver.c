@@ -5,12 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include <inttypes.h>
+#include <stdbool.h>
 #include <string.h>
 
-#include <string>
-
 #include "iree/hal/drivers/amdxdna/api.h"
-#include "iree/hal/drivers/amdxdna/native.h"
 #include "iree/hal/drivers/amdxdna/util.h"
 
 #define IREE_HAL_AMDXDNA_DEVICE_ID_DEFAULT 0
@@ -18,14 +16,12 @@
 struct iree_hal_amdxdna_driver {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
-  iree_hal_amdxdna_driver_options options;
+  struct iree_hal_amdxdna_driver_options options;
   // + trailing identifier string storage
   iree_string_view_t identifier;
 };
 
-namespace {
-extern const iree_hal_driver_vtable_t iree_hal_amdxdna_driver_vtable;
-}
+static const iree_hal_driver_vtable_t iree_hal_amdxdna_driver_vtable;
 
 static bool iree_hal_amdxdna_power_mode_is_valid(iree_string_view_t value) {
   return iree_string_view_equal(value, IREE_SV("default")) ||
@@ -71,7 +67,7 @@ static iree_status_t iree_hal_amdxdna_parse_bool_option(
 }
 
 void iree_hal_amdxdna_driver_options_initialize(
-    iree_hal_amdxdna_driver_options* out_options) {
+    struct iree_hal_amdxdna_driver_options* out_options) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
   memset(out_options, 0, sizeof(*out_options));
@@ -82,7 +78,7 @@ void iree_hal_amdxdna_driver_options_initialize(
 }
 
 iree_status_t iree_hal_amdxdna_device_options_parse(
-    iree_hal_amdxdna_device_params* params, iree_host_size_t pairs_size,
+    struct iree_hal_amdxdna_device_params* params, iree_host_size_t pairs_size,
     const iree_string_pair_t* pairs) {
   IREE_ASSERT_ARGUMENT(params);
   IREE_ASSERT_ARGUMENT(!pairs_size || pairs);
@@ -122,16 +118,16 @@ iree_status_t iree_hal_amdxdna_device_options_parse(
 
 IREE_API_EXPORT iree_status_t iree_hal_amdxdna_driver_create(
     iree_string_view_t identifier,
-    const iree_hal_amdxdna_driver_options* options,
+    const struct iree_hal_amdxdna_driver_options* options,
     iree_allocator_t host_allocator, iree_hal_driver_t** out_driver) {
   IREE_ASSERT_ARGUMENT(options);
   IREE_ASSERT_ARGUMENT(out_driver);
-  *out_driver = nullptr;
+  *out_driver = NULL;
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  const iree_hal_amdxdna_device_params* device_params =
+  const struct iree_hal_amdxdna_device_params* device_params =
       &options->default_device_params;
-  iree_hal_amdxdna_driver* driver = nullptr;
+  struct iree_hal_amdxdna_driver* driver = NULL;
   iree_host_size_t total_size = sizeof(*driver);
   if (IREE_UNLIKELY(
           !iree_host_size_checked_add(total_size, identifier.size,
@@ -146,11 +142,11 @@ IREE_API_EXPORT iree_status_t iree_hal_amdxdna_driver_create(
   }
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, total_size,
-                                reinterpret_cast<void**>(&driver)));
+                                (void**)&driver));
   iree_hal_resource_initialize(&iree_hal_amdxdna_driver_vtable,
                                &driver->resource);
   driver->host_allocator = host_allocator;
-  char* string_storage = reinterpret_cast<char*>(driver) + sizeof(*driver);
+  char* string_storage = (char*)driver + sizeof(*driver);
   iree_string_view_append_to_buffer(identifier, &driver->identifier,
                                     string_storage);
   string_storage += identifier.size;
@@ -161,15 +157,16 @@ IREE_API_EXPORT iree_status_t iree_hal_amdxdna_driver_create(
   string_storage += iree_string_view_append_to_buffer(
       device_params->power_mode,
       &driver->options.default_device_params.power_mode, string_storage);
-  *out_driver = reinterpret_cast<iree_hal_driver_t*>(driver);
+  *out_driver = (iree_hal_driver_t*)driver;
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
 }
 
 static void iree_hal_amdxdna_driver_destroy(iree_hal_driver_t* base_driver) {
-  iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
+  struct iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_driver, iree_hal_amdxdna_driver_vtable,
+      struct iree_hal_amdxdna_driver);
   iree_allocator_t host_allocator = driver->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
 
@@ -184,10 +181,11 @@ static iree_status_t iree_hal_amdxdna_driver_query_available_devices(
     iree_hal_device_info_t** out_device_infos) {
   IREE_TRACE_ZONE_BEGIN(z0);
   *out_device_info_count = 0;
-  *out_device_infos = nullptr;
+  *out_device_infos = NULL;
 
-  iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
+  struct iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_driver, iree_hal_amdxdna_driver_vtable,
+      struct iree_hal_amdxdna_driver);
 
   // Report the configured logical device without opening the native driver.
   // Platform-specific discovery can be added under the native layer later; the
@@ -203,13 +201,12 @@ static iree_status_t iree_hal_amdxdna_driver_query_available_devices(
   // the caller frees everything with one iree_allocator_free.
   iree_host_size_t total_size =
       sizeof(iree_hal_device_info_t) + configured_path.size + arch.size;
-  iree_hal_device_info_t* device_infos = nullptr;
+  iree_hal_device_info_t* device_infos = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, total_size,
-                                reinterpret_cast<void**>(&device_infos)));
+                                (void**)&device_infos));
   memset(device_infos, 0, sizeof(*device_infos));
-  char* storage =
-      reinterpret_cast<char*>(device_infos) + sizeof(iree_hal_device_info_t);
+  char* storage = (char*)device_infos + sizeof(iree_hal_device_info_t);
   device_infos[0].device_id = IREE_HAL_AMDXDNA_DEVICE_ID_DEFAULT;
   memcpy(storage, configured_path.data, configured_path.size);
   device_infos[0].path = iree_make_string_view(storage, configured_path.size);
@@ -227,9 +224,10 @@ static iree_status_t iree_hal_amdxdna_driver_query_available_devices(
 static iree_status_t iree_hal_amdxdna_driver_dump_device_info(
     iree_hal_driver_t* base_driver, iree_hal_device_id_t device_id,
     iree_string_builder_t* builder) {
-  iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
-  const iree_hal_amdxdna_device_params* params =
+  struct iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_driver, iree_hal_amdxdna_driver_vtable,
+      struct iree_hal_amdxdna_driver);
+  const struct iree_hal_amdxdna_device_params* params =
       &driver->options.default_device_params;
   const iree_string_view_t device_path =
       params->device_path.size ? params->device_path : IREE_SV("<auto>");
@@ -239,20 +237,20 @@ static iree_status_t iree_hal_amdxdna_driver_dump_device_info(
   if (device_id != IREE_HAL_AMDXDNA_DEVICE_ID_DEFAULT) {
     return iree_make_status(IREE_STATUS_NOT_FOUND,
                             "no amdxdna device with id %" PRIu64,
-                            static_cast<uint64_t>(device_id));
+                            (uint64_t)device_id);
   }
 
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
-      builder, "\n- Driver: %.*s\n", static_cast<int>(driver->identifier.size),
+      builder, "\n- Driver: %.*s\n", (int)driver->identifier.size,
       driver->identifier.data));
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
-      builder, "  device_path: %.*s\n", static_cast<int>(device_path.size),
+      builder, "  device_path: %.*s\n", (int)device_path.size,
       device_path.data));
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
       builder, "  core_grid: %dx%d\n", params->n_core_rows,
       params->n_core_cols));
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
-      builder, "  power_mode: %.*s\n", static_cast<int>(power_mode.size),
+      builder, "  power_mode: %.*s\n", (int)power_mode.size,
       power_mode.data));
   return iree_ok_status();
 }
@@ -271,9 +269,10 @@ static iree_status_t iree_hal_amdxdna_driver_create_device_by_id(
                             (uint64_t)device_id);
   }
 
-  iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
-  iree_hal_amdxdna_device_params options =
+  struct iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_driver, iree_hal_amdxdna_driver_vtable,
+      struct iree_hal_amdxdna_driver);
+  struct iree_hal_amdxdna_device_params options =
       driver->options.default_device_params;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_device_options_parse(&options, param_count, params));
@@ -292,9 +291,10 @@ static iree_status_t iree_hal_amdxdna_driver_create_device_by_path(
   IREE_TRACE_ZONE_BEGIN(z0);
   (void)driver_name;
 
-  iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
-      base_driver, iree_hal_amdxdna_driver_vtable, iree_hal_amdxdna_driver);
-  iree_hal_amdxdna_device_params options =
+  struct iree_hal_amdxdna_driver* driver = IREE_HAL_AMDXDNA_CHECKED_VTABLE_CAST(
+      base_driver, iree_hal_amdxdna_driver_vtable,
+      struct iree_hal_amdxdna_driver);
+  struct iree_hal_amdxdna_device_params options =
       driver->options.default_device_params;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_device_options_parse(&options, param_count, params));
@@ -307,12 +307,10 @@ static iree_status_t iree_hal_amdxdna_driver_create_device_by_path(
       driver->identifier, &options, create_params, host_allocator, out_device);
 }
 
-namespace {
-const iree_hal_driver_vtable_t iree_hal_amdxdna_driver_vtable = {
+static const iree_hal_driver_vtable_t iree_hal_amdxdna_driver_vtable = {
     iree_hal_amdxdna_driver_destroy,
     iree_hal_amdxdna_driver_query_available_devices,
     iree_hal_amdxdna_driver_dump_device_info,
     iree_hal_amdxdna_driver_create_device_by_id,
     iree_hal_amdxdna_driver_create_device_by_path,
 };
-}

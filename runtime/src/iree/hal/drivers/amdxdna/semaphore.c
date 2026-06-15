@@ -17,19 +17,17 @@
 // iree_hal_amdxdna_semaphore_t
 //===----------------------------------------------------------------------===//
 
-struct iree_hal_amdxdna_semaphore {
+typedef struct iree_hal_amdxdna_semaphore_t {
   iree_async_semaphore_t async;
   iree_allocator_t host_allocator;
-};
+} iree_hal_amdxdna_semaphore_t;
 
-namespace {
-extern const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable;
-}  // namespace
+static const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable;
 
-static iree_hal_amdxdna_semaphore* iree_hal_amdxdna_semaphore_cast(
+static iree_hal_amdxdna_semaphore_t* iree_hal_amdxdna_semaphore_cast(
     iree_hal_semaphore_t* base_value) {
   IREE_HAL_ASSERT_TYPE(base_value, &iree_hal_amdxdna_semaphore_vtable);
-  return reinterpret_cast<iree_hal_amdxdna_semaphore*>(base_value);
+  return (iree_hal_amdxdna_semaphore_t*)base_value;
 }
 
 iree_status_t iree_hal_amdxdna_semaphore_create(
@@ -42,7 +40,7 @@ iree_status_t iree_hal_amdxdna_semaphore_create(
   (void)queue_affinity;
   (void)flags;
 
-  iree_hal_amdxdna_semaphore* semaphore = nullptr;
+  iree_hal_amdxdna_semaphore_t* semaphore = NULL;
   iree_host_size_t frontier_offset = 0;
   iree_host_size_t total_size = 0;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
@@ -50,10 +48,9 @@ iree_status_t iree_hal_amdxdna_semaphore_create(
                                       &total_size));
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_allocator_malloc(host_allocator, total_size,
-                                reinterpret_cast<void**>(&semaphore)));
+                                (void**)&semaphore));
   iree_async_semaphore_initialize(
-      reinterpret_cast<const iree_async_semaphore_vtable_t*>(
-          &iree_hal_amdxdna_semaphore_vtable),
+      (const iree_async_semaphore_vtable_t*)&iree_hal_amdxdna_semaphore_vtable,
       proactor, initial_value, frontier_offset, 0, &semaphore->async);
   semaphore->host_allocator = host_allocator;
   *out_semaphore = iree_hal_semaphore_cast(&semaphore->async);
@@ -64,7 +61,7 @@ iree_status_t iree_hal_amdxdna_semaphore_create(
 
 static void iree_hal_amdxdna_semaphore_destroy(
     iree_async_semaphore_t* base_semaphore) {
-  iree_hal_amdxdna_semaphore* semaphore =
+  iree_hal_amdxdna_semaphore_t* semaphore =
       iree_hal_amdxdna_semaphore_cast(iree_hal_semaphore_cast(base_semaphore));
   iree_allocator_t host_allocator = semaphore->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -83,8 +80,8 @@ static uint64_t iree_hal_amdxdna_semaphore_query(
   if (!iree_status_is_ok(failure)) {
     return iree_hal_status_as_semaphore_failure(failure);
   }
-  return static_cast<uint64_t>(iree_atomic_load(&base_semaphore->timeline_value,
-                                                iree_memory_order_acquire));
+  return (uint64_t)iree_atomic_load(&base_semaphore->timeline_value,
+                                    iree_memory_order_acquire);
 }
 
 static iree_status_t iree_hal_amdxdna_semaphore_signal(
@@ -102,7 +99,7 @@ static iree_status_t iree_hal_amdxdna_semaphore_wait(
     iree_timeout_t timeout, iree_async_wait_flags_t flags) {
   return iree_async_semaphore_multi_wait(
       IREE_ASYNC_WAIT_MODE_ALL,
-      reinterpret_cast<iree_async_semaphore_t**>(&base_semaphore), &value, 1,
+      (iree_async_semaphore_t**)&base_semaphore, &value, 1,
       timeout, flags, iree_allocator_system());
 }
 
@@ -134,12 +131,10 @@ static iree_status_t iree_hal_amdxdna_semaphore_export_timepoint(
                           "timepoint export is not yet implemented");
 }
 
-namespace {
-const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable = {
+static const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable = {
     {iree_hal_amdxdna_semaphore_destroy, iree_hal_amdxdna_semaphore_query,
-     iree_hal_amdxdna_semaphore_signal, nullptr},
+     iree_hal_amdxdna_semaphore_signal, NULL},
     iree_hal_amdxdna_semaphore_wait,
     iree_hal_amdxdna_semaphore_import_timepoint,
     iree_hal_amdxdna_semaphore_export_timepoint,
 };
-}  // namespace
