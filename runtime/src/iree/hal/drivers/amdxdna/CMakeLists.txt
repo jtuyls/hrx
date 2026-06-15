@@ -48,7 +48,7 @@ iree_cc_library(
     direct_command_buffer.h
     direct_command_buffer_chain_cache.cc
     direct_command_buffer_chain_cache.h
-    direct_command_buffer_planning.cc
+    direct_command_buffer_planning.c
     direct_command_buffer_planning.h
     direct_command_buffer_single_cache.cc
     direct_command_buffer_single_cache.h

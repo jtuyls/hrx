@@ -422,8 +422,8 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
   memcpy(dst, txn.data(), bytes);
   IREE_RETURN_IF_ERROR(
       iree_hal_amdxdna_patch_write32_constants(dst, txn.size(), constants));
-  if (!iree_hal_amdxdna_apply_patch_table(dst, txn.size(), patches, args,
-                                          arg_count)) {
+  if (!iree_hal_amdxdna_apply_patch_table(dst, txn.size(), patches.data(),
+                                          patches.size(), args, arg_count)) {
     return iree_make_status(
         IREE_STATUS_INTERNAL,
         "amdxdna cmd-chain: invalid host patch table for control code");
@@ -879,7 +879,8 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
                                         cmd.src_constants.size())));
   if (!iree_hal_amdxdna_apply_patch_table(
           prepared_ctrl_words.data(), prepared_ctrl_words.size(),
-          *cmd.src_patches, cmd.binding_device_addrs.data(),
+          cmd.src_patches->data(), cmd.src_patches->size(),
+          cmd.binding_device_addrs.data(),
           cmd.binding_device_addrs.size())) {
     IREE_TRACE_ZONE_END(z0);
     return iree_make_status(
@@ -1273,7 +1274,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
             prepared_ctrl_words.data(), prepared_ctrl_words.size(), constants));
     if (!iree_hal_amdxdna_apply_patch_table(
             prepared_ctrl_words.data(), prepared_ctrl_words.size(),
-            *patch_table, binding_addrs.data(), binding_addrs.size())) {
+            patch_table->data(), patch_table->size(), binding_addrs.data(),
+            binding_addrs.size())) {
       IREE_TRACE_ZONE_END(z0);
       return iree_make_status(
           IREE_STATUS_INTERNAL,

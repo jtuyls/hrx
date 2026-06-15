@@ -144,8 +144,8 @@ TEST(ApplyPatchTableTest, WritesShimDmaAddressIntoDescriptor) {
   std::vector<uint32_t> patches = {/*offset=*/0u, /*arg_idx=*/0u,
                                    /*arg_plus=*/0x10u};
   uint64_t args[] = {0x1000u};
-  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
-                                                 patches, args, 1));
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1));
   // base = 0 + args[0] + arg_plus + AIE_DDR_offset.
   const uint64_t base = 0x1000u + 0x10u + kDdrAieAddrOffset;
   EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base & 0xFFFFFFFC));
@@ -156,8 +156,8 @@ TEST(ApplyPatchTableTest, SplitsHighAddressBitsIntoBd2) {
   std::vector<uint32_t> ctrl(8, 0);
   std::vector<uint32_t> patches = {0u, 0u, 0u};
   uint64_t args[] = {0x100000000ull};  // 4 GiB -> exercises the high 16 bits
-  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
-                                                 patches, args, 1));
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1));
   const uint64_t base = 0x100000000ull + kDdrAieAddrOffset;  // 0x1_8000_0000
   EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base & 0xFFFFFFFC));
   EXPECT_EQ(ctrl[2], static_cast<uint32_t>(base >> 32));  // == 1
@@ -167,28 +167,28 @@ TEST(ApplyPatchTableTest, RejectsNonTripleTable) {
   std::vector<uint32_t> ctrl(8, 0);
   std::vector<uint32_t> patches = {0u, 0u};  // not a multiple of 3
   uint64_t args[] = {0u};
-  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
-                                                  patches, args, 1));
+  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1));
 }
 
 TEST(ApplyPatchTableTest, RejectsArgIndexOutOfRange) {
   std::vector<uint32_t> ctrl(8, 0);
   std::vector<uint32_t> patches = {0u, 5u, 0u};  // arg_idx 5 >= arg_count
   uint64_t args[] = {0u};
-  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
-                                                  patches, args, 1));
+  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1));
 }
 
 TEST(ApplyPatchTableTest, RejectsOutOfBoundsOrMisalignedOffset) {
   std::vector<uint32_t> ctrl(2, 0);  // total 8 bytes
   uint64_t args[] = {0u};
   std::vector<uint32_t> oob = {0u, 0u, 0u};  // offset+12 = 12 > 8
-  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(), oob,
-                                                  args, 1));
+  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), oob.data(), oob.size(), args, 1));
   std::vector<uint32_t> big(8, 0);
   std::vector<uint32_t> misaligned = {2u, 0u, 0u};  // offset & 0x3 != 0
-  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(big.data(), big.size(),
-                                                  misaligned, args, 1));
+  EXPECT_FALSE(iree_hal_amdxdna_apply_patch_table(
+      big.data(), big.size(), misaligned.data(), misaligned.size(), args, 1));
 }
 
 TEST(ApplyPatchTableTest, DropsLowTwoBitsOfDescriptorAddress) {
@@ -197,8 +197,8 @@ TEST(ApplyPatchTableTest, DropsLowTwoBitsOfDescriptorAddress) {
   // low two bits to keep the descriptor address word-aligned.
   std::vector<uint32_t> patches = {0u, 0u, 0x13u};
   uint64_t args[] = {0x1000u};
-  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(ctrl.data(), ctrl.size(),
-                                                 patches, args, 1));
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1));
   const uint64_t base = 0x1000u + 0x13u + kDdrAieAddrOffset;  // 0x80001013
   EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base & 0xFFFFFFFC));
   EXPECT_EQ(ctrl[1] & 0x3u, 0u);

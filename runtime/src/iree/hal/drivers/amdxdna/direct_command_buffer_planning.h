@@ -7,9 +7,9 @@
 #ifndef IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_PLANNING_H_
 #define IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_PLANNING_H_
 
-#include <cstddef>
-#include <cstdint>
-#include <vector>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "iree/base/api.h"
 
@@ -19,6 +19,10 @@
 // lives in the compiler; the only hardware facts encoded here are the XAie
 // transaction op-size table and the shim-DMA buffer-descriptor address split
 // (a DMA-address ABI).
+
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
 
 // Size in bytes of one XAie transaction operation starting at byte offset `p`
 // within the `total`-byte buffer `b`. Returns 0 on malformed/truncated input.
@@ -32,13 +36,18 @@ iree_status_t iree_hal_amdxdna_patch_write32_constants(
     uint32_t* txn, size_t txn_words, iree_const_byte_span_t constants);
 
 // Applies the compiler-emitted host patch table to `ctrl_code` (`ctrl_words`
-// 32-bit words). `patches` is a flat list of (offset, arg_idx, arg_plus)
-// triples; for each, the 48-bit shim-DMA address `args[arg_idx] + arg_plus +
-// AIE_DDR_offset` is written into the buffer-descriptor address words at byte
-// `offset` (low 32 into bd[1], high 16 into bd[2]). Returns false on any
-// malformed / out-of-bounds table entry.
+// 32-bit words). `patches` (`patch_count` 32-bit words) is a flat list of
+// (offset, arg_idx, arg_plus) triples; for each, the 48-bit shim-DMA address
+// `args[arg_idx] + arg_plus + AIE_DDR_offset` is written into the
+// buffer-descriptor address words at byte `offset` (low 32 into bd[1], high 16
+// into bd[2]). Returns false on any malformed / out-of-bounds table entry.
 bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
-                                        const std::vector<uint32_t>& patches,
+                                        const uint32_t* patches,
+                                        size_t patch_count,
                                         const uint64_t* args, size_t arg_count);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_PLANNING_H_
