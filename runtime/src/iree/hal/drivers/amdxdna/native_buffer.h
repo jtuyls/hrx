@@ -21,6 +21,20 @@ typedef enum iree_hal_amdxdna_native_buffer_sync_direction_t {
   IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_DEVICE_TO_HOST = 1,
 } iree_hal_amdxdna_native_buffer_sync_direction_t;
 
+typedef struct iree_hal_amdxdna_native_device_t
+    iree_hal_amdxdna_native_device_t;
+
+typedef enum iree_hal_amdxdna_native_buffer_c_type_t {
+  IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_HOST_ONLY = 0,
+  IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_CACHEABLE = 1,
+  IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION = 2,
+} iree_hal_amdxdna_native_buffer_c_type_t;
+
+iree_status_t iree_hal_amdxdna_native_device_c_alloc_buffer(
+    iree_hal_amdxdna_native_device_t* device, iree_device_size_t size,
+    iree_hal_amdxdna_native_buffer_c_type_t type,
+    iree_hal_amdxdna_native_buffer_t** out_buffer);
+
 void iree_hal_amdxdna_native_buffer_c_destroy(
     iree_hal_amdxdna_native_buffer_t* buffer);
 
@@ -31,6 +45,9 @@ iree_status_t iree_hal_amdxdna_native_buffer_c_sync(
     iree_hal_amdxdna_native_buffer_t* buffer,
     iree_hal_amdxdna_native_buffer_sync_direction_t direction,
     iree_device_size_t size, iree_device_size_t offset);
+
+iree_device_size_t iree_hal_amdxdna_native_buffer_c_size(
+    iree_hal_amdxdna_native_buffer_t* buffer);
 
 #ifdef __cplusplus
 }  // extern "C"

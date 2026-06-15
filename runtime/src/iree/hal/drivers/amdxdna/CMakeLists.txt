@@ -35,7 +35,7 @@ iree_cc_library(
   NAME
     amdxdna
   SRCS
-    allocator.cc
+    allocator.c
     allocator.h
     api.h
     async_queue.c

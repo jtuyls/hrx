@@ -28,7 +28,41 @@ iree_status_t to_native_sync_direction(
   }
 }
 
+iree_status_t to_native_buffer_type(
+    iree_hal_amdxdna_native_buffer_c_type_t type,
+    iree_hal_amdxdna_native_buffer_type_t* out_type) {
+  switch (type) {
+    case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_HOST_ONLY:
+      *out_type = iree_hal_amdxdna_native_buffer_type_t::host_only;
+      return iree_ok_status();
+    case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_CACHEABLE:
+      *out_type = iree_hal_amdxdna_native_buffer_type_t::cacheable;
+      return iree_ok_status();
+    case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION:
+      *out_type = iree_hal_amdxdna_native_buffer_type_t::instruction;
+      return iree_ok_status();
+    default:
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "unknown amdxdna native buffer type");
+  }
+}
+
 }  // namespace
+
+extern "C" iree_status_t iree_hal_amdxdna_native_device_c_alloc_buffer(
+    iree_hal_amdxdna_native_device_t* device, iree_device_size_t size,
+    iree_hal_amdxdna_native_buffer_c_type_t type,
+    iree_hal_amdxdna_native_buffer_t** out_buffer) {
+  *out_buffer = nullptr;
+  iree_hal_amdxdna_native_buffer_type_t native_type;
+  IREE_RETURN_IF_ERROR(to_native_buffer_type(type, &native_type));
+  iree_hal_amdxdna_native_buffer_ptr buffer;
+  IREE_RETURN_IF_ERROR(
+      iree_hal_amdxdna_native_device_alloc_buffer(device, size, native_type,
+                                                  &buffer));
+  *out_buffer = buffer.release();
+  return iree_ok_status();
+}
 
 extern "C" void iree_hal_amdxdna_native_buffer_c_destroy(
     iree_hal_amdxdna_native_buffer_t* buffer) {
@@ -48,4 +82,9 @@ extern "C" iree_status_t iree_hal_amdxdna_native_buffer_c_sync(
   IREE_RETURN_IF_ERROR(to_native_sync_direction(direction, &native_direction));
   return iree_hal_amdxdna_native_buffer_sync(buffer, native_direction, size,
                                             offset);
+}
+
+extern "C" iree_device_size_t iree_hal_amdxdna_native_buffer_c_size(
+    iree_hal_amdxdna_native_buffer_t* buffer) {
+  return iree_hal_amdxdna_native_buffer_size(buffer);
 }
