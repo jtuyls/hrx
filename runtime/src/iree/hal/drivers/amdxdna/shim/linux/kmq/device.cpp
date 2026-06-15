@@ -84,7 +84,11 @@ std::string read_first_line(const std::filesystem::path& path) {
 }
 
 int try_ioctl_fd(int fd, unsigned long cmd, void* arg) {
-  if (::ioctl(fd, cmd, arg) == -1) return errno;
+  int ret = 0;
+  do {
+    ret = ::ioctl(fd, cmd, arg);
+  } while (ret == -1 && errno == EINTR);
+  if (ret == -1) return errno;
   return 0;
 }
 
@@ -182,7 +186,11 @@ pdev::~pdev() {
 }
 
 int pdev::try_ioctl(unsigned long cmd, void* arg) const {
-  if (::ioctl(m_dev_fd, cmd, arg) == -1) {
+  int ret = 0;
+  do {
+    ret = ::ioctl(m_dev_fd, cmd, arg);
+  } while (ret == -1 && errno == EINTR);
+  if (ret == -1) {
     return errno;
   }
   return 0;
@@ -453,7 +461,7 @@ int device::write_aie_reg_checked(uint16_t col, uint16_t row, uint32_t reg_addr,
 }
 
 int device::get_power_mode(power_mode* out_mode) const {
-  amdxdna_drm_get_power_mode state;
+  amdxdna_drm_get_power_mode state = {};
   amdxdna_drm_get_info arg = {.param = DRM_AMDXDNA_GET_POWER_MODE,
                               .buffer_size = sizeof(state),
                               .buffer = reinterpret_cast<uintptr_t>(&state)};
@@ -464,7 +472,7 @@ int device::get_power_mode(power_mode* out_mode) const {
 }
 
 int device::set_power_mode(power_mode mode) const {
-  amdxdna_drm_set_power_mode state;
+  amdxdna_drm_set_power_mode state = {};
   state.power_mode = to_amdxdna_power_mode(mode);
   amdxdna_drm_set_state arg = {.param = DRM_AMDXDNA_SET_POWER_MODE,
                                .buffer_size = sizeof(state),

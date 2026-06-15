@@ -551,11 +551,6 @@ bool command_is_pathb_chain(
   return command && command_opcode_handler(command).is_chain;
 }
 
-bool pathb_stage_code_after_presync(
-    iree_hal_amdxdna_native_command_t* command) {
-  return command && command->device;
-}
-
 ert_start_kernel_cmd* command_start_packet(
     iree_hal_amdxdna_native_command_t* command) {
   return command->start_packet;
@@ -1016,11 +1011,9 @@ iree_status_t finalize_windows_dpu_regmap(
   mcdm::CommandAperture& aperture = queue->context->command_aperture;
   uint64_t instruction_va = aperture.code_gpu_va;
 
-  if (!pathb_stage_code_after_presync(command)) {
-    IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
-  } else if (command->control_buffer &&
-             command->control_buffer->type ==
-                 iree_hal_amdxdna_native_buffer_type_t::instruction) {
+  if (command->control_buffer &&
+      command->control_buffer->type ==
+          iree_hal_amdxdna_native_buffer_type_t::instruction) {
     IREE_RETURN_IF_ERROR(materialize_deferred_instruction_buffer(
         queue->context, command->control_buffer));
     instruction_va =
@@ -1895,7 +1888,7 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   bool has_command_aperture = false;
   if (!mcdm::CreateCommandAperture(device->api, device->device, context,
                                    &command_aperture, &error)) {
-    mcdm::DestroyContext(device->api, &context);
+    mcdm::DestroyContext(device->api, device->device, &context);
     return status_from_mcdm_error(
         "amdxdna Windows MCDM command aperture creation failed", error);
   }
@@ -1912,7 +1905,7 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
                                      pdi.data_length, &error)) {
     mcdm::DestroyCommandAperture(device->api, device->device,
                                  &command_aperture);
-    mcdm::DestroyContext(device->api, &context);
+    mcdm::DestroyContext(device->api, device->device, &context);
     return status_from_mcdm_error("amdxdna Windows MCDM pathb setup failed",
                                   error);
   }
@@ -1931,7 +1924,8 @@ void iree_hal_amdxdna_native_context_destroy(
     mcdm::DestroyCommandAperture(context->device->api, context->device->device,
                                  &context->command_aperture);
   }
-  mcdm::DestroyContext(context->device->api, &context->context);
+  mcdm::DestroyContext(context->device->api, context->device->device,
+                       &context->context);
   delete context;
 }
 
@@ -2432,7 +2426,7 @@ iree_status_t stage_pathb_command_for_submit(
   if (handler.is_chain) {
     SubmitProfileScope profile(SubmitProfilePhase::stage_code);
     IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command));
-  } else if (pathb_stage_code_after_presync(command)) {
+  } else {
     SubmitProfileScope profile(SubmitProfilePhase::stage_code);
     IREE_RETURN_IF_ERROR(stage_windows_dpu_code_buffer(queue, command));
   }
@@ -2802,6 +2796,17 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
         IREE_STATUS_FAILED_PRECONDITION,
         "amdxdna Windows MCDM pathb batch submit requested without command "
         "aperture");
+  }
+  // The MCDM path-B status ring has 512 8-byte slots and slot 0 is reserved.
+  // Batch issue is no-wait: all parent completions must occupy distinct slots
+  // until the collective WaitForPathBSubmits below retires them.
+  constexpr iree_host_size_t kMaxPathBPendingParents = 511;
+  if (IREE_UNLIKELY(command_count > kMaxPathBPendingParents)) {
+    return iree_make_status(
+        IREE_STATUS_RESOURCE_EXHAUSTED,
+        "amdxdna Windows MCDM pathb batch submit has %" PRIhsz
+        " parents, exceeding the 511-slot completion ring limit",
+        command_count);
   }
   IREE_RETURN_IF_ERROR(close_pathb_single_aperture_session(queue));
 

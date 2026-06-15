@@ -8,7 +8,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace iree::hal::amdxdna::mcdm {
@@ -21,6 +24,10 @@ constexpr uint64_t kContextCommandBoSize = 0x1000;
 constexpr uint32_t kBuildMetadataSection = 14;
 constexpr uint32_t kAiePartitionSection = 32;
 constexpr uint32_t kIpLayoutSection = 8;
+constexpr uint32_t kMaxAxlfSections = 4096;
+constexpr uint32_t kMaxIpLayoutRecords = 4096;
+constexpr uint32_t kMaxAiePartitionPdis = 4096;
+constexpr size_t kMaxContextBlobSize = 512ull * 1024ull * 1024ull;
 constexpr size_t kIpLayoutAieHeaderSize = 8;
 constexpr size_t kIpLayoutLegacyHeaderSize = 4;
 constexpr size_t kIpDataRecordSize = 80;
@@ -100,6 +107,9 @@ bool ParseSections(const uint8_t* xclbin, size_t xclbin_size,
     return Fail("input is not an AXLF/xclbin2 file", out_error);
   }
   uint32_t section_count = ReadU32(xclbin, 0x1C0);
+  if (section_count > kMaxAxlfSections) {
+    return Fail("AXLF section count exceeds supported limit", out_error);
+  }
   if (!CheckRange(xclbin_size, 0x1C8, uint64_t{40} * section_count,
                   "AXLF section table", out_error)) {
     return false;
@@ -209,6 +219,9 @@ bool ParseIpLayout(const uint8_t* xclbin, size_t xclbin_size,
   }
 
   uint32_t count = ReadU32(data, 0);
+  if (count > kMaxIpLayoutRecords) {
+    return Fail("IP_LAYOUT record count exceeds supported limit", out_error);
+  }
   size_t records_offset = kIpLayoutAieHeaderSize;
   if (size < records_offset + uint64_t{kIpDataRecordSize} * count) {
     records_offset = kIpLayoutLegacyHeaderSize;
@@ -261,6 +274,9 @@ bool ParseAiePartition(const uint8_t* xclbin, size_t xclbin_size,
   if (pdi_count == 0) {
     return Fail("AIE_PARTITION contains no PDI records", out_error);
   }
+  if (pdi_count > kMaxAiePartitionPdis) {
+    return Fail("AIE_PARTITION PDI count exceeds supported limit", out_error);
+  }
   if (!CheckRange(size, pdi_offset, uint64_t{0x60} * pdi_count,
                   "AIE_PARTITION PDI table", out_error)) {
     return false;
@@ -312,54 +328,77 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
                                        std::vector<uint8_t>* out_blob,
                                        ContextBlobInfo* out_info,
                                        std::string* out_error) {
-  if (!xclbin || !out_blob)
-    return Fail("invalid output/context arguments", out_error);
-  if (xclbin_size < 0x1B0) return Fail("xclbin is too small", out_error);
+  try {
+    if (!xclbin || !out_blob) {
+      return Fail("invalid output/context arguments", out_error);
+    }
+    if (xclbin_size < 0x1B0) return Fail("xclbin is too small", out_error);
 
-  std::vector<AxlfSection> sections;
-  if (!ParseSections(xclbin, xclbin_size, &sections, out_error)) return false;
+    std::vector<AxlfSection> sections;
+    if (!ParseSections(xclbin, xclbin_size, &sections, out_error)) {
+      return false;
+    }
 
-  ContextBlobInfo info;
-  if (!ParseIpLayout(xclbin, xclbin_size, sections, &info, out_error)) {
-    return false;
+    ContextBlobInfo info;
+    if (!ParseIpLayout(xclbin, xclbin_size, sections, &info, out_error)) {
+      return false;
+    }
+    info.kernel_name = info.kernel_names.empty()
+                           ? DeriveKernelNameFromMetadata(xclbin, sections)
+                           : info.kernel_names.front();
+    if (!ParseAiePartition(xclbin, xclbin_size, sections, &info, out_error)) {
+      return false;
+    }
+
+    if (xclbin_size >
+        std::numeric_limits<size_t>::max() - kAxlfBaseOffset -
+            kContextTailSize) {
+      return Fail("context blob size overflows size_t", out_error);
+    }
+    size_t total_size = kAxlfBaseOffset + xclbin_size + kContextTailSize;
+    if (total_size > kMaxContextBlobSize) {
+      return Fail("context blob size exceeds supported limit", out_error);
+    }
+    std::vector<uint8_t> blob(total_size, 0);
+
+    std::memcpy(blob.data(), xclbin + 0x1A0, 16);
+    WriteU64(&blob, 0x48, kCommandApertureBase);
+    WriteU64(&blob, 0x50, 0x48);
+    WriteU64(&blob, 0x58, total_size - 0x80);
+    WriteU64(&blob, 0x60, process_id);
+    WriteU64(&blob, 0x80, 1);
+    WriteU64(&blob, 0xC8, kContextCommandBoSize);
+    WriteU64(&blob, 0xD0, xclbin_size);
+    WriteU64(&blob, 0xD8, total_size - 0x138);
+    WriteU64(&blob, 0xE0, total_size - 0xE8);
+    std::memcpy(blob.data() + kAxlfBaseOffset, xclbin, xclbin_size);
+
+    size_t tail = kAxlfBaseOffset + xclbin_size;
+    if (!WriteCString(&blob, tail + 0x00, 64, info.kernel_name, out_error)) {
+      return false;
+    }
+    blob[tail + 0x3F] = '0';
+    WriteU64(&blob, tail + 0x40, 0x10000);
+    WriteU64(&blob, tail + 0x48, 9);
+    WriteU32(&blob, tail + 0x3B8, 0x800);
+    WriteU32(&blob, tail + 0x3BC, 1);
+    WriteU32(&blob, tail + 0x3C0, info.column_width);
+    WriteU32(&blob, tail + 0x3C4, info.start_column);
+
+    if (out_info) *out_info = info;
+    *out_blob = std::move(blob);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return Fail("context blob allocation failed", out_error);
+  } catch (const std::length_error& e) {
+    std::ostringstream os;
+    os << "context blob allocation failed: " << e.what();
+    return Fail(os.str(), out_error);
+  } catch (const std::exception& e) {
+    std::ostringstream os;
+    os << "context blob parsing failed: " << e.what();
+    return Fail(os.str(), out_error);
   }
-  info.kernel_name = info.kernel_names.empty()
-                         ? DeriveKernelNameFromMetadata(xclbin, sections)
-                         : info.kernel_names.front();
-  if (!ParseAiePartition(xclbin, xclbin_size, sections, &info, out_error)) {
-    return false;
-  }
-
-  size_t total_size = kAxlfBaseOffset + xclbin_size + kContextTailSize;
-  std::vector<uint8_t> blob(total_size, 0);
-
-  std::memcpy(blob.data(), xclbin + 0x1A0, 16);
-  WriteU64(&blob, 0x48, kCommandApertureBase);
-  WriteU64(&blob, 0x50, 0x48);
-  WriteU64(&blob, 0x58, total_size - 0x80);
-  WriteU64(&blob, 0x60, process_id);
-  WriteU64(&blob, 0x80, 1);
-  WriteU64(&blob, 0xC8, kContextCommandBoSize);
-  WriteU64(&blob, 0xD0, xclbin_size);
-  WriteU64(&blob, 0xD8, total_size - 0x138);
-  WriteU64(&blob, 0xE0, total_size - 0xE8);
-  std::memcpy(blob.data() + kAxlfBaseOffset, xclbin, xclbin_size);
-
-  size_t tail = kAxlfBaseOffset + xclbin_size;
-  if (!WriteCString(&blob, tail + 0x00, 64, info.kernel_name, out_error)) {
-    return false;
-  }
-  blob[tail + 0x3F] = '0';
-  WriteU64(&blob, tail + 0x40, 0x10000);
-  WriteU64(&blob, tail + 0x48, 9);
-  WriteU32(&blob, tail + 0x3B8, 0x800);
-  WriteU32(&blob, tail + 0x3BC, 1);
-  WriteU32(&blob, tail + 0x3C0, info.column_width);
-  WriteU32(&blob, tail + 0x3C4, info.start_column);
-
-  if (out_info) *out_info = info;
-  *out_blob = std::move(blob);
-  return true;
 }
 
 }  // namespace iree::hal::amdxdna::mcdm

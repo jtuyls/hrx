@@ -108,8 +108,16 @@ int import_drm_bo(const shim_xdna::pdev& dev,
 
   *type = AMDXDNA_BO_SHMEM;
   off_t end = lseek(fd, 0, SEEK_END);
-  if (end < 0) return errno;
-  if (lseek(fd, 0, SEEK_SET) < 0) return errno;
+  if (end < 0) {
+    err = errno;
+    free_drm_bo(dev, imp_bo.handle);
+    return err;
+  }
+  if (lseek(fd, 0, SEEK_SET) < 0) {
+    err = errno;
+    free_drm_bo(dev, imp_bo.handle);
+    return err;
+  }
   *size = end;
 
   *out_handle = imp_bo.handle;

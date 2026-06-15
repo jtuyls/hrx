@@ -809,6 +809,15 @@ void DestroyBuffer(const KmtApi& api, const Device& device, Buffer* buffer) {
   buffer->mapped_size = 0;
 }
 
+void DestroyStatusRing(const KmtApi& api, const Device& device,
+                       Context* context) {
+  if (!context) return;
+  DestroyBuffer(api, device, &context->completion_ring);
+  context->completion_ring_resource = 0;
+  context->completion_ring_ready = false;
+  context->completion_ring_offset = 0;
+}
+
 bool CreateContext(const KmtApi& api, const Device& device,
                    const std::vector<uint8_t>& private_data,
                    Context* out_context, std::string* out_error) {
@@ -842,7 +851,7 @@ bool CreateContext(const KmtApi& api, const Device& device,
   create_queue.hHwContext = context.context;
   status = api.create_hw_queue(&create_queue);
   if (!CheckStatus("D3DKMTCreateHwQueue", status, out_error)) {
-    DestroyContext(api, &context);
+    DestroyContext(api, device, &context);
     return false;
   }
   context.hw_queue = create_queue.hHwQueue;
@@ -856,8 +865,13 @@ bool CreateContext(const KmtApi& api, const Device& device,
   return true;
 }
 
-void DestroyContext(const KmtApi& api, Context* context) {
+void DestroyContext(const KmtApi& api, const Device& device,
+                    Context* context) {
   if (!context) return;
+  // The status ring is a context-owned KMT allocation created lazily by the
+  // path-B submit path. Tear it down before destroying the HW queue/context
+  // handles it was bound to.
+  DestroyStatusRing(api, device, context);
   if (context->hw_queue) {
     D3DKMT_DESTROYHWQUEUE destroy_queue = {};
     destroy_queue.hHwQueue = context->hw_queue;
@@ -1358,14 +1372,16 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   Buffer ring = {};
   ring.kind = BufferKind::cacheable;
   ring.size = kRingSize;
+  ring.mapped_size = kRingSize;
   ring.allocation = ring_info.hAllocation;
-  context->completion_ring_resource = create_ring.hResource;
+  ring.resource = create_ring.hResource;
 
   D3DKMT_LOCK2 lock = {};
   lock.hDevice = device.device;
   lock.hAllocation = ring.allocation;
   status = api.lock2(&lock);
   if (!CheckStatus("D3DKMTLock2(status ring)", status, out_error)) {
+    DestroyBuffer(api, device, &ring);
     return false;
   }
   ring.cpu_ptr = lock.pData;
@@ -1382,6 +1398,7 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   status = api.map_gpu_virtual_address(&map);
   if (status != 0 && status != kStatusPending) {
     CheckStatus("D3DKMTMapGpuVirtualAddress(status ring)", status, out_error);
+    DestroyBuffer(api, device, &ring);
     return false;
   }
   ring.gpu_va = map.VirtualAddress;
@@ -1396,6 +1413,7 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   status = api.make_resident(&resident);
   if (status != 0 && status != kStatusPending) {
     CheckStatus("D3DKMTMakeResident(status ring)", status, out_error);
+    DestroyBuffer(api, device, &ring);
     return false;
   }
   D3DKMT_HANDLE wait_objects[1] = {device.paging_sync_object};
@@ -1405,9 +1423,15 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   wait.ObjectCount = 1;
   wait.ObjectHandleArray = wait_objects;
   wait.MonitoredFenceValueArray = wait_values;
-  api.wait_from_gpu(&wait);
+  status = api.wait_from_gpu(&wait);
+  if (!CheckStatus("D3DKMTWaitForSynchronizationObjectFromGpu(status ring)",
+                   status, out_error)) {
+    DestroyBuffer(api, device, &ring);
+    return false;
+  }
 
   context->completion_ring = ring;
+  context->completion_ring_resource = ring.resource;
   context->completion_ring_ready = true;
   context->completion_ring_offset = kQhdlCompletionSlotSize;
   return true;

@@ -12,6 +12,14 @@
 
 namespace {
 
+int RetryIoctl(int fd, unsigned long request, void* arg) {
+  int ret = 0;
+  do {
+    ret = ::ioctl(fd, request, arg);
+  } while (ret == -1 && errno == EINTR);
+  return ret;
+}
+
 uint64_t abs_now_ns() {
   auto now = std::chrono::high_resolution_clock::now();
   auto now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(now);
@@ -45,7 +53,8 @@ int wait_cmd(const shim_xdna::pdev& pdev, const shim_xdna::hw_ctx* ctx,
         .count_handles = 1,
         .flags = 0,
     };
-    if (::ioctl(pdev.m_dev_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wsobj) == -1) {
+    if (RetryIoctl(pdev.m_dev_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wsobj) ==
+        -1) {
       if (errno == ETIME) {
         ret = 0;
       } else {
@@ -58,7 +67,7 @@ int wait_cmd(const shim_xdna::pdev& pdev, const shim_xdna::hw_ctx* ctx,
         .timeout = timeout_ms,
         .seq = id,
     };
-    if (::ioctl(pdev.m_dev_fd, DRM_IOCTL_AMDXDNA_WAIT_CMD, &wcmd) == -1) {
+    if (RetryIoctl(pdev.m_dev_fd, DRM_IOCTL_AMDXDNA_WAIT_CMD, &wcmd) == -1) {
       if (errno == ETIME) {
         ret = 0;
       } else {

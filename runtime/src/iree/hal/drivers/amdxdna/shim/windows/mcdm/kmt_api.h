@@ -196,7 +196,8 @@ bool CreateContext(const KmtApi& api, const Device& device,
                    const std::vector<uint8_t>& private_data,
                    Context* out_context, std::string* out_error);
 
-void DestroyContext(const KmtApi& api, Context* context);
+void DestroyContext(const KmtApi& api, const Device& device,
+                    Context* context);
 
 bool CreateCommandAperture(const KmtApi& api, const Device& device,
                            const Context& context,

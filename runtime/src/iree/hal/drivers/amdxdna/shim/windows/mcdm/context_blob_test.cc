@@ -128,5 +128,36 @@ TEST(ContextBlobTest, ParsesMultiPdiIpLayoutAndAiePartition) {
   EXPECT_GT(private_data.size(), xclbin.size());
 }
 
+TEST(ContextBlobTest, RejectsExcessiveAxlfSectionCount) {
+  constexpr uint32_t kMaxAxlfSections = 4096;
+  constexpr size_t kSectionTableOffset = 0x1C8;
+  std::vector<uint8_t> xclbin(kSectionTableOffset +
+                                  (kMaxAxlfSections + 1) * 40,
+                              0);
+  WriteString(&xclbin, 0, 8, "xclbin2");
+  WriteU32(&xclbin, 0x1C0, kMaxAxlfSections + 1);
+
+  std::vector<uint8_t> private_data;
+  std::string error;
+  EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
+      xclbin.data(), xclbin.size(), /*process_id=*/1234, &private_data,
+      /*out_info=*/nullptr, &error));
+  EXPECT_NE(error.find("section count"), std::string::npos) << error;
+}
+
+TEST(ContextBlobTest, RejectsExcessiveAiePartitionPdiCount) {
+  constexpr uint32_t kMaxAiePartitionPdis = 4096;
+  constexpr size_t kAiePartitionOffset = 0x2C8;
+  std::vector<uint8_t> xclbin = BuildSyntheticMultiPdiXclbin();
+  WriteU32(&xclbin, kAiePartitionOffset + 120, kMaxAiePartitionPdis + 1);
+
+  std::vector<uint8_t> private_data;
+  std::string error;
+  EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
+      xclbin.data(), xclbin.size(), /*process_id=*/1234, &private_data,
+      /*out_info=*/nullptr, &error));
+  EXPECT_NE(error.find("PDI count"), std::string::npos) << error;
+}
+
 }  // namespace
 }  // namespace iree::hal::amdxdna::mcdm
