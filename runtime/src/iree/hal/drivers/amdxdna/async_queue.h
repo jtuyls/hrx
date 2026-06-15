@@ -22,6 +22,10 @@
 
 typedef struct iree_hal_amdxdna_async_queue_t iree_hal_amdxdna_async_queue_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
+
 // Op body callback run on the worker thread when the op fires. May be NULL
 // for pure signal-deferral. Skipped on the cancel/wait-failure path; use
 // retained_resources for cleanup that must run on every termination path.
@@ -77,5 +81,9 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     iree_hal_amdxdna_async_op_cleanup_fn_t cleanup_fn, void* user_data,
     iree_hal_resource_t* const* retained_resources,
     iree_host_size_t retained_resource_count);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_ASYNC_QUEUE_H_

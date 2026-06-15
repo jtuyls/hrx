@@ -38,7 +38,7 @@ iree_cc_library(
     allocator.cc
     allocator.h
     api.h
-    async_queue.cc
+    async_queue.c
     async_queue.h
     buffer.cc
     buffer.h

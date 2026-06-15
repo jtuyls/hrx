@@ -14,16 +14,14 @@
 #include "iree/base/threading/notification.h"
 #include "iree/base/threading/thread.h"
 
-namespace {
-
-struct iree_hal_amdxdna_async_op_t;
+typedef struct iree_hal_amdxdna_async_op_t iree_hal_amdxdna_async_op_t;
 
 // One pending wait edge: a timepoint registered on a wait semaphore. Stored
 // inline in the op's arena.
-struct iree_hal_amdxdna_wait_entry_t {
+typedef struct iree_hal_amdxdna_wait_entry_t {
   iree_hal_amdxdna_async_op_t* op;
   iree_async_semaphore_timepoint_t timepoint;
-};
+} iree_hal_amdxdna_wait_entry_t;
 
 // A deferred operation. Allocated in its own arena so all variable-length
 // state (cloned semaphore lists, wait entries) lives together and is freed
@@ -77,8 +75,6 @@ struct iree_hal_amdxdna_async_op_t {
   iree_host_size_t retained_resource_count;
 };
 
-}  // namespace
-
 struct iree_hal_amdxdna_async_queue_t {
   iree_allocator_t host_allocator;
 
@@ -129,10 +125,8 @@ struct iree_hal_amdxdna_async_queue_t {
   iree_hal_amdxdna_async_op_t* inflight_head;
 };
 
-namespace {
-
 // Fail-safe: if shutdown drain fires the signal lists, we use this status.
-inline iree_status_t make_cancelled_status() {
+static iree_status_t make_cancelled_status(void) {
   return iree_make_status(IREE_STATUS_CANCELLED, "async queue shut down");
 }
 
@@ -146,8 +140,8 @@ void iree_hal_amdxdna_async_queue_inflight_remove_locked(
   if (op->next_inflight) {
     op->next_inflight->prev_inflight_link = op->prev_inflight_link;
   }
-  op->prev_inflight_link = nullptr;
-  op->next_inflight = nullptr;
+  op->prev_inflight_link = NULL;
+  op->next_inflight = NULL;
 }
 
 // Pushes |op| onto the queue's ready stack and posts the worker notification.
@@ -164,9 +158,9 @@ void iree_hal_amdxdna_async_queue_push_ready(
   intptr_t old_head =
       iree_atomic_load(&queue->ready_head, iree_memory_order_relaxed);
   while (true) {
-    op->next_ready = reinterpret_cast<iree_hal_amdxdna_async_op_t*>(old_head);
+    op->next_ready = (iree_hal_amdxdna_async_op_t*)old_head;
     if (iree_atomic_compare_exchange_strong(
-            &queue->ready_head, &old_head, reinterpret_cast<intptr_t>(op),
+            &queue->ready_head, &old_head, (intptr_t)op,
             iree_memory_order_release, iree_memory_order_relaxed)) {
       break;
     }
@@ -209,14 +203,14 @@ void iree_hal_amdxdna_async_queue_wait_resolved(
     iree_status_t status) {
   (void)timepoint;
   iree_hal_amdxdna_wait_entry_t* entry =
-      reinterpret_cast<iree_hal_amdxdna_wait_entry_t*>(user_data);
+      (iree_hal_amdxdna_wait_entry_t*)user_data;
   iree_hal_amdxdna_async_op_t* op = entry->op;
 
   if (!iree_status_is_ok(status)) {
     // Capture the first error; ignore (free) subsequent ones.
     intptr_t expected = 0;
     if (!iree_atomic_compare_exchange_strong(
-            &op->error_status, &expected, reinterpret_cast<intptr_t>(status),
+            &op->error_status, &expected, (intptr_t)status,
             iree_memory_order_acq_rel, iree_memory_order_relaxed)) {
       iree_status_free(status);
     }
@@ -233,7 +227,7 @@ void iree_hal_amdxdna_async_queue_wait_resolved(
 // and inflight_count is 0.
 int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
   iree_hal_amdxdna_async_queue_t* queue =
-      reinterpret_cast<iree_hal_amdxdna_async_queue_t*>(arg);
+      (iree_hal_amdxdna_async_queue_t*)arg;
   while (true) {
     bool shutdown = iree_atomic_load(&queue->shutdown_requested,
                                      iree_memory_order_acquire) != 0;
@@ -264,8 +258,8 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
 
     // Reverse the LIFO stack so we process in the order we received them.
     iree_hal_amdxdna_async_op_t* head_op =
-        reinterpret_cast<iree_hal_amdxdna_async_op_t*>(head);
-    iree_hal_amdxdna_async_op_t* prev = nullptr;
+        (iree_hal_amdxdna_async_op_t*)head;
+    iree_hal_amdxdna_async_op_t* prev = NULL;
     while (head_op) {
       iree_hal_amdxdna_async_op_t* next = head_op->next_ready;
       head_op->next_ready = prev;
@@ -286,7 +280,7 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
       }
       if (iree_status_is_ok(status)) {
         status = iree_hal_semaphore_list_signal(op->signal_list,
-                                                /*frontier=*/nullptr);
+                                                /*frontier=*/NULL);
       }
       if (iree_status_is_ok(status) && queue->frontier_tracker) {
         // Advance the queue's epoch so pool waiters can observe progress.
@@ -307,33 +301,31 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
   }
 }
 
-}  // namespace
-
 iree_status_t iree_hal_amdxdna_async_queue_create(
     iree_arena_block_pool_t* block_pool, iree_allocator_t host_allocator,
     iree_hal_amdxdna_async_queue_t** out_queue) {
   IREE_ASSERT_ARGUMENT(block_pool);
   IREE_ASSERT_ARGUMENT(out_queue);
-  *out_queue = nullptr;
+  *out_queue = NULL;
 
-  iree_hal_amdxdna_async_queue_t* queue = nullptr;
+  iree_hal_amdxdna_async_queue_t* queue = NULL;
   IREE_RETURN_IF_ERROR(iree_allocator_malloc(host_allocator, sizeof(*queue),
-                                             reinterpret_cast<void**>(&queue)));
+                                             (void**)&queue));
   queue->host_allocator = host_allocator;
   queue->block_pool = block_pool;
-  queue->worker_thread = nullptr;
-  queue->frontier_tracker = nullptr;
+  queue->worker_thread = NULL;
+  queue->frontier_tracker = NULL;
   queue->frontier_axis = 0;
   iree_notification_initialize(&queue->worker_notification);
   iree_notification_initialize(&queue->drain_notification);
   iree_slim_mutex_initialize(&queue->inflight_mutex);
-  queue->inflight_head = nullptr;
+  queue->inflight_head = NULL;
   iree_atomic_store(&queue->shutdown_requested, 0, iree_memory_order_relaxed);
   iree_atomic_store(&queue->ready_head, (intptr_t)0, iree_memory_order_relaxed);
   iree_atomic_store(&queue->inflight_count, 0, iree_memory_order_relaxed);
   iree_atomic_store(&queue->epoch, (uint64_t)0, iree_memory_order_relaxed);
 
-  iree_thread_create_params_t thread_params = {};
+  iree_thread_create_params_t thread_params = {0};
   thread_params.name = iree_make_cstring_view("amdxdna-async-queue");
   iree_status_t status =
       iree_thread_create(iree_hal_amdxdna_async_queue_worker_main, queue,
@@ -350,16 +342,12 @@ iree_status_t iree_hal_amdxdna_async_queue_create(
   return iree_ok_status();
 }
 
-namespace {
-
-bool iree_hal_amdxdna_async_queue_is_drained(void* arg) {
+static bool iree_hal_amdxdna_async_queue_is_drained(void* arg) {
   iree_hal_amdxdna_async_queue_t* queue =
-      reinterpret_cast<iree_hal_amdxdna_async_queue_t*>(arg);
+      (iree_hal_amdxdna_async_queue_t*)arg;
   return iree_atomic_load(&queue->inflight_count, iree_memory_order_acquire) ==
          0;
 }
-
-}  // namespace
 
 void iree_hal_amdxdna_async_queue_set_frontier(
     iree_hal_amdxdna_async_queue_t* queue,
@@ -370,7 +358,7 @@ void iree_hal_amdxdna_async_queue_set_frontier(
   // exactly once at teardown after the worker has joined. The transitions
   // are non-null->null and null->non-null only; replacing a live tracker
   // would race with the worker's plain reads on the advance path.
-  IREE_ASSERT(tracker == nullptr || queue->frontier_tracker == nullptr,
+  IREE_ASSERT(tracker == NULL || queue->frontier_tracker == NULL,
               "set_frontier replacing a live frontier tracker; the lifecycle "
               "contract is single-shot setup at topology assignment and a "
               "single null-clear at teardown");
@@ -403,7 +391,7 @@ void iree_hal_amdxdna_async_queue_advance_frontier(
 // pushed after the walk completes.
 static void iree_hal_amdxdna_async_queue_cancel_inflight(
     iree_hal_amdxdna_async_queue_t* queue) {
-  iree_hal_amdxdna_async_op_t* to_push = nullptr;
+  iree_hal_amdxdna_async_op_t* to_push = NULL;
 
   iree_slim_mutex_lock(&queue->inflight_mutex);
   iree_hal_amdxdna_async_op_t* op = queue->inflight_head;
@@ -413,8 +401,7 @@ static void iree_hal_amdxdna_async_queue_cancel_inflight(
     if (op->wait_entries) {
       for (iree_host_size_t i = 0; i < op->wait_list.count; ++i) {
         if (iree_async_semaphore_cancel_timepoint(
-                reinterpret_cast<iree_async_semaphore_t*>(
-                    op->wait_list.semaphores[i]),
+                (iree_async_semaphore_t*)op->wait_list.semaphores[i],
                 &op->wait_entries[i].timepoint)) {
           ++cancelled;
         }
@@ -425,8 +412,7 @@ static void iree_hal_amdxdna_async_queue_cancel_inflight(
       iree_status_t cancelled_status = make_cancelled_status();
       intptr_t expected = 0;
       if (!iree_atomic_compare_exchange_strong(
-              &op->error_status, &expected,
-              reinterpret_cast<intptr_t>(cancelled_status),
+              &op->error_status, &expected, (intptr_t)cancelled_status,
               iree_memory_order_acq_rel, iree_memory_order_relaxed)) {
         iree_status_free(cancelled_status);
       }
@@ -458,11 +444,10 @@ static void iree_hal_amdxdna_async_queue_cancel_inflight(
     iree_hal_amdxdna_async_op_t* tail = to_push;
     while (tail->next_ready) tail = tail->next_ready;
     while (true) {
-      tail->next_ready =
-          reinterpret_cast<iree_hal_amdxdna_async_op_t*>(old_head);
+      tail->next_ready = (iree_hal_amdxdna_async_op_t*)old_head;
       if (iree_atomic_compare_exchange_strong(
-              &queue->ready_head, &old_head,
-              reinterpret_cast<intptr_t>(to_push), iree_memory_order_release,
+              &queue->ready_head, &old_head, (intptr_t)to_push,
+              iree_memory_order_release,
               iree_memory_order_relaxed)) {
         break;
       }
@@ -522,15 +507,15 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
   iree_arena_allocator_t arena;
   iree_arena_initialize(queue->block_pool, &arena);
 
-  iree_hal_amdxdna_async_op_t* op = nullptr;
+  iree_hal_amdxdna_async_op_t* op = NULL;
   iree_status_t status =
-      iree_arena_allocate(&arena, sizeof(*op), reinterpret_cast<void**>(&op));
+      iree_arena_allocate(&arena, sizeof(*op), (void**)&op);
   if (iree_status_is_ok(status)) {
     op->arena = arena;  // Move arena ownership into the op.
     op->queue = queue;
-    op->next_ready = nullptr;
-    op->next_inflight = nullptr;
-    op->prev_inflight_link = nullptr;
+    op->next_ready = NULL;
+    op->next_inflight = NULL;
+    op->prev_inflight_link = NULL;
     iree_atomic_store(&op->wait_count, (int32_t)wait_list.count,
                       iree_memory_order_relaxed);
     iree_atomic_store(&op->error_status, (intptr_t)0,
@@ -540,20 +525,20 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     op->op_user_data = user_data;
     op->wait_list = iree_hal_semaphore_list_empty();
     op->signal_list = iree_hal_semaphore_list_empty();
-    op->wait_entries = nullptr;
-    op->retained_resources = nullptr;
+    op->wait_entries = NULL;
+    op->retained_resources = NULL;
     op->retained_resource_count = 0;
   }
 
   if (iree_status_is_ok(status) && wait_list.count > 0) {
     status = iree_arena_allocate(&op->arena,
                                  sizeof(*op->wait_entries) * wait_list.count,
-                                 reinterpret_cast<void**>(&op->wait_entries));
+                                 (void**)&op->wait_entries);
   }
   if (iree_status_is_ok(status) && retained_resource_count > 0) {
     status = iree_arena_allocate(
         &op->arena, sizeof(*op->retained_resources) * retained_resource_count,
-        reinterpret_cast<void**>(&op->retained_resources));
+        (void**)&op->retained_resources);
     if (iree_status_is_ok(status)) {
       memcpy(op->retained_resources, retained_resources,
              sizeof(*op->retained_resources) * retained_resource_count);
@@ -620,7 +605,7 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     entry->timepoint.callback = iree_hal_amdxdna_async_queue_wait_resolved;
     entry->timepoint.user_data = entry;
     iree_status_t reg_status = iree_async_semaphore_acquire_timepoint(
-        reinterpret_cast<iree_async_semaphore_t*>(op->wait_list.semaphores[i]),
+        (iree_async_semaphore_t*)op->wait_list.semaphores[i],
         op->wait_list.payload_values[i], &entry->timepoint);
     if (!iree_status_is_ok(reg_status)) {
       // Stash the error and synthesize a "wait satisfied" for this index by
