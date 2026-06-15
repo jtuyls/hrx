@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "iree/base/api.h"
+#include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/native_buffer.h"
 
 #ifdef __cplusplus
@@ -23,6 +24,14 @@ typedef enum iree_hal_amdxdna_native_c_command_opcode_t {
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF = 2,
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN = 3,
 } iree_hal_amdxdna_native_c_command_opcode_t;
+
+typedef enum iree_hal_amdxdna_native_c_power_mode_t {
+  IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_DEFAULT = 0,
+  IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_LOW = 1,
+  IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_MEDIUM = 2,
+  IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_HIGH = 3,
+  IREE_HAL_AMDXDNA_NATIVE_C_POWER_MODE_TURBO = 4,
+} iree_hal_amdxdna_native_c_power_mode_t;
 
 typedef enum iree_hal_amdxdna_native_c_buffer_sync_model_t {
   IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS = 0,
@@ -64,6 +73,30 @@ typedef struct iree_hal_amdxdna_native_c_device_caps_t {
   bool supports_real_multi_queue;
   iree_hal_amdxdna_native_c_command_opcode_t default_dispatch_opcode;
 } iree_hal_amdxdna_native_c_device_caps_t;
+
+iree_status_t iree_hal_amdxdna_native_device_c_resolve_options(
+    const struct iree_hal_amdxdna_device_params* options,
+    iree_allocator_t host_allocator,
+    struct iree_hal_amdxdna_device_params* out_options,
+    iree_byte_span_t* out_device_path_storage,
+    iree_hal_amdxdna_native_c_power_mode_t* out_power_mode,
+    bool* out_should_set_power_mode);
+
+iree_status_t iree_hal_amdxdna_native_device_c_create(
+    const struct iree_hal_amdxdna_device_params* options,
+    iree_allocator_t host_allocator,
+    iree_hal_amdxdna_native_device_t** out_device);
+
+void iree_hal_amdxdna_native_device_c_destroy(
+    iree_hal_amdxdna_native_device_t* device);
+
+iree_status_t iree_hal_amdxdna_native_device_c_set_power_mode(
+    iree_hal_amdxdna_native_device_t* device,
+    iree_hal_amdxdna_native_c_power_mode_t power_mode);
+
+iree_status_t iree_hal_amdxdna_native_device_c_query_caps(
+    iree_hal_amdxdna_native_device_t* device,
+    iree_hal_amdxdna_native_c_device_caps_t* out_caps);
 
 #ifdef __cplusplus
 }  // extern "C"

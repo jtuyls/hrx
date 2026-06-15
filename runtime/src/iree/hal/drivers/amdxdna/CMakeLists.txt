@@ -52,7 +52,7 @@ iree_cc_library(
     direct_command_buffer_planning.h
     direct_command_buffer_single_cache.cc
     direct_command_buffer_single_cache.h
-    device.cc
+    device.c
     device_internal.h
     driver.c
     event.c
@@ -69,6 +69,7 @@ iree_cc_library(
     semaphore.h
     util.h
     shim/native_buffer_bridge.cc
+    shim/native_device_bridge.cc
     xclbin_util.c
     xclbin_util.h
   DEPS

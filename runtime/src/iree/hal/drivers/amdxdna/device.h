@@ -16,10 +16,13 @@
 
 struct iree_async_proactor_pool_t;
 struct iree_async_proactor_t;
-struct iree_hal_amdxdna_device_chain_command_cache_t;
-struct iree_hal_amdxdna_device_context_cache_t;
-struct iree_hal_amdxdna_device_single_command_cache_t;
-struct iree_hal_amdxdna_device {
+typedef struct iree_hal_amdxdna_device_chain_command_cache_t
+    iree_hal_amdxdna_device_chain_command_cache_t;
+typedef struct iree_hal_amdxdna_device_context_cache_t
+    iree_hal_amdxdna_device_context_cache_t;
+typedef struct iree_hal_amdxdna_device_single_command_cache_t
+    iree_hal_amdxdna_device_single_command_cache_t;
+typedef struct iree_hal_amdxdna_device {
   iree_hal_resource_t resource;
   iree_allocator_t host_allocator;
   // Backend allocator used for HAL buffer allocation; the underlying BOs are
@@ -84,11 +87,11 @@ struct iree_hal_amdxdna_device {
   // should come last; see the definition of total_size below in
   // iree_hal_amdxdna_device_create
   iree_string_view_t identifier;
+} iree_hal_amdxdna_device;
 
-  iree_hal_amdxdna_device(const iree_hal_amdxdna_device_params* options,
-                          iree_allocator_t host_allocator);
-  ~iree_hal_amdxdna_device();
-};
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
 
 // Casts an opaque iree_hal_device_t* to the amdxdna implementation type.
 // Verifies the vtable; returns nullptr on a foreign device. Exposed for tests
@@ -96,5 +99,9 @@ struct iree_hal_amdxdna_device {
 // to a small value to exercise the chunking code path).
 iree_hal_amdxdna_device* iree_hal_amdxdna_device_cast(
     iree_hal_device_t* base_device);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_DEVICE_H_

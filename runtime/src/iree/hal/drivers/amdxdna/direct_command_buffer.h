@@ -7,11 +7,15 @@
 #ifndef IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_H_
 #define IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "iree/base/internal/arena.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/device.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif  // __cplusplus
 
 // `out_command_buffer` must be released by the caller (see
 // iree_hal_command_buffer_release).
@@ -36,5 +40,9 @@ void iree_hal_amdxdna_device_destroy_chain_command_cache(
 bool iree_hal_amdxdna_direct_command_buffer_control_words_changed(
     const uint32_t* cached_words, iree_host_size_t cached_word_count,
     const uint32_t* fresh_words, iree_host_size_t fresh_word_count);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_DIRECT_COMMAND_BUFFER_H_

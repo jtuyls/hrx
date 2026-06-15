@@ -22,8 +22,11 @@ class DirectCommandBufferTest : public ::testing::Test {
  protected:
   void SetUp() override {
     iree_hal_amdxdna_device_options_initialize(&device_params_);
-    device_ =
-        new iree_hal_amdxdna_device(&device_params_, iree_allocator_system());
+    device_ = new iree_hal_amdxdna_device{};
+    device_->host_allocator = iree_allocator_system();
+    iree_arena_block_pool_initialize(/*total_block_size=*/8 * 1024,
+                                     iree_allocator_system(),
+                                     &device_->block_pool);
     iree_arena_block_pool_initialize(/*total_block_size=*/8 * 1024,
                                      iree_allocator_system(), &block_pool_);
   }
