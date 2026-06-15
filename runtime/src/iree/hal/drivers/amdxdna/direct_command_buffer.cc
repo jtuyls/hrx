@@ -7,7 +7,6 @@
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -71,6 +70,22 @@ static iree_status_t iree_hal_amdxdna_validate_live_dispatch_bindings(
 namespace {
 extern const iree_hal_command_buffer_vtable_t
     iree_hal_amdxdna_direct_command_buffer_vtable;
+
+static iree_hal_amdxdna_native_command_opcode_t
+iree_hal_amdxdna_native_command_opcode_from_c(
+    iree_hal_amdxdna_native_c_command_opcode_t opcode) {
+  switch (opcode) {
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU:
+      return iree_hal_amdxdna_native_command_opcode_t::start_cu;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU:
+      return iree_hal_amdxdna_native_command_opcode_t::start_npu;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF:
+      return iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN:
+      return iree_hal_amdxdna_native_command_opcode_t::command_chain;
+  }
+  return iree_hal_amdxdna_native_command_opcode_t::start_cu;
+}
 }  // namespace
 
 iree_status_t iree_hal_amdxdna_direct_command_buffer_create(
@@ -459,7 +474,7 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
   const bool native_uses_dpu_regmap_args =
       !use_native_partial_elf &&
       command_buffer->device->native_caps.default_dispatch_opcode ==
-          iree_hal_amdxdna_native_command_opcode_t::start_npu;
+          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU;
   if (command_opcode ==
       iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf) {
     if (IREE_UNLIKELY(arg_count &&
@@ -988,9 +1003,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
   // the cached value also observes the probe's published writes.
   uint32_t max_slots = std::numeric_limits<uint32_t>::max();
   if (has_parent_chain_group) {
-    std::atomic<uint32_t>& max_slots_atomic =
-        command_buffer->device->chain_max_slots;
-    max_slots = max_slots_atomic.load(std::memory_order_acquire);
+    max_slots = iree_atomic_load(&command_buffer->device->chain_max_slots,
+                                 iree_memory_order_acquire);
     if (max_slots == 0) {
       max_slots = command_buffer->device->native_caps.max_command_chain_slots;
       if (max_slots == 0) {
@@ -998,7 +1012,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             z0, iree_hal_amdxdna_native_device_query_chain_max_slots(
                     command_buffer->device->native_device, &max_slots));
       }
-      max_slots_atomic.store(max_slots, std::memory_order_release);
+      iree_atomic_store(&command_buffer->device->chain_max_slots, max_slots,
+                        iree_memory_order_release);
     }
   }
 
@@ -1343,7 +1358,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
   const iree_hal_amdxdna_native_command_opcode_t command_opcode =
       use_single_partial_elf
           ? iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf
-          : command_buffer->device->native_caps.default_dispatch_opcode;
+          : iree_hal_amdxdna_native_command_opcode_from_c(
+                command_buffer->device->native_caps.default_dispatch_opcode);
   if (!submit_command) {
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0,
@@ -1447,7 +1463,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
   // Sync the bindings back to the host.
   if (!use_single_partial_elf &&
       command_buffer->device->native_caps.buffer_sync_model !=
-          iree_hal_amdxdna_native_buffer_sync_model_t::submit_syncs_bindings) {
+          IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_SUBMIT_SYNCS_BINDINGS) {
     for (iree_host_size_t j = 0; j < bindings.count; ++j) {
       IREE_RETURN_AND_END_ZONE_IF_ERROR(
           z0, iree_hal_amdxdna_buffer_invalidate_range(
@@ -1515,7 +1531,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_reconfigure(
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_amdxdna_native_command_create(
               command_buffer->device->native_device,
-              command_buffer->device->native_caps.default_dispatch_opcode,
+              iree_hal_amdxdna_native_command_opcode_from_c(
+                  command_buffer->device->native_caps.default_dispatch_opcode),
               &command));
   // Add the kernel arguments.
   IREE_RETURN_AND_END_ZONE_IF_ERROR(

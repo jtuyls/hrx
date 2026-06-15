@@ -39,6 +39,60 @@
 
 namespace {
 extern const iree_hal_device_vtable_t iree_hal_amdxdna_device_vtable;
+
+static iree_hal_amdxdna_native_c_command_opcode_t
+iree_hal_amdxdna_native_command_opcode_to_c(
+    iree_hal_amdxdna_native_command_opcode_t opcode) {
+  switch (opcode) {
+    case iree_hal_amdxdna_native_command_opcode_t::start_cu:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU;
+    case iree_hal_amdxdna_native_command_opcode_t::start_npu:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU;
+    case iree_hal_amdxdna_native_command_opcode_t::start_npu_partial_elf:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF;
+    case iree_hal_amdxdna_native_command_opcode_t::command_chain:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN;
+  }
+  return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU;
+}
+
+static iree_hal_amdxdna_native_c_buffer_sync_model_t
+iree_hal_amdxdna_native_buffer_sync_model_to_c(
+    iree_hal_amdxdna_native_buffer_sync_model_t model) {
+  switch (model) {
+    case iree_hal_amdxdna_native_buffer_sync_model_t::caller_syncs_bindings:
+      return IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
+    case iree_hal_amdxdna_native_buffer_sync_model_t::submit_syncs_bindings:
+      return IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_SUBMIT_SYNCS_BINDINGS;
+  }
+  return IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
+}
+
+static iree_hal_amdxdna_native_c_device_caps_t
+iree_hal_amdxdna_native_device_caps_to_c(
+    const iree_hal_amdxdna_native_device_caps_t& caps) {
+  iree_hal_amdxdna_native_c_device_caps_t c_caps = {};
+  c_caps.ddi_version = caps.ddi_version;
+  c_caps.max_effective_queues = caps.max_effective_queues;
+  c_caps.max_command_chain_slots = caps.max_command_chain_slots;
+  c_caps.context_image_models = caps.context_image_models;
+  c_caps.dispatch_models = caps.dispatch_models;
+  c_caps.buffer_sync_model =
+      iree_hal_amdxdna_native_buffer_sync_model_to_c(caps.buffer_sync_model);
+  c_caps.completion_models = caps.completion_models;
+  c_caps.supports_command_chain = caps.supports_command_chain;
+  c_caps.supports_submit_many = caps.supports_submit_many;
+  c_caps.supports_async_submit = caps.supports_async_submit;
+  c_caps.supports_external_buffer_import =
+      caps.supports_external_buffer_import;
+  c_caps.supports_external_buffer_export =
+      caps.supports_external_buffer_export;
+  c_caps.supports_real_multi_queue = caps.supports_real_multi_queue;
+  c_caps.default_dispatch_opcode =
+      iree_hal_amdxdna_native_command_opcode_to_c(
+          caps.default_dispatch_opcode);
+  return c_caps;
+}
 }  // namespace
 
 iree_hal_amdxdna_device::iree_hal_amdxdna_device(
@@ -60,10 +114,11 @@ iree_hal_amdxdna_device::iree_hal_amdxdna_device(
   frontier_axis = 0;
   device_allocator = nullptr;
   native_device = nullptr;
-  native_caps = iree_hal_amdxdna_native_device_caps_t();
+  memset(&native_caps, 0, sizeof(native_caps));
   context_cache = iree_hal_amdxdna_device_context_cache_create();
   chain_command_cache = nullptr;
   single_command_cache = nullptr;
+  iree_atomic_store(&chain_max_slots, 0, iree_memory_order_relaxed);
 
   iree_hal_resource_initialize(&iree_hal_amdxdna_device_vtable, &resource);
   this->host_allocator = host_allocator;
@@ -1214,8 +1269,13 @@ iree_status_t iree_hal_amdxdna_device_create(
   status = iree_hal_amdxdna_native_device_create(
       &resolved_options, device->host_allocator, &device->native_device);
   if (iree_status_is_ok(status)) {
+    iree_hal_amdxdna_native_device_caps_t native_caps;
     status = iree_hal_amdxdna_native_device_query_caps(device->native_device,
-                                                       &device->native_caps);
+                                                       &native_caps);
+    if (iree_status_is_ok(status)) {
+      device->native_caps =
+          iree_hal_amdxdna_native_device_caps_to_c(native_caps);
+    }
   }
   if (iree_status_is_ok(status) && should_set_power_mode) {
     status = iree_hal_amdxdna_native_device_set_power_mode(

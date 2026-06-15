@@ -7,14 +7,12 @@
 #ifndef IREE_HAL_DRIVERS_AMDXDNA_DEVICE_H_
 #define IREE_HAL_DRIVERS_AMDXDNA_DEVICE_H_
 
-#include <atomic>
-#include <cstdint>
-
 #include "iree/base/internal/arena.h"
+#include "iree/base/internal/atomics.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/async_queue.h"
-#include "iree/hal/drivers/amdxdna/native.h"
+#include "iree/hal/drivers/amdxdna/native_device.h"
 
 struct iree_async_proactor_pool_t;
 struct iree_async_proactor_t;
@@ -59,7 +57,7 @@ struct iree_hal_amdxdna_device {
   iree_async_axis_t frontier_axis;
 
   iree_hal_amdxdna_native_device_t* native_device;
-  iree_hal_amdxdna_native_device_caps_t native_caps;
+  iree_hal_amdxdna_native_c_device_caps_t native_caps;
   // Native hardware-context cache for control-packet bootstrap PDIs.
   // Implementation-private so HAL-facing code does not expose STL maps/locks.
   iree_hal_amdxdna_device_context_cache_t* context_cache;
@@ -79,7 +77,7 @@ struct iree_hal_amdxdna_device {
   // (returns the same value every call on a given device) so double-probe is
   // safe, but we still need atomic load/store to avoid torn reads on the
   // 0 -> max sentinel transition.
-  std::atomic<uint32_t> chain_max_slots{0};
+  iree_atomic_uint32_t chain_max_slots;
   // True when creation successfully changed hardware power mode away from the
   // default and teardown should best-effort restore the default.
   bool power_mode_applied;

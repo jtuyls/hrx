@@ -62,6 +62,7 @@ iree_cc_library(
     executable_internal.h
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
     native_buffer.h
+    native_device.h
     nop_executable_cache.c
     nop_executable_cache.h
     semaphore.c
