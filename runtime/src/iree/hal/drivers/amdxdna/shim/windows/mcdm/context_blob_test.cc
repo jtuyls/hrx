@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <string>
 #include <vector>
 
 #include "iree/testing/gtest.h"
@@ -106,26 +105,29 @@ std::vector<uint8_t> BuildSyntheticMultiPdiXclbin() {
 TEST(ContextBlobTest, ParsesMultiPdiIpLayoutAndAiePartition) {
   std::vector<uint8_t> xclbin = BuildSyntheticMultiPdiXclbin();
 
-  std::vector<uint8_t> private_data;
+  iree_byte_span_t private_data = iree_byte_span_empty();
   ContextBlobInfo info;
-  std::string error;
+  Error error;
   ASSERT_TRUE(BuildContextPrivateDataFromXclbin(xclbin.data(), xclbin.size(),
                                                 /*process_id=*/1234,
+                                                iree_allocator_system(),
                                                 &private_data, &info, &error))
-      << error;
+      << ErrorMessage(&error);
 
-  EXPECT_EQ(info.kernel_name, "dispatch_a");
-  ASSERT_EQ(info.kernel_names.size(), 2u);
-  EXPECT_EQ(info.kernel_names[0], "dispatch_a");
-  EXPECT_EQ(info.kernel_names[1], "dispatch_b");
+  EXPECT_STREQ(info.kernel_name, "dispatch_a");
+  ASSERT_EQ(info.kernel_name_count, 2u);
+  EXPECT_STREQ(ContextBlobInfoKernelName(&info, 0), "dispatch_a");
+  EXPECT_STREQ(ContextBlobInfoKernelName(&info, 1), "dispatch_b");
   EXPECT_EQ(info.pdi_count, 2u);
-  ASSERT_EQ(info.pdi_names.size(), 2u);
-  EXPECT_EQ(info.pdi_names[0], "DPU_PDI_0");
-  EXPECT_EQ(info.pdi_names[1], "DPU_PDI_1");
-  ASSERT_EQ(info.dpu_kernel_ids.size(), 2u);
+  ASSERT_EQ(info.pdi_name_count, 2u);
+  EXPECT_STREQ(ContextBlobInfoPdiName(&info, 0), "DPU_PDI_0");
+  EXPECT_STREQ(ContextBlobInfoPdiName(&info, 1), "DPU_PDI_1");
+  ASSERT_NE(info.dpu_kernel_ids, nullptr);
   EXPECT_EQ(info.dpu_kernel_ids[0], 0x100u);
   EXPECT_EQ(info.dpu_kernel_ids[1], 0x101u);
-  EXPECT_GT(private_data.size(), xclbin.size());
+  EXPECT_GT(private_data.data_length, xclbin.size());
+  ContextBlobInfoDeinitialize(&info);
+  iree_allocator_free(iree_allocator_system(), private_data.data);
 }
 
 TEST(ContextBlobTest, RejectsExcessiveAxlfSectionCount) {
@@ -137,12 +139,13 @@ TEST(ContextBlobTest, RejectsExcessiveAxlfSectionCount) {
   WriteString(&xclbin, 0, 8, "xclbin2");
   WriteU32(&xclbin, 0x1C0, kMaxAxlfSections + 1);
 
-  std::vector<uint8_t> private_data;
-  std::string error;
+  iree_byte_span_t private_data = iree_byte_span_empty();
+  Error error;
   EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
-      xclbin.data(), xclbin.size(), /*process_id=*/1234, &private_data,
-      /*out_info=*/nullptr, &error));
-  EXPECT_NE(error.find("section count"), std::string::npos) << error;
+      xclbin.data(), xclbin.size(), /*process_id=*/1234,
+      iree_allocator_system(), &private_data, /*out_info=*/nullptr, &error));
+  EXPECT_NE(std::strstr(ErrorMessage(&error), "section count"), nullptr)
+      << ErrorMessage(&error);
 }
 
 TEST(ContextBlobTest, RejectsExcessiveAiePartitionPdiCount) {
@@ -151,12 +154,38 @@ TEST(ContextBlobTest, RejectsExcessiveAiePartitionPdiCount) {
   std::vector<uint8_t> xclbin = BuildSyntheticMultiPdiXclbin();
   WriteU32(&xclbin, kAiePartitionOffset + 120, kMaxAiePartitionPdis + 1);
 
-  std::vector<uint8_t> private_data;
-  std::string error;
+  iree_byte_span_t private_data = iree_byte_span_empty();
+  Error error;
   EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
-      xclbin.data(), xclbin.size(), /*process_id=*/1234, &private_data,
-      /*out_info=*/nullptr, &error));
-  EXPECT_NE(error.find("PDI count"), std::string::npos) << error;
+      xclbin.data(), xclbin.size(), /*process_id=*/1234,
+      iree_allocator_system(), &private_data, /*out_info=*/nullptr, &error));
+  EXPECT_NE(std::strstr(ErrorMessage(&error), "PDI count"), nullptr)
+      << ErrorMessage(&error);
+}
+
+TEST(ContextBlobTest, RejectsNullOutputBlob) {
+  std::vector<uint8_t> xclbin = BuildSyntheticMultiPdiXclbin();
+
+  ContextBlobInfo info;
+  Error error;
+  EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
+      xclbin.data(), xclbin.size(), /*process_id=*/1234,
+      iree_allocator_system(), /*out_blob=*/nullptr, &info, &error));
+  EXPECT_NE(std::strstr(ErrorMessage(&error), "invalid"), nullptr)
+      << ErrorMessage(&error);
+}
+
+TEST(ContextBlobTest, RejectsOversizedContextBlobBeforeAllocation) {
+  std::vector<uint8_t> xclbin = BuildSyntheticMultiPdiXclbin();
+
+  iree_byte_span_t private_data = iree_byte_span_empty();
+  Error error;
+  EXPECT_FALSE(BuildContextPrivateDataFromXclbin(
+      xclbin.data(), 512ull * 1024ull * 1024ull, /*process_id=*/1234,
+      iree_allocator_system(), &private_data, /*out_info=*/nullptr, &error));
+  EXPECT_NE(std::strstr(ErrorMessage(&error), "size exceeds"), nullptr)
+      << ErrorMessage(&error);
+  EXPECT_EQ(private_data.data, nullptr);
 }
 
 }  // namespace

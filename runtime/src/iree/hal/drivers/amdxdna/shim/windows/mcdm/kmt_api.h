@@ -19,11 +19,18 @@
 #include <d3dkmthk.h>
 // clang-format on
 
+#include <cstddef>
 #include <cstdint>
-#include <string>
-#include <vector>
 
 namespace iree::hal::amdxdna::mcdm {
+
+constexpr size_t kMaxRetainedAdapterHandles = 256;
+
+struct Error {
+  char message[512] = {};
+};
+
+const char* ErrorMessage(const Error* error);
 
 enum class BufferKind {
   host_only,
@@ -64,19 +71,20 @@ struct KmtApi {
   PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait_from_cpu = nullptr;
   PFND3DKMT_SUBMITCOMMANDTOHWQUEUE submit_command_to_hw_queue = nullptr;
 
-  bool Load(std::string* out_error);
+  bool Load(Error* out_error);
 };
 
 struct Adapter {
   D3DKMT_HANDLE handle = 0;
   LUID luid = {};
-  std::wstring description;
-  std::vector<D3DKMT_HANDLE> retained_handles;
+  D3DKMT_HANDLE retained_handles[kMaxRetainedAdapterHandles] = {};
+  size_t retained_handle_count = 0;
 };
 
 struct Device {
   D3DKMT_HANDLE adapter = 0;
-  std::vector<D3DKMT_HANDLE> retained_adapter_handles;
+  D3DKMT_HANDLE retained_adapter_handles[kMaxRetainedAdapterHandles] = {};
+  size_t retained_adapter_handle_count = 0;
   D3DKMT_HANDLE device = 0;
   D3DKMT_HANDLE paging_queue = 0;
   D3DKMT_HANDLE paging_sync_object = 0;
@@ -161,63 +169,60 @@ struct PathBPendingSubmit {
   Buffer ring;
 };
 
-bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter,
-                    std::string* out_error);
+bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter, Error* out_error);
 
 bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
-                  std::string* out_error);
+                  Error* out_error);
 
 void DestroyDevice(const KmtApi& api, Device* device);
 
 bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
-                  uint64_t size, Buffer* out_buffer, std::string* out_error);
+                  uint64_t size, Buffer* out_buffer, Error* out_error);
 
 bool SyncBuffer(const KmtApi& api, const Device& device, const Buffer& buffer,
-                uint64_t offset, uint64_t length, std::string* out_error);
+                uint64_t offset, uint64_t length, Error* out_error);
 
 bool SyncCommandApertureCode(const KmtApi& api, const Device& device,
                              const CommandAperture& aperture, uint64_t offset,
-                             uint64_t length, std::string* out_error);
+                             uint64_t length, Error* out_error);
 
 bool RefreshCommandApertureGpuMapping(const KmtApi& api, const Device& device,
                                       CommandAperture* aperture,
-                                      std::string* out_error);
+                                      Error* out_error);
 
 bool RefreshBufferCpuMapping(const KmtApi& api, const Device& device,
-                             Buffer* buffer, std::string* out_error);
+                             Buffer* buffer, Error* out_error);
 
 bool WaitForBufferResidency(const KmtApi& api, const Device& device,
                             const Context& context, const Buffer& buffer,
-                            const char* label, std::string* out_error);
+                            const char* label, Error* out_error);
 
 void DestroyBuffer(const KmtApi& api, const Device& device, Buffer* buffer);
 
 bool CreateContext(const KmtApi& api, const Device& device,
-                   const std::vector<uint8_t>& private_data,
-                   Context* out_context, std::string* out_error);
+                   const uint8_t* private_data, size_t private_data_size,
+                   Context* out_context, Error* out_error);
 
 void DestroyContext(const KmtApi& api, const Device& device,
                     Context* context);
 
 bool CreateCommandAperture(const KmtApi& api, const Device& device,
                            const Context& context,
-                           CommandAperture* out_aperture,
-                           std::string* out_error);
+                           CommandAperture* out_aperture, Error* out_error);
 
 bool SubmitAndWaitCommandAperture(const KmtApi& api, const Device& device,
                                   Context* context, CommandAperture* aperture,
-                                  std::string* out_error);
+                                  Error* out_error);
 
 bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
                              Context* context, CommandAperture* aperture,
                              const void* aperture_payload,
-                             size_t aperture_payload_size,
-                             std::string* out_error);
+                             size_t aperture_payload_size, Error* out_error);
 
 bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
                              Context* context, const CommandAperture& aperture,
                              uint64_t offset, bool wait_for_cpu,
-                             std::string* out_error);
+                             Error* out_error);
 
 // Path B: per-dispatch hwqueue_aie4-style submit. Reproduces the xrt_core
 // submission recovered from disassembly: reserve an 8-byte completion-ring
@@ -229,7 +234,7 @@ bool SubmitAndWaitPathB(const KmtApi& api, const Device& device,
                         Context* context, const Buffer& exec_buffer,
                         const void* ert_packet, uint32_t ert_bytes,
                         uint32_t command_state, uint32_t* packet_header,
-                        std::string* out_error);
+                        Error* out_error);
 
 // Path B parent ERT_CMD_CHAIN submit. This is the same completion protocol as
 // SubmitAndWaitPathB, but uses the recovered xrt_core opcode-6 private
@@ -240,14 +245,14 @@ bool SubmitAndWaitPathBChain(const KmtApi& api, const Device& device,
                              Context* context, const Buffer& exec_buffer,
                              const void* ert_packet, uint32_t ert_bytes,
                              const PathBChainSubmitInfo& chain_info,
-                             uint32_t* packet_header, std::string* out_error);
+                             uint32_t* packet_header, Error* out_error);
 
 bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       const Buffer& exec_buffer, const void* ert_packet,
                       uint32_t ert_bytes,
                       const PathBChainSubmitInfo& chain_info,
                       uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                      std::string* out_error);
+                      Error* out_error);
 
 // Single-dispatch path-B issue (no wait); the async counterpart of
 // SubmitAndWaitPathB. Returns the in-flight fence token in `out_pending`; wait
@@ -256,11 +261,11 @@ bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
                  const Buffer& exec_buffer, const void* ert_packet,
                  uint32_t ert_bytes, uint32_t command_state,
                  uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                 std::string* out_error);
+                 Error* out_error);
 
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
-                         size_t pending_count, std::string* out_error);
+                         size_t pending_count, Error* out_error);
 
 // Non-blocking completion poll for an issued (but not yet waited) path-B
 // submit: true once the HW progress fence has reached pending.fence_id.
@@ -271,8 +276,6 @@ bool IsPathBSubmitComplete(const Context& context,
 // capture uses opcode 2/5/9 setup packets, not opcode 10.
 void DestroyCommandAperture(const KmtApi& api, const Device& device,
                             CommandAperture* aperture);
-
-std::string NtStatusToString(NTSTATUS status);
 
 }  // namespace iree::hal::amdxdna::mcdm
 

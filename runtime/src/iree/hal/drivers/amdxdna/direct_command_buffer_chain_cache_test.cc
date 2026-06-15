@@ -121,6 +121,25 @@ TEST(ChainCommandCacheTest, ShapeMatchAllowsDifferentBufferForRebind) {
       &entry, &fresh_group, /*max_slots=*/24));
 }
 
+TEST(ChainCommandCacheTest, SignatureRewritePreservesSelfAliasedBindings) {
+  auto cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x11000);
+  const uint32_t ctrl_words[] = {0xD, 0xE, 0xF};
+
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_cmd_set_signature(
+      TestAllocator(), &cmd, ctrl_words, IREE_ARRAYSIZE(ctrl_words),
+      cmd.binding_buffers, cmd.binding_device_addrs, cmd.binding_offsets,
+      cmd.binding_lengths, cmd.binding_count));
+
+  ASSERT_EQ(cmd.binding_count, 1u);
+  EXPECT_EQ(cmd.binding_buffers[0], FakeBuffer(0x10));
+  EXPECT_EQ(cmd.binding_device_addrs[0], 0x11000u);
+  EXPECT_EQ(cmd.binding_offsets[0], 4u);
+  EXPECT_EQ(cmd.binding_lengths[0], 128u);
+  EXPECT_EQ(cmd.ctrl_word_count, IREE_ARRAYSIZE(ctrl_words));
+  EXPECT_EQ(0, memcmp(cmd.ctrl_words, ctrl_words, sizeof(ctrl_words)));
+  iree_hal_amdxdna_chain_cmd_deinitialize(TestAllocator(), &cmd);
+}
+
 TEST(ChainCommandCacheTest, DescriptorMatchExpandsRepeatCounts) {
   auto compact_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000,
                              /*repeat_count=*/3);

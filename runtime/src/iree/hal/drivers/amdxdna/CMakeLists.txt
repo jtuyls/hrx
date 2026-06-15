@@ -12,9 +12,7 @@ endif()
 
 iree_add_all_subdirs()
 
-set(IREE_HAL_AMDXDNA_NATIVE_SRCS
-  native_internal.h
-)
+set(IREE_HAL_AMDXDNA_NATIVE_SRCS)
 if(WIN32)
   set(IREE_HAL_AMDXDNA_NATIVE_DEPS
     iree::hal::drivers::amdxdna::shim::windows::mcdm::kmt_api
@@ -61,7 +59,6 @@ iree_cc_library(
     executable.h
     executable_internal.h
     native.h
-    native_c_api_impl.inc
     ${IREE_HAL_AMDXDNA_NATIVE_SRCS}
     nop_executable_cache.c
     nop_executable_cache.h
@@ -138,6 +135,19 @@ iree_cc_test(
 
 iree_cc_test(
   NAME
+    direct_command_buffer_single_cache_test
+  SRCS
+    "direct_command_buffer_single_cache_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
     direct_command_buffer_planning_test
   SRCS
     "direct_command_buffer_planning_test.cc"
@@ -191,6 +201,20 @@ iree_cc_test(
     iree::base
     iree::base::internal::arena
     iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    device_test
+  SRCS
+    "device_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
     iree::testing::gtest
     iree::testing::gtest_main
   LABELS

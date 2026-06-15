@@ -9,30 +9,43 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
-#include <vector>
+
+#include "iree/base/api.h"
+#include "iree/hal/drivers/amdxdna/shim/windows/mcdm/kmt_api.h"
 
 namespace iree::hal::amdxdna::mcdm {
 
+constexpr iree_host_size_t kContextBlobNameCapacity = 64;
+
 struct ContextBlobInfo {
-  std::string kernel_name;
+  char kernel_name[kContextBlobNameCapacity] = {};
   uint32_t column_width = 0;
   uint32_t start_column = 0;
   uint32_t pdi_count = 0;
-  std::string pdi_name;
+  char pdi_name[kContextBlobNameCapacity] = {};
   uint64_t dpu_kernel_id = 0;
   // Base CU/kernel names from IP_LAYOUT, in CU-mask bit order. Names are
   // normalized by dropping the xclbin instance suffix after ':'.
-  std::vector<std::string> kernel_names;
-  std::vector<std::string> pdi_names;
-  std::vector<uint64_t> dpu_kernel_ids;
+  uint32_t kernel_name_count = 0;
+  char* kernel_names = nullptr;
+  uint32_t pdi_name_count = 0;
+  char* pdi_names = nullptr;
+  uint64_t* dpu_kernel_ids = nullptr;
+  iree_allocator_t allocator = iree_allocator_null();
 };
 
 bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
                                        size_t xclbin_size, uint32_t process_id,
-                                       std::vector<uint8_t>* out_blob,
+                                       iree_allocator_t allocator,
+                                       iree_byte_span_t* out_blob,
                                        ContextBlobInfo* out_info,
-                                       std::string* out_error);
+                                       Error* out_error);
+
+const char* ContextBlobInfoKernelName(const ContextBlobInfo* info,
+                                      uint32_t index);
+const char* ContextBlobInfoPdiName(const ContextBlobInfo* info,
+                                   uint32_t index);
+void ContextBlobInfoDeinitialize(ContextBlobInfo* info);
 
 }  // namespace iree::hal::amdxdna::mcdm
 

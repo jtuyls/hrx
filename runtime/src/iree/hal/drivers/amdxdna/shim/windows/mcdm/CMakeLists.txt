@@ -16,6 +16,8 @@ iree_cc_library(
     context_blob.h
     kmt_api.cc
     kmt_api.h
+  DEPS
+    iree::base
   PUBLIC
 )
 
@@ -24,6 +26,17 @@ iree_cc_test(
     context_blob_test
   SRCS
     context_blob_test.cc
+  DEPS
+    ::kmt_api
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_test(
+  NAME
+    kmt_api_test
+  SRCS
+    kmt_api_test.cc
   DEPS
     ::kmt_api
     iree::testing::gtest

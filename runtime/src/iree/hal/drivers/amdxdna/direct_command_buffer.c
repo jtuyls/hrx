@@ -1032,6 +1032,12 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             z0, iree_hal_amdxdna_native_device_c_query_chain_max_slots(
                     command_buffer->device->native_device, &max_slots));
       }
+      if (max_slots == 0) {
+        IREE_TRACE_ZONE_END(z0);
+        return iree_make_status(
+            IREE_STATUS_FAILED_PRECONDITION,
+            "amdxdna command-chain backend reported zero max slots");
+      }
       iree_atomic_store(&command_buffer->device->chain_max_slots, max_slots,
                         iree_memory_order_release);
     }

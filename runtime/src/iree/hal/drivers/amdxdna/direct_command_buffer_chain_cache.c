@@ -129,39 +129,65 @@ iree_status_t iree_hal_amdxdna_chain_cmd_set_signature(
     const uint64_t* binding_device_addrs,
     const iree_device_size_t* binding_offsets,
     const iree_device_size_t* binding_lengths, iree_host_size_t binding_count) {
-  iree_hal_amdxdna_chain_cmd_free_signature(host_allocator, cmd);
+  uint32_t* new_ctrl_words = NULL;
+  iree_hal_amdxdna_native_buffer_t** new_binding_buffers = NULL;
+  uint64_t* new_binding_device_addrs = NULL;
+  iree_device_size_t* new_binding_offsets = NULL;
+  iree_device_size_t* new_binding_lengths = NULL;
+  iree_status_t status = iree_ok_status();
+  // Inputs may alias the command being rewritten (deferred descriptors are
+  // materialized in place), so copy first and only then release the old arrays.
   if (ctrl_word_count != 0) {
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        host_allocator, ctrl_word_count, sizeof(*cmd->ctrl_words),
-        (void**)&cmd->ctrl_words));
-    memcpy(cmd->ctrl_words, ctrl_words,
-           ctrl_word_count * sizeof(*cmd->ctrl_words));
+    status = iree_allocator_malloc_array(
+        host_allocator, ctrl_word_count, sizeof(*new_ctrl_words),
+        (void**)&new_ctrl_words);
+    if (!iree_status_is_ok(status)) goto cleanup;
+    memcpy(new_ctrl_words, ctrl_words,
+           ctrl_word_count * sizeof(*new_ctrl_words));
   }
-  cmd->ctrl_word_count = ctrl_word_count;
   if (binding_count != 0) {
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*cmd->binding_buffers),
-        (void**)&cmd->binding_buffers));
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*cmd->binding_device_addrs),
-        (void**)&cmd->binding_device_addrs));
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*cmd->binding_offsets),
-        (void**)&cmd->binding_offsets));
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        host_allocator, binding_count, sizeof(*cmd->binding_lengths),
-        (void**)&cmd->binding_lengths));
-    memcpy(cmd->binding_buffers, binding_buffers,
-           binding_count * sizeof(*cmd->binding_buffers));
-    memcpy(cmd->binding_device_addrs, binding_device_addrs,
-           binding_count * sizeof(*cmd->binding_device_addrs));
-    memcpy(cmd->binding_offsets, binding_offsets,
-           binding_count * sizeof(*cmd->binding_offsets));
-    memcpy(cmd->binding_lengths, binding_lengths,
-           binding_count * sizeof(*cmd->binding_lengths));
+    status = iree_allocator_malloc_array(
+        host_allocator, binding_count, sizeof(*new_binding_buffers),
+        (void**)&new_binding_buffers);
+    if (!iree_status_is_ok(status)) goto cleanup;
+    status = iree_allocator_malloc_array(
+        host_allocator, binding_count, sizeof(*new_binding_device_addrs),
+        (void**)&new_binding_device_addrs);
+    if (!iree_status_is_ok(status)) goto cleanup;
+    status = iree_allocator_malloc_array(
+        host_allocator, binding_count, sizeof(*new_binding_offsets),
+        (void**)&new_binding_offsets);
+    if (!iree_status_is_ok(status)) goto cleanup;
+    status = iree_allocator_malloc_array(
+        host_allocator, binding_count, sizeof(*new_binding_lengths),
+        (void**)&new_binding_lengths);
+    if (!iree_status_is_ok(status)) goto cleanup;
+    memcpy(new_binding_buffers, binding_buffers,
+           binding_count * sizeof(*new_binding_buffers));
+    memcpy(new_binding_device_addrs, binding_device_addrs,
+           binding_count * sizeof(*new_binding_device_addrs));
+    memcpy(new_binding_offsets, binding_offsets,
+           binding_count * sizeof(*new_binding_offsets));
+    memcpy(new_binding_lengths, binding_lengths,
+           binding_count * sizeof(*new_binding_lengths));
   }
+  iree_hal_amdxdna_chain_cmd_free_signature(host_allocator, cmd);
+  cmd->ctrl_words = new_ctrl_words;
+  cmd->ctrl_word_count = ctrl_word_count;
+  cmd->binding_buffers = new_binding_buffers;
+  cmd->binding_device_addrs = new_binding_device_addrs;
+  cmd->binding_offsets = new_binding_offsets;
+  cmd->binding_lengths = new_binding_lengths;
   cmd->binding_count = binding_count;
   return iree_ok_status();
+
+cleanup:
+  iree_allocator_free(host_allocator, new_binding_lengths);
+  iree_allocator_free(host_allocator, new_binding_offsets);
+  iree_allocator_free(host_allocator, new_binding_device_addrs);
+  iree_allocator_free(host_allocator, new_binding_buffers);
+  iree_allocator_free(host_allocator, new_ctrl_words);
+  return status;
 }
 
 iree_status_t iree_hal_amdxdna_chain_cmd_set_deferred_descriptor(
