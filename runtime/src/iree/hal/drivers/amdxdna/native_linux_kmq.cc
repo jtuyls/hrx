@@ -358,7 +358,17 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.max_command_chain_slots =
       std::min(chain_slot_capacity(kMaxExecBoSize), kMaxReliableChainSlots);
   caps.context_image_models = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI;
+  // WIP: advertise the native PARTIAL_ELF / START_NPU dispatch models so the
+  // device drives the resident-instruction (partial-ELF) path. This is the
+  // ~3x-per-dispatch fast path that Windows MCDM already ships, but on Linux
+  // KMQ it currently produces wrong results for kernels with per-dispatch
+  // moving I/O (e.g. FastFlowLM decode): the firmware serves a stale resident
+  // instruction and there is no working invalidation hook (mark_code_dirty is a
+  // no-op on KMQ). Correct only for static-I/O kernels. Do NOT enable for
+  // production until the KMQ instruction-invalidation gap is closed.
   caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_CU |
+                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU |
+                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF |
                          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
   caps.buffer_sync_model =
       IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
