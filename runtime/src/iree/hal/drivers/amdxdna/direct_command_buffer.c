@@ -2077,9 +2077,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
   }
 
   // Allocate a buffer object to hold the control code (`asm_inst`).
-  size_t ctrl_code_size =
-      (use_single_partial_elf ? asm_inst->count : asm_inst->count) *
-      sizeof(uint32_t);
+  size_t ctrl_code_size = asm_inst->count * sizeof(uint32_t);
   if (iree_status_is_ok(status) && !submit_command) {
     const bool uses_native_instruction_buffer =
         use_single_partial_elf ||
