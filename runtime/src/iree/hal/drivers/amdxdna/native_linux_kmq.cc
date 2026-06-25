@@ -69,9 +69,6 @@ struct iree_hal_amdxdna_native_command_t {
   iree_hal_amdxdna_native_c_command_opcode_t opcode;
   std::unique_ptr<shim_xdna::kernel> kernel;
   bool has_bound_buffers = false;
-  uint64_t chain_child_count = 0;
-  uint64_t chain_child_count_words = 0;
-  uint64_t chain_child_npu_instruction_bytes = 0;
 
   iree_hal_amdxdna_native_command_t(
       iree_hal_amdxdna_native_device_t* device,
@@ -793,9 +790,6 @@ iree_status_t iree_hal_amdxdna_native_command_prepare_chain(
 
   ert_packet* packet = command_packet(command);
   std::memset(packet, 0, chain_bo->size());
-  command->chain_child_count = command_count;
-  command->chain_child_count_words = 0;
-  command->chain_child_npu_instruction_bytes = 0;
   packet->state = ERT_CMD_STATE_NEW;
   packet->opcode = ERT_CMD_CHAIN;
   ert_cmd_chain_data* chain_data =
@@ -805,18 +799,6 @@ iree_status_t iree_hal_amdxdna_native_command_prepare_chain(
   chain_data->error_index = 0;
   for (iree_host_size_t i = 0; i < command_count; ++i) {
     shim_xdna::bo* child_bo = commands[i]->kernel->get_exec_buf_bo();
-    const ert_packet* child_packet = command_packet(commands[i]);
-    if (child_packet) {
-      command->chain_child_count_words += child_packet->count;
-      if (child_packet->opcode == ERT_START_NPU) {
-        ert_npu_data* npu_data =
-            get_ert_npu_data((ert_start_kernel_cmd*)child_packet);
-        if (npu_data) {
-          command->chain_child_npu_instruction_bytes +=
-              npu_data->instruction_buffer_size;
-        }
-      }
-    }
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_status_from_errno(
         child_bo->sync(shim_xdna::direction::host2device),
         "amdxdna cmd-chain child command sync failed"));
