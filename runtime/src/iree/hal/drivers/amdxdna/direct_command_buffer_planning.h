@@ -46,6 +46,18 @@ bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
                                         size_t patch_count,
                                         const uint64_t* args, size_t arg_count);
 
+// Rewrites only dynamic words in `ctrl_code` using immutable `template_code` as
+// the source of truth. This is intended for cached command-chain control-code
+// BOs: constants and buffer-descriptor addresses may change per dispatch, but
+// the rest of the XAie transaction stream remains fixed. Unlike
+// iree_hal_amdxdna_apply_patch_table, this is safe to call repeatedly on an
+// already patched control-code buffer because all base BD words are read from
+// `template_code`, not from `ctrl_code`.
+iree_status_t iree_hal_amdxdna_patch_dynamic_fields_from_template(
+    uint32_t* ctrl_code, const uint32_t* template_code, size_t ctrl_words,
+    iree_const_byte_span_t constants, const uint32_t* patches,
+    size_t patch_count, const uint64_t* args, size_t arg_count);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

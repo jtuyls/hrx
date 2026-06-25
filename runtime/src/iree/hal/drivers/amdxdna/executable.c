@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "iree/base/api.h"
+#include "iree/hal/drivers/amdxdna/context_cache.h"
 #include "iree/hal/drivers/amdxdna/executable_internal.h"
 #include "iree/hal/drivers/amdxdna/util.h"
 #include "iree/hal/drivers/amdxdna/xclbin_util.h"
@@ -56,6 +57,46 @@ iree_hal_amdxdna_executable_control_context_borrow(
       iree_hal_amdxdna_native_context_ref_borrow(executable->context);
   iree_slim_mutex_unlock(&executable->context_mutex);
   return context;
+}
+
+iree_status_t iree_hal_amdxdna_executable_preload_contexts(
+    iree_hal_amdxdna_device* device, iree_hal_executable_t* base_executable) {
+  if (!device || !base_executable) return iree_ok_status();
+  iree_hal_amdxdna_executable* executable =
+      iree_hal_amdxdna_executable_cast(base_executable);
+  for (iree_host_size_t i = 0; i < executable->entry_point_count; ++i) {
+    iree_hal_amdxdna_kernel_params_t* params = &executable->entry_points[i];
+    // Only preload self-contained entry points. Reconfiguration entries have
+    // ordering semantics: a loader publishes executable->context for sibling
+    // empty-image entries, so they remain lazy and execute-ordered.
+    if (params->reconf_data_runlist_count != 0) continue;
+    if (params->pdi.count == 0 && params->xclbin.count == 0) continue;
+
+    iree_hal_amdxdna_native_context_ref_t* context_ref = NULL;
+    iree_status_t status = iree_hal_amdxdna_device_get_or_create_context(
+        device, iree_make_const_byte_span(params->pdi.data, params->pdi.count),
+        iree_make_const_byte_span(params->xclbin.data, params->xclbin.count),
+        params->kernel_name, &context_ref);
+    iree_hal_amdxdna_native_c_cu_index_t cu_idx;
+    memset(&cu_idx, 0, sizeof(cu_idx));
+    if (iree_status_is_ok(status)) {
+      status = iree_hal_amdxdna_native_context_ref_open_cu(
+          context_ref, params->kernel_name, &cu_idx);
+    }
+    if (iree_status_is_ok(status)) {
+      iree_slim_mutex_lock(&executable->context_mutex);
+      if (!params->cached_context_valid) {
+        params->cached_context =
+            iree_hal_amdxdna_native_context_ref_retain(context_ref);
+        params->cached_cu_index = cu_idx;
+        params->cached_context_valid = true;
+      }
+      iree_slim_mutex_unlock(&executable->context_mutex);
+    }
+    iree_hal_amdxdna_native_context_ref_release(context_ref);
+    if (!iree_status_is_ok(status)) return status;
+  }
+  return iree_ok_status();
 }
 
 static void iree_hal_amdxdna_u8_list_deinitialize(

@@ -9,8 +9,18 @@
 
 #include "iree/hal/drivers/amdxdna/semaphore.h"
 
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "iree/async/semaphore.h"
 #include "iree/base/api.h"
+#include "iree/base/internal/atomics.h"
+#include "iree/base/threading/mutex.h"
+#include "iree/base/threading/processor.h"
+#include "iree/base/time.h"
+#include "iree/hal/drivers/amdxdna/completion_queue.h"
 #include "iree/hal/semaphore.h"
 
 //===----------------------------------------------------------------------===//
@@ -19,10 +29,135 @@
 
 typedef struct iree_hal_amdxdna_semaphore_t {
   iree_async_semaphore_t async;
+  iree_slim_mutex_t mutex;
+  iree_hal_amdxdna_completion_batch_t* native_signal_batch;
+  uint64_t native_signal_value;
+  iree_atomic_uint64_t profile_last_signal_value;
+  iree_atomic_uint64_t profile_last_signal_time;
   iree_allocator_t host_allocator;
 } iree_hal_amdxdna_semaphore_t;
 
 static const iree_hal_semaphore_vtable_t iree_hal_amdxdna_semaphore_vtable;
+
+static iree_atomic_int32_t iree_hal_amdxdna_profile_semaphore_registered =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_wait_ready =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_direct_wait =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t
+    iree_hal_amdxdna_profile_semaphore_direct_wait_miss =
+        IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_generic_wait =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_record_signal =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_clear_signal =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_ready_wait_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_direct_wait_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_semaphore_generic_wait_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t
+    iree_hal_amdxdna_profile_semaphore_generic_wake_lag_ns =
+        IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t
+    iree_hal_amdxdna_profile_semaphore_generic_wake_lag_count =
+        IREE_ATOMIC_VAR_INIT(0);
+
+static uint64_t iree_hal_amdxdna_profile_semaphore_load_u64(
+    iree_atomic_uint64_t* value) {
+  return (uint64_t)iree_atomic_load(value, iree_memory_order_relaxed);
+}
+
+static void iree_hal_amdxdna_profile_semaphore_dump(void) {
+  fprintf(stderr,
+          "[amdxdna-prof] semaphore wait_ready=%" PRIu64 " direct_wait=%" PRIu64
+          " direct_wait_miss=%" PRIu64 " generic_wait=%" PRIu64
+          " record_signal=%" PRIu64 " clear_signal=%" PRIu64 "\n",
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_wait_ready),
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_direct_wait),
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_direct_wait_miss),
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_generic_wait),
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_record_signal),
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_clear_signal));
+  fprintf(stderr,
+          "[amdxdna-prof] semaphore_time_us ready=%" PRIu64 " direct=%" PRIu64
+          " generic=%" PRIu64 " generic_wake_lag=%" PRIu64
+          " generic_wake_lag_count=%" PRIu64 "\n",
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_ready_wait_ns) /
+              1000,
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_direct_wait_ns) /
+              1000,
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_generic_wait_ns) /
+              1000,
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_generic_wake_lag_ns) /
+              1000,
+          iree_hal_amdxdna_profile_semaphore_load_u64(
+              &iree_hal_amdxdna_profile_semaphore_generic_wake_lag_count));
+}
+
+static bool iree_hal_amdxdna_profile_semaphore_enabled(void) {
+  const char* value = getenv("IREE_AMDXDNA_PROFILE_TIMING");
+  if (!value || !value[0] || strcmp(value, "0") == 0) {
+    value = getenv("IREE_AMDXDNA_PROFILE_CHURN");
+    if (!value || !value[0] || strcmp(value, "0") == 0) return false;
+  }
+  int32_t expected = 0;
+  if (iree_atomic_compare_exchange_strong(
+          &iree_hal_amdxdna_profile_semaphore_registered, &expected, 1,
+          iree_memory_order_acq_rel, iree_memory_order_acquire)) {
+    atexit(iree_hal_amdxdna_profile_semaphore_dump);
+  }
+  return true;
+}
+
+static void iree_hal_amdxdna_profile_semaphore_inc(
+    iree_atomic_uint64_t* counter) {
+  if (iree_hal_amdxdna_profile_semaphore_enabled()) {
+    iree_atomic_fetch_add(counter, 1, iree_memory_order_relaxed);
+  }
+}
+
+static void iree_hal_amdxdna_profile_semaphore_add_ns(
+    iree_atomic_uint64_t* counter, iree_time_t start_time) {
+  if (iree_hal_amdxdna_profile_semaphore_enabled()) {
+    iree_atomic_fetch_add(counter, iree_time_now() - start_time,
+                          iree_memory_order_relaxed);
+  }
+}
+
+static int iree_hal_amdxdna_direct_wait_spin_us(void) {
+  const char* value = getenv("IREE_AMDXDNA_DIRECT_WAIT_SPIN_US");
+  if (!value || !value[0]) return 0;
+  return atoi(value);
+}
+
+static iree_hal_amdxdna_completion_batch_t*
+iree_hal_amdxdna_semaphore_try_retain_native_signal(
+    iree_hal_amdxdna_semaphore_t* semaphore, uint64_t value) {
+  iree_hal_amdxdna_completion_batch_t* native_signal_batch = NULL;
+  iree_slim_mutex_lock(&semaphore->mutex);
+  if (semaphore->native_signal_batch &&
+      semaphore->native_signal_value >= value) {
+    native_signal_batch = iree_hal_amdxdna_completion_batch_retain(
+        semaphore->native_signal_batch);
+  }
+  iree_slim_mutex_unlock(&semaphore->mutex);
+  return native_signal_batch;
+}
 
 static iree_hal_amdxdna_semaphore_t* iree_hal_amdxdna_semaphore_cast(
     iree_hal_semaphore_t* base_value) {
@@ -52,6 +187,13 @@ iree_status_t iree_hal_amdxdna_semaphore_create(
   iree_async_semaphore_initialize(
       (const iree_async_semaphore_vtable_t*)&iree_hal_amdxdna_semaphore_vtable,
       proactor, initial_value, frontier_offset, 0, &semaphore->async);
+  iree_slim_mutex_initialize(&semaphore->mutex);
+  semaphore->native_signal_batch = NULL;
+  semaphore->native_signal_value = 0;
+  iree_atomic_store(&semaphore->profile_last_signal_value, 0,
+                    iree_memory_order_relaxed);
+  iree_atomic_store(&semaphore->profile_last_signal_time, 0,
+                    iree_memory_order_relaxed);
   semaphore->host_allocator = host_allocator;
   *out_semaphore = iree_hal_semaphore_cast(&semaphore->async);
 
@@ -66,10 +208,61 @@ static void iree_hal_amdxdna_semaphore_destroy(
   iree_allocator_t host_allocator = semaphore->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
 
+  iree_hal_amdxdna_completion_batch_t* native_signal_batch = NULL;
+  iree_slim_mutex_lock(&semaphore->mutex);
+  native_signal_batch = semaphore->native_signal_batch;
+  semaphore->native_signal_batch = NULL;
+  semaphore->native_signal_value = 0;
+  iree_slim_mutex_unlock(&semaphore->mutex);
+  iree_hal_amdxdna_completion_batch_destroy(native_signal_batch);
+  iree_slim_mutex_deinitialize(&semaphore->mutex);
   iree_async_semaphore_deinitialize(&semaphore->async);
   iree_allocator_free(host_allocator, semaphore);
 
   IREE_TRACE_ZONE_END(z0);
+}
+
+bool iree_hal_amdxdna_semaphore_isa(iree_hal_semaphore_t* semaphore) {
+  return iree_hal_resource_is((const iree_hal_resource_t*)semaphore,
+                              &iree_hal_amdxdna_semaphore_vtable);
+}
+
+void iree_hal_amdxdna_semaphore_record_native_signal(
+    iree_hal_semaphore_t* base_semaphore, uint64_t value,
+    iree_hal_amdxdna_completion_batch_t* batch) {
+  if (!iree_hal_amdxdna_semaphore_isa(base_semaphore) || !batch) return;
+  iree_hal_amdxdna_profile_semaphore_inc(
+      &iree_hal_amdxdna_profile_semaphore_record_signal);
+  iree_hal_amdxdna_semaphore_t* semaphore =
+      iree_hal_amdxdna_semaphore_cast(base_semaphore);
+  iree_hal_amdxdna_completion_batch_t* old_batch = NULL;
+  iree_hal_amdxdna_completion_batch_retain(batch);
+  iree_slim_mutex_lock(&semaphore->mutex);
+  old_batch = semaphore->native_signal_batch;
+  semaphore->native_signal_batch = batch;
+  semaphore->native_signal_value = value;
+  iree_slim_mutex_unlock(&semaphore->mutex);
+  iree_hal_amdxdna_completion_batch_destroy(old_batch);
+}
+
+void iree_hal_amdxdna_semaphore_clear_native_signal(
+    iree_hal_semaphore_t* base_semaphore, uint64_t value,
+    iree_hal_amdxdna_completion_batch_t* batch) {
+  if (!iree_hal_amdxdna_semaphore_isa(base_semaphore) || !batch) return;
+  iree_hal_amdxdna_profile_semaphore_inc(
+      &iree_hal_amdxdna_profile_semaphore_clear_signal);
+  iree_hal_amdxdna_semaphore_t* semaphore =
+      iree_hal_amdxdna_semaphore_cast(base_semaphore);
+  iree_hal_amdxdna_completion_batch_t* old_batch = NULL;
+  iree_slim_mutex_lock(&semaphore->mutex);
+  if (semaphore->native_signal_batch == batch &&
+      semaphore->native_signal_value == value) {
+    old_batch = semaphore->native_signal_batch;
+    semaphore->native_signal_batch = NULL;
+    semaphore->native_signal_value = 0;
+  }
+  iree_slim_mutex_unlock(&semaphore->mutex);
+  iree_hal_amdxdna_completion_batch_destroy(old_batch);
 }
 
 static uint64_t iree_hal_amdxdna_semaphore_query(
@@ -91,15 +284,100 @@ static iree_status_t iree_hal_amdxdna_semaphore_signal(
       base_semaphore, new_value, frontier);
   if (!iree_status_is_ok(status)) return status;
   iree_async_semaphore_dispatch_timepoints(base_semaphore, new_value);
+  iree_hal_amdxdna_semaphore_t* semaphore =
+      iree_hal_amdxdna_semaphore_cast(iree_hal_semaphore_cast(base_semaphore));
+  iree_atomic_store(&semaphore->profile_last_signal_time,
+                    (uint64_t)iree_time_now(), iree_memory_order_release);
+  iree_atomic_store(&semaphore->profile_last_signal_value, new_value,
+                    iree_memory_order_release);
   return iree_ok_status();
 }
 
 static iree_status_t iree_hal_amdxdna_semaphore_wait(
     iree_hal_semaphore_t* base_semaphore, uint64_t value,
     iree_timeout_t timeout, iree_async_wait_flags_t flags) {
-  return iree_async_semaphore_multi_wait(
+  iree_time_t wait_start = iree_time_now();
+  iree_hal_amdxdna_semaphore_t* semaphore =
+      iree_hal_amdxdna_semaphore_cast(base_semaphore);
+  uint64_t current = iree_async_semaphore_query(&semaphore->async);
+  if (current >= IREE_HAL_SEMAPHORE_FAILURE_VALUE) {
+    return iree_hal_semaphore_failure_as_status(current);
+  }
+  if (current >= value) {
+    iree_hal_amdxdna_profile_semaphore_inc(
+        &iree_hal_amdxdna_profile_semaphore_wait_ready);
+    iree_hal_amdxdna_profile_semaphore_add_ns(
+        &iree_hal_amdxdna_profile_semaphore_ready_wait_ns, wait_start);
+    return iree_ok_status();
+  }
+
+  iree_hal_amdxdna_completion_batch_t* native_signal_batch = NULL;
+  if (iree_timeout_is_infinite(timeout)) {
+    native_signal_batch =
+        iree_hal_amdxdna_semaphore_try_retain_native_signal(semaphore, value);
+    if (!native_signal_batch) {
+      const int spin_us = iree_hal_amdxdna_direct_wait_spin_us();
+      if (spin_us > 0) {
+        const iree_time_t deadline =
+            iree_time_now() + (iree_time_t)spin_us * (iree_time_t)1000;
+        do {
+          iree_processor_yield();
+          native_signal_batch =
+              iree_hal_amdxdna_semaphore_try_retain_native_signal(semaphore,
+                                                                  value);
+        } while (!native_signal_batch && iree_time_now() < deadline);
+      }
+    }
+  }
+  if (native_signal_batch) {
+    iree_hal_amdxdna_profile_semaphore_inc(
+        &iree_hal_amdxdna_profile_semaphore_direct_wait);
+    iree_status_t status = iree_hal_amdxdna_completion_batch_wait(
+        native_signal_batch, timeout, flags);
+    iree_hal_amdxdna_completion_batch_destroy(native_signal_batch);
+    if (!iree_status_is_ok(status)) {
+      iree_hal_amdxdna_profile_semaphore_add_ns(
+          &iree_hal_amdxdna_profile_semaphore_direct_wait_ns, wait_start);
+      return status;
+    }
+
+    current = iree_async_semaphore_query(&semaphore->async);
+    if (current >= IREE_HAL_SEMAPHORE_FAILURE_VALUE) {
+      iree_hal_amdxdna_profile_semaphore_add_ns(
+          &iree_hal_amdxdna_profile_semaphore_direct_wait_ns, wait_start);
+      return iree_hal_semaphore_failure_as_status(current);
+    }
+    if (current >= value) {
+      iree_hal_amdxdna_profile_semaphore_add_ns(
+          &iree_hal_amdxdna_profile_semaphore_direct_wait_ns, wait_start);
+      return iree_ok_status();
+    }
+  }
+
+  iree_hal_amdxdna_profile_semaphore_inc(
+      native_signal_batch ? &iree_hal_amdxdna_profile_semaphore_direct_wait_miss
+                          : &iree_hal_amdxdna_profile_semaphore_generic_wait);
+  iree_status_t status = iree_async_semaphore_multi_wait(
       IREE_ASYNC_WAIT_MODE_ALL, (iree_async_semaphore_t**)&base_semaphore,
       &value, 1, timeout, flags, iree_allocator_system());
+  iree_hal_amdxdna_profile_semaphore_add_ns(
+      native_signal_batch ? &iree_hal_amdxdna_profile_semaphore_direct_wait_ns
+                          : &iree_hal_amdxdna_profile_semaphore_generic_wait_ns,
+      wait_start);
+  if (!native_signal_batch && iree_status_is_ok(status)) {
+    uint64_t signal_value = (uint64_t)iree_atomic_load(
+        &semaphore->profile_last_signal_value, iree_memory_order_acquire);
+    uint64_t signal_time = (uint64_t)iree_atomic_load(
+        &semaphore->profile_last_signal_time, iree_memory_order_acquire);
+    if (signal_value >= value && signal_time != 0) {
+      iree_hal_amdxdna_profile_semaphore_inc(
+          &iree_hal_amdxdna_profile_semaphore_generic_wake_lag_count);
+      iree_hal_amdxdna_profile_semaphore_add_ns(
+          &iree_hal_amdxdna_profile_semaphore_generic_wake_lag_ns,
+          (iree_time_t)signal_time);
+    }
+  }
+  return status;
 }
 
 static iree_status_t iree_hal_amdxdna_semaphore_import_timepoint(

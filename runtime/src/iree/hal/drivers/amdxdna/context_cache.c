@@ -6,9 +6,14 @@
 
 #include "iree/hal/drivers/amdxdna/context_cache.h"
 
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "iree/base/internal/atomics.h"
 #include "iree/base/threading/mutex.h"
+#include "iree/base/time.h"
 #include "iree/hal/drivers/amdxdna/device.h"
 
 typedef struct iree_hal_amdxdna_context_cache_entry_t {
@@ -24,6 +29,81 @@ struct iree_hal_amdxdna_device_context_cache_t {
   iree_slim_mutex_t mutex;
   iree_hal_amdxdna_context_cache_entry_t* head;
 };
+
+static iree_atomic_int32_t iree_hal_amdxdna_context_cache_profile_registered =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_context_cache_profile_hit =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_context_cache_profile_miss =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_context_cache_profile_lookup_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t
+    iree_hal_amdxdna_context_cache_profile_native_create_ns =
+        IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_context_cache_profile_copy_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_context_cache_profile_insert_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+
+static uint64_t iree_hal_amdxdna_context_cache_profile_load_u64(
+    iree_atomic_uint64_t* value) {
+  return (uint64_t)iree_atomic_load(value, iree_memory_order_relaxed);
+}
+
+static void iree_hal_amdxdna_context_cache_profile_dump(void) {
+  fprintf(stderr,
+          "[amdxdna-prof] context_cache hit=%" PRIu64 " miss=%" PRIu64 "\n",
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_hit),
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_miss));
+  fprintf(stderr,
+          "[amdxdna-prof] context_cache_time_us lookup=%" PRIu64
+          " native_create=%" PRIu64 " copy=%" PRIu64 " insert=%" PRIu64 "\n",
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_lookup_ns) /
+              1000,
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_native_create_ns) /
+              1000,
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_copy_ns) /
+              1000,
+          iree_hal_amdxdna_context_cache_profile_load_u64(
+              &iree_hal_amdxdna_context_cache_profile_insert_ns) /
+              1000);
+}
+
+static bool iree_hal_amdxdna_context_cache_profile_enabled(void) {
+  const char* value = getenv("IREE_AMDXDNA_PROFILE_TIMING");
+  if (!value || !value[0] || strcmp(value, "0") == 0) {
+    value = getenv("IREE_AMDXDNA_PROFILE_CHURN");
+    if (!value || !value[0] || strcmp(value, "0") == 0) return false;
+  }
+  int32_t expected = 0;
+  if (iree_atomic_compare_exchange_strong(
+          &iree_hal_amdxdna_context_cache_profile_registered, &expected, 1,
+          iree_memory_order_acq_rel, iree_memory_order_acquire)) {
+    atexit(iree_hal_amdxdna_context_cache_profile_dump);
+  }
+  return true;
+}
+
+static void iree_hal_amdxdna_context_cache_profile_inc(
+    iree_atomic_uint64_t* counter) {
+  if (iree_hal_amdxdna_context_cache_profile_enabled()) {
+    iree_atomic_fetch_add(counter, 1, iree_memory_order_relaxed);
+  }
+}
+
+static void iree_hal_amdxdna_context_cache_profile_add_ns(
+    iree_atomic_uint64_t* counter, iree_time_t start_time) {
+  if (iree_hal_amdxdna_context_cache_profile_enabled()) {
+    iree_atomic_fetch_add(counter, iree_time_now() - start_time,
+                          iree_memory_order_relaxed);
+  }
+}
 
 static bool iree_hal_amdxdna_byte_spans_equal(iree_const_byte_span_t lhs,
                                               iree_const_byte_span_t rhs) {
@@ -159,6 +239,7 @@ iree_status_t iree_hal_amdxdna_device_get_or_create_context(
     context_image.xclbin = iree_const_byte_span_empty();
   }
 
+  iree_time_t lookup_start = iree_time_now();
   iree_slim_mutex_lock(&device->context_cache->mutex);
   for (iree_hal_amdxdna_context_cache_entry_t* entry =
            device->context_cache->head;
@@ -174,19 +255,32 @@ iree_status_t iree_hal_amdxdna_device_get_or_create_context(
       *out_context_ref =
           iree_hal_amdxdna_native_context_ref_retain(entry->context_ref);
       iree_slim_mutex_unlock(&device->context_cache->mutex);
+      iree_hal_amdxdna_context_cache_profile_inc(
+          &iree_hal_amdxdna_context_cache_profile_hit);
+      iree_hal_amdxdna_context_cache_profile_add_ns(
+          &iree_hal_amdxdna_context_cache_profile_lookup_ns, lookup_start);
       return iree_ok_status();
     }
   }
+  iree_hal_amdxdna_context_cache_profile_inc(
+      &iree_hal_amdxdna_context_cache_profile_miss);
+  iree_hal_amdxdna_context_cache_profile_add_ns(
+      &iree_hal_amdxdna_context_cache_profile_lookup_ns, lookup_start);
 
   iree_hal_amdxdna_native_context_ref_t* context_ref = NULL;
+  iree_time_t native_create_start = iree_time_now();
   iree_status_t status = iree_hal_amdxdna_native_device_c_create_context_ref(
       device->native_device, &context_image, &context_ref);
+  iree_hal_amdxdna_context_cache_profile_add_ns(
+      &iree_hal_amdxdna_context_cache_profile_native_create_ns,
+      native_create_start);
   if (!iree_status_is_ok(status)) {
     iree_slim_mutex_unlock(&device->context_cache->mutex);
     return status;
   }
 
   iree_hal_amdxdna_context_cache_entry_t* entry = NULL;
+  iree_time_t copy_start = iree_time_now();
   status = iree_allocator_malloc(device->context_cache->host_allocator,
                                  sizeof(*entry), (void**)&entry);
   if (iree_status_is_ok(status)) {
@@ -203,11 +297,16 @@ iree_status_t iree_hal_amdxdna_device_get_or_create_context(
         device->context_cache->host_allocator, key_kernel_name,
         &entry->kernel_name);
   }
+  iree_hal_amdxdna_context_cache_profile_add_ns(
+      &iree_hal_amdxdna_context_cache_profile_copy_ns, copy_start);
   if (iree_status_is_ok(status)) {
+    iree_time_t insert_start = iree_time_now();
     entry->context_ref = context_ref;
     entry->next = device->context_cache->head;
     device->context_cache->head = entry;
     *out_context_ref = iree_hal_amdxdna_native_context_ref_retain(context_ref);
+    iree_hal_amdxdna_context_cache_profile_add_ns(
+        &iree_hal_amdxdna_context_cache_profile_insert_ns, insert_start);
     iree_slim_mutex_unlock(&device->context_cache->mutex);
     return iree_ok_status();
   }

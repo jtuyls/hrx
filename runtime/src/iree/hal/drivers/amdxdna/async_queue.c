@@ -6,13 +6,18 @@
 
 #include "iree/hal/drivers/amdxdna/async_queue.h"
 
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/semaphore.h"
+#include "iree/base/internal/atomics.h"
 #include "iree/base/threading/mutex.h"
 #include "iree/base/threading/notification.h"
 #include "iree/base/threading/thread.h"
+#include "iree/base/time.h"
 
 typedef struct iree_hal_amdxdna_async_op_t iree_hal_amdxdna_async_op_t;
 
@@ -48,12 +53,19 @@ struct iree_hal_amdxdna_async_op_t {
   // pushed to the worker's ready queue.
   iree_atomic_int32_t wait_count;
 
+  // Profiling timestamps. Only read when IREE_AMDXDNA_PROFILE_TIMING or
+  // IREE_AMDXDNA_PROFILE_CHURN is set; always populated so enabling profiling
+  // does not alter queue behavior.
+  iree_time_t enqueue_time;
+  iree_time_t ready_time;
+
   // First non-OK status from a fired-with-error timepoint. CAS from 0; the
   // winner owns the status pointer.
   iree_atomic_intptr_t error_status;
 
   // Op body and arg. Run on the worker thread.
   iree_hal_amdxdna_async_op_fn_t op_fn;
+  iree_hal_amdxdna_async_op_failure_fn_t failure_fn;
   iree_hal_amdxdna_async_op_cleanup_fn_t cleanup_fn;
   void* op_user_data;
 
@@ -74,6 +86,90 @@ struct iree_hal_amdxdna_async_op_t {
   iree_hal_resource_t** retained_resources;
   iree_host_size_t retained_resource_count;
 };
+
+static iree_atomic_int32_t iree_hal_amdxdna_profile_async_registered =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_enqueued =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_ready =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_op_count =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_ready_delay_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_enqueue_to_apply_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_op_fn_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_signal_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+static iree_atomic_uint64_t iree_hal_amdxdna_profile_async_release_ns =
+    IREE_ATOMIC_VAR_INIT(0);
+
+static uint64_t iree_hal_amdxdna_profile_async_load_u64(
+    iree_atomic_uint64_t* value) {
+  return (uint64_t)iree_atomic_load(value, iree_memory_order_relaxed);
+}
+
+static void iree_hal_amdxdna_profile_async_dump(void) {
+  fprintf(stderr,
+          "[amdxdna-prof] async_queue enqueued=%" PRIu64 " ready=%" PRIu64
+          " op_count=%" PRIu64 "\n",
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_enqueued),
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_ready),
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_op_count));
+  fprintf(stderr,
+          "[amdxdna-prof] async_queue_time_us ready_delay=%" PRIu64
+          " enqueue_to_apply=%" PRIu64 " op_fn=%" PRIu64 " signal=%" PRIu64
+          " release=%" PRIu64 "\n",
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_ready_delay_ns) /
+              1000,
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_enqueue_to_apply_ns) /
+              1000,
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_op_fn_ns) /
+              1000,
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_signal_ns) /
+              1000,
+          iree_hal_amdxdna_profile_async_load_u64(
+              &iree_hal_amdxdna_profile_async_release_ns) /
+              1000);
+}
+
+static bool iree_hal_amdxdna_profile_async_enabled(void) {
+  const char* value = getenv("IREE_AMDXDNA_PROFILE_TIMING");
+  if (!value || !value[0] || strcmp(value, "0") == 0) {
+    value = getenv("IREE_AMDXDNA_PROFILE_CHURN");
+    if (!value || !value[0] || strcmp(value, "0") == 0) return false;
+  }
+  int32_t expected = 0;
+  if (iree_atomic_compare_exchange_strong(
+          &iree_hal_amdxdna_profile_async_registered, &expected, 1,
+          iree_memory_order_acq_rel, iree_memory_order_acquire)) {
+    atexit(iree_hal_amdxdna_profile_async_dump);
+  }
+  return true;
+}
+
+static void iree_hal_amdxdna_profile_async_inc(iree_atomic_uint64_t* counter) {
+  if (iree_hal_amdxdna_profile_async_enabled()) {
+    iree_atomic_fetch_add(counter, 1, iree_memory_order_relaxed);
+  }
+}
+
+static void iree_hal_amdxdna_profile_async_add_ns(iree_atomic_uint64_t* counter,
+                                                  iree_time_t start_time) {
+  if (iree_hal_amdxdna_profile_async_enabled()) {
+    iree_atomic_fetch_add(counter, iree_time_now() - start_time,
+                          iree_memory_order_relaxed);
+  }
+}
 
 struct iree_hal_amdxdna_async_queue_t {
   iree_allocator_t host_allocator;
@@ -153,6 +249,8 @@ void iree_hal_amdxdna_async_queue_push_ready(
   iree_slim_mutex_lock(&queue->inflight_mutex);
   iree_hal_amdxdna_async_queue_inflight_remove_locked(op);
   iree_slim_mutex_unlock(&queue->inflight_mutex);
+  op->ready_time = iree_time_now();
+  iree_hal_amdxdna_profile_async_inc(&iree_hal_amdxdna_profile_async_ready);
   // The ready_head is an atomic LIFO (cheap push from arbitrary threads
   // including timepoint callbacks). The worker reverses the popped chunk so
   // ops are processed in submission order even though they're pushed LIFO.
@@ -270,12 +368,29 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
     while (op) {
       iree_hal_amdxdna_async_op_t* next = op->next_ready;
 
+      iree_hal_amdxdna_profile_async_inc(
+          &iree_hal_amdxdna_profile_async_op_count);
+      if (op->ready_time) {
+        iree_hal_amdxdna_profile_async_add_ns(
+            &iree_hal_amdxdna_profile_async_ready_delay_ns, op->ready_time);
+      }
+      if (op->enqueue_time) {
+        iree_hal_amdxdna_profile_async_add_ns(
+            &iree_hal_amdxdna_profile_async_enqueue_to_apply_ns,
+            op->enqueue_time);
+      }
+
       iree_status_t status = (iree_status_t)iree_atomic_load(
           &op->error_status, iree_memory_order_acquire);
       if (iree_status_is_ok(status)) {
         if (op->op_fn) {
+          iree_time_t fn_start = iree_time_now();
           status = op->op_fn(op->op_user_data);
+          iree_hal_amdxdna_profile_async_add_ns(
+              &iree_hal_amdxdna_profile_async_op_fn_ns, fn_start);
         }
+      } else if (op->failure_fn) {
+        status = op->failure_fn(op->op_user_data, status);
       }
       const bool deferred = iree_status_is_deferred(status);
       if (deferred) {
@@ -283,8 +398,11 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
         status = iree_ok_status();
       }
       if (iree_status_is_ok(status) && !deferred) {
+        iree_time_t signal_start = iree_time_now();
         status = iree_hal_semaphore_list_signal(op->signal_list,
                                                 /*frontier=*/NULL);
+        iree_hal_amdxdna_profile_async_add_ns(
+            &iree_hal_amdxdna_profile_async_signal_ns, signal_start);
       }
       if (iree_status_is_ok(status) && !deferred && queue->frontier_tracker) {
         // Advance the queue's epoch so pool waiters can observe progress.
@@ -300,7 +418,10 @@ int iree_hal_amdxdna_async_queue_worker_main(void* arg) {
       if (!iree_status_is_ok(status)) {
         iree_hal_semaphore_list_fail(op->signal_list, status);
       }
+      iree_time_t release_start = iree_time_now();
       iree_hal_amdxdna_async_queue_release_op(queue, op);
+      iree_hal_amdxdna_profile_async_add_ns(
+          &iree_hal_amdxdna_profile_async_release_ns, release_start);
       op = next;
     }
   }
@@ -495,9 +616,10 @@ void iree_hal_amdxdna_async_queue_destroy(
   iree_allocator_free(queue->host_allocator, queue);
 }
 
-iree_status_t iree_hal_amdxdna_async_queue_enqueue(
+iree_status_t iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
     iree_hal_amdxdna_async_queue_t* queue, iree_hal_semaphore_list_t wait_list,
     iree_hal_semaphore_list_t signal_list, iree_hal_amdxdna_async_op_fn_t op_fn,
+    iree_hal_amdxdna_async_op_failure_fn_t failure_fn,
     iree_hal_amdxdna_async_op_cleanup_fn_t cleanup_fn, void* user_data,
     iree_hal_resource_t* const* retained_resources,
     iree_host_size_t retained_resource_count) {
@@ -527,6 +649,7 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     iree_atomic_store(&op->error_status, (intptr_t)0,
                       iree_memory_order_relaxed);
     op->op_fn = op_fn;
+    op->failure_fn = failure_fn;
     op->cleanup_fn = cleanup_fn;
     op->op_user_data = user_data;
     op->wait_list = iree_hal_semaphore_list_empty();
@@ -534,6 +657,10 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
     op->wait_entries = NULL;
     op->retained_resources = NULL;
     op->retained_resource_count = 0;
+    op->enqueue_time = iree_time_now();
+    op->ready_time = 0;
+    iree_hal_amdxdna_profile_async_inc(
+        &iree_hal_amdxdna_profile_async_enqueued);
   }
 
   if (iree_status_is_ok(status) && wait_list.count > 0) {
@@ -632,4 +759,15 @@ iree_status_t iree_hal_amdxdna_async_queue_enqueue(
   }
 
   return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_async_queue_enqueue(
+    iree_hal_amdxdna_async_queue_t* queue, iree_hal_semaphore_list_t wait_list,
+    iree_hal_semaphore_list_t signal_list, iree_hal_amdxdna_async_op_fn_t op_fn,
+    iree_hal_amdxdna_async_op_cleanup_fn_t cleanup_fn, void* user_data,
+    iree_hal_resource_t* const* retained_resources,
+    iree_host_size_t retained_resource_count) {
+  return iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
+      queue, wait_list, signal_list, op_fn, /*failure_fn=*/NULL, cleanup_fn,
+      user_data, retained_resources, retained_resource_count);
 }

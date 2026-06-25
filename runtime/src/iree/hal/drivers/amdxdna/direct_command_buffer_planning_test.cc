@@ -205,4 +205,73 @@ TEST(ApplyPatchTableTest, DropsLowTwoBitsOfDescriptorAddress) {
   EXPECT_EQ(ctrl[2], static_cast<uint32_t>(base >> 32));
 }
 
+// --- iree_hal_amdxdna_patch_dynamic_fields_from_template ---------------------
+
+TEST(PatchDynamicFieldsFromTemplateTest, RewritesConstantsAndPatchTable) {
+  std::vector<uint32_t> templ = MakeWrite32Txn(kWrite32ConstantSentinel | 1u);
+  templ.resize(12, 0);
+  // Put a BD at byte offset 40. The high 16 bits of bd[2] are descriptor
+  // metadata and must be preserved while the low 48 address bits are rewritten.
+  templ[11] = 0xABCD0000u;
+  std::vector<uint32_t> ctrl = templ;
+  std::vector<uint32_t> patches = {/*offset=*/36u, /*arg_idx=*/0u,
+                                   /*arg_plus=*/0x20u};
+  std::vector<uint32_t> constants = {0xAAAA0000u, 0x12345678u};
+  uint64_t args[] = {0x2000u};
+
+  IREE_ASSERT_OK(iree_hal_amdxdna_patch_dynamic_fields_from_template(
+      ctrl.data(), templ.data(), ctrl.size(),
+      iree_make_const_byte_span(constants.data(),
+                                constants.size() * sizeof(uint32_t)),
+      patches.data(), patches.size(), args, 1));
+
+  uint32_t patched_constant = 0;
+  std::memcpy(&patched_constant, reinterpret_cast<uint8_t*>(ctrl.data()) + 32,
+              sizeof(patched_constant));
+  EXPECT_EQ(patched_constant, 0x12345678u);
+  const uint64_t base = 0x2000u + 0x20u + kDdrAieAddrOffset;
+  EXPECT_EQ(ctrl[10], static_cast<uint32_t>(base & 0xFFFFFFFC));
+  EXPECT_EQ(ctrl[11],
+            0xABCD0000u | static_cast<uint32_t>(base >> 32));
+}
+
+TEST(PatchDynamicFieldsFromTemplateTest, RepeatedRewriteUsesTemplateBase) {
+  std::vector<uint32_t> templ(8, 0);
+  // Original BD address base is 0x40; the cached destination will be rewritten
+  // twice. The second rewrite must not add the new address onto the first
+  // patched value.
+  templ[1] = 0x40u;
+  std::vector<uint32_t> ctrl = templ;
+  std::vector<uint32_t> patches = {0u, 0u, 0u};
+  uint64_t first_args[] = {0x1000u};
+  uint64_t second_args[] = {0x2000u};
+
+  IREE_ASSERT_OK(iree_hal_amdxdna_patch_dynamic_fields_from_template(
+      ctrl.data(), templ.data(), ctrl.size(),
+      iree_make_const_byte_span(nullptr, 0), patches.data(), patches.size(),
+      first_args, 1));
+  IREE_ASSERT_OK(iree_hal_amdxdna_patch_dynamic_fields_from_template(
+      ctrl.data(), templ.data(), ctrl.size(),
+      iree_make_const_byte_span(nullptr, 0), patches.data(), patches.size(),
+      second_args, 1));
+
+  const uint64_t expected = 0x40u + 0x2000u + kDdrAieAddrOffset;
+  EXPECT_EQ(ctrl[1], static_cast<uint32_t>(expected & 0xFFFFFFFC));
+  EXPECT_EQ(ctrl[2], static_cast<uint32_t>(expected >> 32));
+}
+
+TEST(PatchDynamicFieldsFromTemplateTest, RejectsMalformedPatchTable) {
+  std::vector<uint32_t> templ(8, 0);
+  std::vector<uint32_t> ctrl = templ;
+  std::vector<uint32_t> patches = {0u, 0u};
+  uint64_t args[] = {0u};
+
+  iree_status_t status = iree_hal_amdxdna_patch_dynamic_fields_from_template(
+      ctrl.data(), templ.data(), ctrl.size(),
+      iree_make_const_byte_span(nullptr, 0), patches.data(), patches.size(),
+      args, 1);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_INVALID_ARGUMENT);
+  iree_status_ignore(status);
+}
+
 }  // namespace

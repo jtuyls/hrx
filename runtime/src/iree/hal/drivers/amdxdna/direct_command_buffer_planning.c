@@ -123,3 +123,93 @@ bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
   }
   return true;
 }
+
+iree_status_t iree_hal_amdxdna_patch_dynamic_fields_from_template(
+    uint32_t* ctrl_code, const uint32_t* template_code, size_t ctrl_words,
+    iree_const_byte_span_t constants, const uint32_t* patches,
+    size_t patch_count, const uint64_t* args, size_t arg_count) {
+  if (!ctrl_code || !template_code) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna control-code patch requires non-NULL "
+                            "destination and template buffers");
+  }
+
+  if (constants.data_length != 0 && ctrl_words >= 4) {
+    const uint8_t* template_bytes = (const uint8_t*)template_code;
+    uint8_t* dst_bytes = (uint8_t*)ctrl_code;
+    const size_t total = ctrl_words * sizeof(uint32_t);
+    const uint32_t num_ops = template_code[2];  // TXN header NumOps.
+    size_t p = 16;                              // Past XAie_TxnHeader.
+    for (uint32_t i = 0; i < num_ops; ++i) {
+      const uint32_t sz =
+          iree_hal_amdxdna_txn_op_size(template_bytes, total, p);
+      if (sz == 0 || p + sz > total) {
+        return iree_make_status(
+            IREE_STATUS_INVALID_ARGUMENT,
+            "amdxdna cached write32 RTP patch saw malformed transaction op %u "
+            "at byte offset %zu",
+            i, p);
+      }
+      if (template_bytes[p] == 0) {  // WRITE32.
+        uint32_t value = iree_hal_amdxdna_read_u32(template_bytes + p + 16);
+        if ((value & iree_hal_amdxdna_write32_constant_mask) ==
+            iree_hal_amdxdna_write32_constant_sentinel) {
+          const uint32_t constant_index =
+              value & ~iree_hal_amdxdna_write32_constant_mask;
+          const iree_host_size_t byte_offset =
+              (iree_host_size_t)constant_index * sizeof(uint32_t);
+          if (byte_offset + sizeof(uint32_t) > constants.data_length) {
+            return iree_make_status(
+                IREE_STATUS_INVALID_ARGUMENT,
+                "amdxdna cached write32 RTP constant index %u out of bounds "
+                "for %zu-byte constants block",
+                constant_index, constants.data_length);
+          }
+          memcpy(&value, constants.data + byte_offset, sizeof(uint32_t));
+          iree_hal_amdxdna_write_u32(dst_bytes + p + 16, value);
+        }
+      }
+      p += sz;
+    }
+  }
+
+  if (patch_count % 3 != 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna host patch table must contain triples");
+  }
+  if (patch_count && !patches) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna host patch table pointer is NULL");
+  }
+  const uint8_t* template_bytes = (const uint8_t*)template_code;
+  uint8_t* dst_bytes = (uint8_t*)ctrl_code;
+  const size_t total = ctrl_words * sizeof(uint32_t);
+  for (size_t i = 0; i < patch_count; i += 3) {
+    const uint32_t offset = patches[i];
+    const uint32_t arg_idx = patches[i + 1];
+    const uint32_t arg_plus = patches[i + 2];
+    if (arg_idx >= arg_count) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "amdxdna host patch arg index %u out of range",
+                              arg_idx);
+    }
+    if ((size_t)offset + 12 > total || (offset & 0x3u) != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "amdxdna host patch offset %u is out of bounds or misaligned",
+          offset);
+    }
+    const uint32_t template_bd1 =
+        iree_hal_amdxdna_read_u32(template_bytes + offset + 4);
+    const uint32_t template_bd2 =
+        iree_hal_amdxdna_read_u32(template_bytes + offset + 8);
+    uint64_t base =
+        ((uint64_t)(template_bd2 & 0xFFFF) << 32) | template_bd1;
+    base += args[arg_idx] + arg_plus + iree_hal_amdxdna_ddr_aie_addr_offset;
+    const uint32_t bd1 = (uint32_t)(base & 0xFFFFFFFC);
+    const uint32_t bd2 = (template_bd2 & 0xFFFF0000) | (uint32_t)(base >> 32);
+    iree_hal_amdxdna_write_u32(dst_bytes + offset + 4, bd1);
+    iree_hal_amdxdna_write_u32(dst_bytes + offset + 8, bd2);
+  }
+  return iree_ok_status();
+}

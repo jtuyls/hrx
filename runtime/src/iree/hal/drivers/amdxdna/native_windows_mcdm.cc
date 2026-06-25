@@ -2241,6 +2241,44 @@ void iree_hal_amdxdna_native_command_destroy(
   iree_allocator_free(command->device->host_allocator, command);
 }
 
+iree_status_t iree_hal_amdxdna_native_command_reset(
+    iree_hal_amdxdna_native_command_t* command) {
+  IREE_ASSERT_ARGUMENT(command);
+  const WindowsMcdmOpcodeHandler& handler = command_opcode_handler(command);
+  command->control_buffer = nullptr;
+  command->control_buffer_size = 0;
+  command->cached_start_header = 0;
+  command->cached_start_header_valid = false;
+  command->reg_idx = 0;
+  command->arg_count = 0;
+  command->windows_dpu_regmap_finalized = false;
+  command->pathb_code_staged = false;
+  command->pathb_code_staged_size = 0;
+  command->pathb_chain_descriptor_gpu_va = 0;
+  command->pathb_chain_descriptor_bytes = 0;
+  command->pathb_chain_first_child_opcode = 0;
+  command->pathb_chain_code_used_size = 0;
+  command->pathb_chain_code_aperture_offset = 0;
+  command->pathb_chain_descriptor_aperture_offset = 0;
+  command->pathb_chain_prepared_valid = false;
+  command->pathb_chain_code_dirty = false;
+  command->pathb_chain_descriptor_dirty = false;
+  command->pathb_chain_bound_residency_checked = false;
+  command->pathb_chain_child_code_offset_count = 0;
+  command->chain_child_count = 0;
+  command->bound_buffer_count = 0;
+
+  std::memset(command->start_packet, 0, command->command_size);
+  command->start_packet->state = ERT_CMD_STATE_NEW;
+  command->start_packet->opcode = handler.ert_opcode;
+  command->start_packet->type = ERT_CU;
+  IREE_RETURN_IF_ERROR(inc_pkt_count(command, sizeof(uint32_t)));
+  if (handler.initial_packet_word_count != 1) {
+    command->start_packet->count = handler.initial_packet_word_count;
+  }
+  return iree_ok_status();
+}
+
 iree_status_t iree_hal_amdxdna_native_command_set_cu_index(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_c_cu_index_t cu_index) {
@@ -2353,6 +2391,17 @@ iree_status_t iree_hal_amdxdna_native_command_add_arg_64(
   args[command->reg_idx++] = static_cast<uint32_t>(value >> 32);
   command->arg_count++;
   return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_native_command_update_arg_64(
+    iree_hal_amdxdna_native_command_t* command, iree_host_size_t arg_index,
+    uint64_t value) {
+  (void)command;
+  (void)arg_index;
+  (void)value;
+  return iree_make_status(
+      IREE_STATUS_UNIMPLEMENTED,
+      "amdxdna Windows MCDM command arg update is not implemented");
 }
 
 iree_status_t iree_hal_amdxdna_native_command_add_buffer_arg(
@@ -2687,9 +2736,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
         command->exec_buffer->buffer.cpu_ptr);
     packet = command_packet(command);
   }
-  {
-    IREE_RETURN_IF_ERROR(maybe_write_partial_elf_bo_table(command));
-  }
+  { IREE_RETURN_IF_ERROR(maybe_write_partial_elf_bo_table(command)); }
   if (handler.uses_partial_elf) {
     IREE_RETURN_IF_ERROR(sync_partial_elf_runtime_bindings_for_submit(command));
   }
@@ -2975,9 +3022,7 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
       command->pathb_chain_bound_residency_checked = true;
     }
 
-    {
-      IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command, false));
-    }
+    { IREE_RETURN_IF_ERROR(prepare_pathb_chain_code(queue, command, false)); }
     if (command->pathb_chain_code_dirty ||
         command->pathb_chain_descriptor_dirty) {
       batch_code_sync_bytes = std::max<size_t>(
@@ -2985,9 +3030,7 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
           static_cast<size_t>(command->pathb_chain_code_aperture_offset +
                               command->pathb_chain_code_used_size));
     }
-    {
-      IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command));
-    }
+    { IREE_RETURN_IF_ERROR(ensure_partial_elf_dummy_buffers(command)); }
     {
       IREE_RETURN_IF_ERROR(materialize_deferred_buffer(command->exec_buffer));
       command->start_packet = reinterpret_cast<ert_start_kernel_cmd*>(
@@ -3336,6 +3379,11 @@ extern "C" void iree_hal_amdxdna_native_command_c_destroy(
   iree_hal_amdxdna_native_command_destroy(command);
 }
 
+extern "C" iree_status_t iree_hal_amdxdna_native_command_c_reset(
+    iree_hal_amdxdna_native_command_t* command) {
+  return iree_hal_amdxdna_native_command_reset(command);
+}
+
 extern "C" iree_status_t iree_hal_amdxdna_native_command_c_set_cu_index(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_c_cu_index_t cu_index) {
@@ -3360,6 +3408,13 @@ extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_arg_32(
 extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_arg_64(
     iree_hal_amdxdna_native_command_t* command, uint64_t value) {
   return iree_hal_amdxdna_native_command_add_arg_64(command, value);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_command_c_update_arg_64(
+    iree_hal_amdxdna_native_command_t* command, iree_host_size_t arg_index,
+    uint64_t value) {
+  return iree_hal_amdxdna_native_command_update_arg_64(command, arg_index,
+                                                       value);
 }
 
 extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_buffer_arg(
@@ -3420,4 +3475,27 @@ extern "C" iree_status_t iree_hal_amdxdna_native_queue_c_submit_all_and_wait(
     iree_host_size_t command_count, iree_string_view_t label) {
   return iree_hal_amdxdna_native_queue_submit_all_and_wait(
       queue, commands, command_count, label);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_queue_c_submit(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission) {
+  return iree_hal_amdxdna_native_queue_submit(queue, command, label,
+                                              out_submission);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_submission_c_wait(
+    iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns) {
+  return iree_hal_amdxdna_native_submission_wait(submission, timeout_ns);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_submission_c_query(
+    iree_hal_amdxdna_native_submission_t* submission, bool* out_ready) {
+  return iree_hal_amdxdna_native_submission_query(submission, out_ready);
+}
+
+extern "C" void iree_hal_amdxdna_native_submission_c_destroy(
+    iree_hal_amdxdna_native_submission_t* submission) {
+  iree_hal_amdxdna_native_submission_destroy(submission);
 }

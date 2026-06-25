@@ -23,9 +23,20 @@ iree_hal_amdxdna_native_queue_t* FakeQueue(uintptr_t value) {
   return reinterpret_cast<iree_hal_amdxdna_native_queue_t*>(value);
 }
 
-const iree_hal_amdxdna_u32_list_t* FakeU32List(uintptr_t value) {
-  return reinterpret_cast<const iree_hal_amdxdna_u32_list_t*>(value);
+iree_hal_buffer_t* FakeHalBuffer(uintptr_t value) {
+  return reinterpret_cast<iree_hal_buffer_t*>(value);
 }
+
+uint32_t kControlCodeData[] = {0x100, 0x101, 0x102, 0x103};
+iree_hal_amdxdna_u32_list_t kControlCode = {
+    kControlCodeData,
+    IREE_ARRAYSIZE(kControlCodeData),
+};
+uint32_t kPatchTableData[] = {0, 0, 0};
+iree_hal_amdxdna_u32_list_t kPatchTable = {
+    kPatchTableData,
+    IREE_ARRAYSIZE(kPatchTableData),
+};
 
 iree_hal_amdxdna_chain_cmd_t MakeCmd(iree_hal_amdxdna_native_buffer_t* buffer,
                                      uint64_t device_addr) {
@@ -46,8 +57,8 @@ iree_hal_amdxdna_chain_cmd_t MakeCmd(iree_hal_amdxdna_native_buffer_t* buffer,
       reinterpret_cast<void**>(&cmd.src_constants)));
   memcpy(cmd.src_constants, constants, sizeof(constants));
   cmd.src_constant_count = IREE_ARRAYSIZE(constants);
-  cmd.src_asm_inst = FakeU32List(0x1000);
-  cmd.src_patches = FakeU32List(0x2000);
+  cmd.src_asm_inst = &kControlCode;
+  cmd.src_patches = &kPatchTable;
   cmd.src_cu_idx.index = 7;
   cmd.src_use_native_partial_elf = true;
   return cmd;
@@ -117,6 +128,50 @@ TEST(ChainCommandCacheTest, ShapeMatchAllowsDifferentBufferForRebind) {
       &entry, &fresh_group, /*max_slots=*/24));
 }
 
+TEST(ChainCommandCacheTest, BindingRefsMatchExactRanges) {
+  auto cached_group = MakeEmptyGroup();
+  auto fresh_group = MakeEmptyGroup();
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_binding_ref_unique(
+      TestAllocator(), &cached_group,
+      iree_hal_make_buffer_ref(FakeHalBuffer(0x100), 64, 128)));
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_binding_ref_unique(
+      TestAllocator(), &fresh_group,
+      iree_hal_make_buffer_ref(FakeHalBuffer(0x100), 64, 128)));
+
+  EXPECT_TRUE(iree_hal_amdxdna_chain_group_binding_refs_match(&cached_group,
+                                                              &fresh_group));
+
+  fresh_group.binding_refs[0].offset = 96;
+  EXPECT_FALSE(iree_hal_amdxdna_chain_group_binding_refs_match(&cached_group,
+                                                               &fresh_group));
+
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &fresh_group);
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &cached_group);
+}
+
+TEST(ChainCommandCacheTest, SetBindingRefsCopiesFreshRefs) {
+  auto cached_group = MakeEmptyGroup();
+  auto fresh_group = MakeEmptyGroup();
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_binding_ref_unique(
+      TestAllocator(), &cached_group,
+      iree_hal_make_buffer_ref(FakeHalBuffer(0x100), 64, 128)));
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_binding_ref_unique(
+      TestAllocator(), &fresh_group,
+      iree_hal_make_buffer_ref(FakeHalBuffer(0x200), 32, 256)));
+
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_set_binding_refs(
+      TestAllocator(), &cached_group, &fresh_group));
+
+  EXPECT_TRUE(iree_hal_amdxdna_chain_group_binding_refs_match(&cached_group,
+                                                              &fresh_group));
+  fresh_group.binding_refs[0].length = 512;
+  EXPECT_FALSE(iree_hal_amdxdna_chain_group_binding_refs_match(&cached_group,
+                                                               &fresh_group));
+
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &fresh_group);
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &cached_group);
+}
+
 TEST(ChainCommandCacheTest, SignatureRewritePreservesSelfAliasedBindings) {
   auto cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x11000);
   const uint32_t ctrl_words[] = {0xD, 0xE, 0xF};
@@ -176,6 +231,41 @@ TEST(ChainCommandCacheTest, DescriptorMatchRejectsChangedBindings) {
 
   EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
       &entry, &group, /*max_slots=*/24));
+}
+
+TEST(ChainCommandCacheTest, InFlightEntryIsNotMatchedUntilReleased) {
+  auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  auto fresh_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  auto cached_group = MakeGroup1(&cached_cmd);
+  auto fresh_group = MakeGroup1(&fresh_cmd);
+  auto entry = MakeCacheEntry(&cached_group);
+  iree_hal_amdxdna_device_chain_command_cache_t cache = {};
+  cache.host_allocator = TestAllocator();
+  iree_slim_mutex_initialize(&cache.mutex);
+
+  iree_hal_amdxdna_chain_command_cache_entry_acquire_in_flight(&entry);
+  EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
+
+  iree_hal_amdxdna_chain_command_cache_entry_release_in_flight(&cache, &entry);
+  EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
+
+  iree_slim_mutex_deinitialize(&cache.mutex);
+}
+
+TEST(ChainCommandCacheTest, AllocateEntryReturnsNullWhenAllEntriesAreInFlight) {
+  iree_hal_amdxdna_device_chain_command_cache_t cache = {};
+  cache.host_allocator = TestAllocator();
+  cache.entry_count = kAmdxdnaChainCommandCacheCapacity;
+  for (iree_host_size_t i = 0; i < cache.entry_count; ++i) {
+    iree_hal_amdxdna_chain_group_initialize(&cache.entries[i].group);
+    cache.entries[i].last_use = i + 1;
+    cache.entries[i].in_flight_count = 1;
+  }
+
+  EXPECT_EQ(iree_hal_amdxdna_chain_command_cache_allocate_entry(&cache),
+            nullptr);
 }
 
 }  // namespace

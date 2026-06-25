@@ -11,6 +11,7 @@
 
 #include "iree/base/internal/arena.h"
 #include "iree/hal/api.h"
+#include "iree/hal/drivers/amdxdna/completion_queue.h"
 #include "iree/hal/drivers/amdxdna/device.h"
 #include "iree/hal/drivers/amdxdna/executable_internal.h"
 
@@ -64,6 +65,10 @@ iree_status_t iree_hal_amdxdna_direct_command_buffer_dispatch_plan(
     const iree_hal_amdxdna_dispatch_plan_t* plan,
     iree_const_byte_span_t constants, iree_hal_buffer_ref_list_t bindings,
     iree_hal_dispatch_flags_t flags);
+
+void iree_hal_amdxdna_direct_command_buffer_set_completion_batch(
+    iree_hal_command_buffer_t* base_command_buffer,
+    iree_hal_amdxdna_completion_batch_t* completion_batch);
 
 void iree_hal_amdxdna_device_destroy_single_command_cache(
     iree_hal_amdxdna_device* device);
