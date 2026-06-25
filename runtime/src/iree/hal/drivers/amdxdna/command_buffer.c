@@ -6,107 +6,13 @@
 
 #include "iree/hal/drivers/amdxdna/command_buffer.h"
 
-#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "iree/base/internal/arena.h"
-#include "iree/base/internal/atomics.h"
-#include "iree/base/time.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 #include "iree/hal/utils/resource_set.h"
-
-static iree_atomic_int32_t iree_hal_amdxdna_profile_cmd_registered =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_apply_count =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_total_count =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_dispatch_count =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_apply_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_begin_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_end_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_dispatch_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_dispatch_resolve_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-static iree_atomic_uint64_t iree_hal_amdxdna_profile_cmd_dispatch_direct_ns =
-    IREE_ATOMIC_VAR_INIT(0);
-
-static uint64_t iree_hal_amdxdna_profile_cmd_load_u64(
-    iree_atomic_uint64_t* value) {
-  return (uint64_t)iree_atomic_load(value, iree_memory_order_relaxed);
-}
-
-static void iree_hal_amdxdna_profile_cmd_dump(void) {
-  fprintf(stderr,
-          "[amdxdna-prof] command_buffer apply=%" PRIu64 " cmd=%" PRIu64
-          " dispatch=%" PRIu64 "\n",
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_apply_count),
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_total_count),
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_dispatch_count));
-  fprintf(stderr,
-          "[amdxdna-prof] command_buffer_time_us apply=%" PRIu64
-          " begin=%" PRIu64 " end=%" PRIu64 " dispatch=%" PRIu64
-          " dispatch_resolve=%" PRIu64 " dispatch_direct=%" PRIu64 "\n",
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_apply_ns) /
-              1000,
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_begin_ns) /
-              1000,
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_end_ns) /
-              1000,
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_dispatch_ns) /
-              1000,
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_dispatch_resolve_ns) /
-              1000,
-          iree_hal_amdxdna_profile_cmd_load_u64(
-              &iree_hal_amdxdna_profile_cmd_dispatch_direct_ns) /
-              1000);
-}
-
-static bool iree_hal_amdxdna_profile_cmd_enabled(void) {
-  const char* value = getenv("IREE_AMDXDNA_PROFILE_TIMING");
-  if (!value || !value[0] || strcmp(value, "0") == 0) {
-    value = getenv("IREE_AMDXDNA_PROFILE_CHURN");
-    if (!value || !value[0] || strcmp(value, "0") == 0) return false;
-  }
-  int32_t expected = 0;
-  if (iree_atomic_compare_exchange_strong(
-          &iree_hal_amdxdna_profile_cmd_registered, &expected, 1,
-          iree_memory_order_acq_rel, iree_memory_order_acquire)) {
-    atexit(iree_hal_amdxdna_profile_cmd_dump);
-  }
-  return true;
-}
-
-static void iree_hal_amdxdna_profile_cmd_inc(iree_atomic_uint64_t* counter) {
-  if (iree_hal_amdxdna_profile_cmd_enabled()) {
-    iree_atomic_fetch_add(counter, 1, iree_memory_order_relaxed);
-  }
-}
-
-static void iree_hal_amdxdna_profile_cmd_add_ns(iree_atomic_uint64_t* counter,
-                                                iree_time_t start_time) {
-  if (iree_hal_amdxdna_profile_cmd_enabled()) {
-    iree_atomic_fetch_add(counter, iree_time_now() - start_time,
-                          iree_memory_order_relaxed);
-  }
-}
 
 typedef enum iree_hal_amdxdna_cmd_type_e {
   IREE_HAL_AMDXDNA_CMD_EXECUTION_BARRIER = 0,
@@ -840,10 +746,6 @@ static iree_status_t iree_hal_amdxdna_apply_dispatch(
     iree_hal_command_buffer_t* target_command_buffer,
     iree_hal_buffer_binding_table_t binding_table,
     const iree_hal_amdxdna_cmd_dispatch_t* cmd) {
-  iree_hal_amdxdna_profile_cmd_inc(
-      &iree_hal_amdxdna_profile_cmd_dispatch_count);
-  iree_time_t dispatch_start = iree_time_now();
-  iree_time_t resolve_start = dispatch_start;
   iree_hal_dispatch_config_t config = cmd->config;
   IREE_RETURN_IF_ERROR(iree_hal_buffer_binding_table_resolve_ref(
       binding_table, cmd->config.workgroup_count_ref,
@@ -861,17 +763,9 @@ static iree_status_t iree_hal_amdxdna_apply_dispatch(
       .count = cmd->bindings.count,
       .values = binding_refs,
   };
-  iree_hal_amdxdna_profile_cmd_add_ns(
-      &iree_hal_amdxdna_profile_cmd_dispatch_resolve_ns, resolve_start);
-  iree_time_t direct_start = iree_time_now();
-  iree_status_t status = iree_hal_amdxdna_direct_command_buffer_dispatch_plan(
+  return iree_hal_amdxdna_direct_command_buffer_dispatch_plan(
       target_command_buffer, &cmd->plan, cmd->constants, binding_ref_list,
       cmd->flags);
-  iree_hal_amdxdna_profile_cmd_add_ns(
-      &iree_hal_amdxdna_profile_cmd_dispatch_direct_ns, direct_start);
-  iree_hal_amdxdna_profile_cmd_add_ns(&iree_hal_amdxdna_profile_cmd_dispatch_ns,
-                                      dispatch_start);
-  return status;
 }
 
 typedef iree_status_t (*iree_hal_amdxdna_cmd_apply_fn_t)(
@@ -909,30 +803,20 @@ iree_status_t iree_hal_amdxdna_command_buffer_apply(
     iree_hal_command_buffer_t* target_command_buffer,
     iree_hal_buffer_binding_table_t binding_table) {
   IREE_TRACE_ZONE_BEGIN(z0);
-  iree_hal_amdxdna_profile_cmd_inc(&iree_hal_amdxdna_profile_cmd_apply_count);
-  iree_time_t apply_start = iree_time_now();
 
   iree_hal_amdxdna_command_buffer_t* command_buffer =
       iree_hal_amdxdna_command_buffer_cast(base_command_buffer);
-  iree_time_t begin_start = iree_time_now();
   iree_status_t status = iree_hal_command_buffer_begin(target_command_buffer);
-  iree_hal_amdxdna_profile_cmd_add_ns(&iree_hal_amdxdna_profile_cmd_begin_ns,
-                                      begin_start);
   if (iree_status_is_ok(status)) {
     for (iree_hal_amdxdna_cmd_header_t* cmd = command_buffer->cmd_list.head;
          cmd != NULL; cmd = cmd->next) {
-      iree_hal_amdxdna_profile_cmd_inc(
-          &iree_hal_amdxdna_profile_cmd_total_count);
       status = iree_hal_amdxdna_cmd_apply_table[cmd->type](
           target_command_buffer, binding_table, cmd);
       if (!iree_status_is_ok(status)) break;
     }
   }
   if (iree_status_is_ok(status)) {
-    iree_time_t end_start = iree_time_now();
     status = iree_hal_command_buffer_end(target_command_buffer);
-    iree_hal_amdxdna_profile_cmd_add_ns(&iree_hal_amdxdna_profile_cmd_end_ns,
-                                        end_start);
   }
   if (iree_status_is_ok(status) &&
       iree_all_bits_set(command_buffer->base.mode,
@@ -941,8 +825,6 @@ iree_status_t iree_hal_amdxdna_command_buffer_apply(
   }
 
   IREE_TRACE_ZONE_END(z0);
-  iree_hal_amdxdna_profile_cmd_add_ns(&iree_hal_amdxdna_profile_cmd_apply_ns,
-                                      apply_start);
   return status;
 }
 
