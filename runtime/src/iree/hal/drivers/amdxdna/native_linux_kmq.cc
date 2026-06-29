@@ -90,20 +90,22 @@ namespace {
 
 constexpr size_t kMaxExecBoSize = 4096;
 
-// The exec BO is large enough to hold ~500 chain slots, but the npu4 KMQ
-// firmware/queue path does not reliably execute a single ERT_CMD_CHAIN much
-// longer than this: some oversized chains fail explicitly, and some can
-// complete implausibly fast without proving that every child ran. Cap the
-// reported slot count so shared flushing chunks longer command buffers into
-// firmware-sized chains instead of one oversized chain.
-constexpr uint32_t kMaxReliableChainSlots = 64;
+// The exec BO is large enough to hold many chain slots, but XRT's runlist
+// implementation chunks native command chains at 24 children. Match that
+// firmware-facing scheduling unit instead of advertising the larger packet
+// capacity: longer KMQ chains are functionally valid in small tests, but full
+// FastFlowLM decode profiling shows worse device/completion latency for the
+// same work when a 28-child decode section is submitted as one chain instead of
+// XRT's 24+4 split.
+constexpr uint32_t kKmqDefaultChainSlots = 24;
 
 // START_NPU commands are used as KMQ chain children with register-map
 // arguments on Linux. Reusing only this opcode avoids stale BO binding-table
-// state while removing per-dispatch exec-BO create/destroy churn. The cap
-// matches the largest chain chunk we advertise, so steady-state chains can
-// recycle every child command without unbounded growth.
-constexpr size_t kMaxStartNpuCommandPoolSize = kMaxReliableChainSlots;
+// state while removing per-dispatch exec-BO create/destroy churn. The pool is
+// bounded independently from the parent-chain chunk size: a logical recorded
+// runlist can span multiple 24-child parent chains while still needing cached
+// child START_NPU commands for the whole group.
+constexpr size_t kMaxStartNpuCommandPoolSize = 64;
 
 std::unique_ptr<shim_xdna::kernel> acquire_start_npu_command_from_pool(
     iree_hal_amdxdna_native_device_t* device) {
@@ -398,7 +400,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.ddi_version = 1;
   caps.max_effective_queues = 1;
   caps.max_command_chain_slots =
-      std::min(chain_slot_capacity(kMaxExecBoSize), kMaxReliableChainSlots);
+      std::min(chain_slot_capacity(kMaxExecBoSize), kKmqDefaultChainSlots);
   caps.context_image_models = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI;
   // START_NPU is used for command-chain children and is correct on Linux KMQ.
   // Do not advertise PARTIAL_ELF here: its resident-instruction path currently
