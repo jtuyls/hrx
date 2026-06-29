@@ -32,11 +32,15 @@ extern "C" {
 // match a freshly recorded command) and are serialized by the cache mutex; a
 // cached chain may be reused by one submission lane at a time.
 
-// Bounded device-level cache for realized chain templates. Model-serving
-// runlists can cycle through dozens of stable chain shapes; keeping 64 entries
-// avoids steady-state thrash for those workloads while preserving a fixed
-// memory bound and LRU eviction for unused, non-in-flight entries.
+// Bounded device-level cache for realized chain templates. Entry count is only
+// a structural guard: each entry may retain many native child command BOs,
+// instruction/control BOs, and parent chain BOs. Admission is therefore also
+// resource-budgeted in the cache implementation and evicts LRU non-in-flight
+// entries before retaining a new template.
 enum { kAmdxdnaChainCommandCacheCapacity = 64 };
+enum { kAmdxdnaChainCommandCacheMaxChildCommands = 896 };
+enum { kAmdxdnaChainCommandCacheMaxParentCommands = 96 };
+enum { kAmdxdnaChainCommandCacheMaxInstructionBytes = 32 * 1024 * 1024 };
 
 typedef struct iree_hal_amdxdna_device iree_hal_amdxdna_device;
 
@@ -216,6 +220,10 @@ bool iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
     const iree_hal_amdxdna_chain_command_cache_entry_t* cache,
     const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots);
 
+bool iree_hal_amdxdna_chain_command_cache_trim_for_group(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots);
+
 iree_status_t iree_hal_amdxdna_update_cached_chain_cmd(
     iree_hal_amdxdna_chain_cmd_t* cached,
     const iree_hal_amdxdna_chain_cmd_t* fresh, bool* out_packet_changed,
@@ -231,7 +239,8 @@ void iree_hal_amdxdna_chain_command_cache_entry_clear_chains(
     iree_hal_amdxdna_chain_command_cache_entry_t* entry);
 iree_hal_amdxdna_chain_command_cache_entry_t*
 iree_hal_amdxdna_chain_command_cache_allocate_entry(
-    iree_hal_amdxdna_device_chain_command_cache_t* cache);
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots);
 
 void iree_hal_amdxdna_chain_command_cache_entry_acquire_in_flight(
     iree_hal_amdxdna_chain_command_cache_entry_t* entry);

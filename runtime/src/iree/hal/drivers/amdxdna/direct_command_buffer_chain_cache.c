@@ -12,6 +12,20 @@
 #include "iree/hal/drivers/amdxdna/device.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer.h"
 
+typedef struct iree_hal_amdxdna_chain_cache_resources_t {
+  iree_host_size_t child_command_count;
+  iree_host_size_t parent_command_count;
+  uint64_t instruction_bytes;
+} iree_hal_amdxdna_chain_cache_resources_t;
+
+// Linux KMQ does not currently expose a query for the number of command/control
+// BOs a context can retain. Bound the device-global cache by the resources it
+// owns instead of by entries alone. The child-command budget leaves headroom
+// for in-flight miss construction, single-dispatch caches, and application
+// buffers; if a future native API exposes real limits these constants should
+// become native caps. The constants live in the internal header so host-only
+// tests can exercise the same admission policy.
+
 static iree_status_t iree_hal_amdxdna_reserve_array(
     iree_allocator_t host_allocator, iree_host_size_t element_size,
     iree_host_size_t min_capacity, void** inout_data,
@@ -29,6 +43,131 @@ static iree_status_t iree_hal_amdxdna_reserve_array(
       host_allocator, new_capacity, element_size, inout_data));
   *inout_capacity = new_capacity;
   return iree_ok_status();
+}
+
+static iree_host_size_t iree_hal_amdxdna_ceil_div_host_size(
+    iree_host_size_t numerator, iree_host_size_t denominator) {
+  if (denominator == 0) return numerator;
+  return (numerator + denominator - 1) / denominator;
+}
+
+static void iree_hal_amdxdna_chain_cache_resources_add(
+    iree_hal_amdxdna_chain_cache_resources_t* lhs,
+    const iree_hal_amdxdna_chain_cache_resources_t* rhs) {
+  lhs->child_command_count += rhs->child_command_count;
+  lhs->parent_command_count += rhs->parent_command_count;
+  lhs->instruction_bytes += rhs->instruction_bytes;
+}
+
+static bool iree_hal_amdxdna_chain_cache_resources_fit(
+    const iree_hal_amdxdna_chain_cache_resources_t* resources) {
+  return resources->child_command_count <=
+             kAmdxdnaChainCommandCacheMaxChildCommands &&
+         resources->parent_command_count <=
+             kAmdxdnaChainCommandCacheMaxParentCommands &&
+         resources->instruction_bytes <=
+             kAmdxdnaChainCommandCacheMaxInstructionBytes;
+}
+
+static iree_host_size_t iree_hal_amdxdna_chain_cmd_instruction_word_count(
+    const iree_hal_amdxdna_chain_cmd_t* cmd) {
+  if (cmd->ctrl_word_count != 0) return cmd->ctrl_word_count;
+  if (cmd->src_asm_inst) return cmd->src_asm_inst->count;
+  return 0;
+}
+
+static iree_hal_amdxdna_chain_cache_resources_t
+iree_hal_amdxdna_chain_group_estimate_cache_resources(
+    const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots) {
+  iree_hal_amdxdna_chain_cache_resources_t resources = {
+      group->cmd_count,
+      iree_hal_amdxdna_ceil_div_host_size(group->cmd_count, max_slots),
+      0,
+  };
+  for (iree_host_size_t i = 0; i < group->cmd_count; ++i) {
+    resources.instruction_bytes +=
+        (uint64_t)iree_hal_amdxdna_chain_cmd_instruction_word_count(
+            &group->cmds[i]) *
+        sizeof(uint32_t);
+  }
+  return resources;
+}
+
+static iree_hal_amdxdna_chain_cache_resources_t
+iree_hal_amdxdna_chain_command_cache_entry_resources(
+    const iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
+  iree_hal_amdxdna_chain_cache_resources_t resources = {
+      entry->group.cmd_count,
+      entry->chain_count,
+      0,
+  };
+  for (iree_host_size_t i = 0; i < entry->group.cmd_count; ++i) {
+    resources.instruction_bytes +=
+        (uint64_t)iree_hal_amdxdna_chain_cmd_instruction_word_count(
+            &entry->group.cmds[i]) *
+        sizeof(uint32_t);
+  }
+  return resources;
+}
+
+static bool iree_hal_amdxdna_chain_command_cache_entry_is_empty(
+    const iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
+  return entry->group.cmd_count == 0 && entry->chain_count == 0 &&
+         entry->in_flight_count == 0;
+}
+
+static bool iree_hal_amdxdna_chain_command_cache_entry_has_resources(
+    const iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
+  return entry->group.cmd_count != 0 || entry->chain_count != 0;
+}
+
+static iree_hal_amdxdna_chain_cache_resources_t
+iree_hal_amdxdna_chain_command_cache_total_resources(
+    const iree_hal_amdxdna_device_chain_command_cache_t* cache) {
+  iree_hal_amdxdna_chain_cache_resources_t total = {0, 0, 0};
+  for (iree_host_size_t i = 0; i < cache->entry_count; ++i) {
+    iree_hal_amdxdna_chain_cache_resources_t entry_resources =
+        iree_hal_amdxdna_chain_command_cache_entry_resources(
+            &cache->entries[i]);
+    iree_hal_amdxdna_chain_cache_resources_add(&total, &entry_resources);
+  }
+  return total;
+}
+
+static iree_hal_amdxdna_chain_command_cache_entry_t*
+iree_hal_amdxdna_chain_command_cache_find_empty_entry(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache) {
+  for (iree_host_size_t i = 0; i < cache->entry_count; ++i) {
+    iree_hal_amdxdna_chain_command_cache_entry_t* entry = &cache->entries[i];
+    if (iree_hal_amdxdna_chain_command_cache_entry_is_empty(entry)) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+static iree_hal_amdxdna_chain_command_cache_entry_t*
+iree_hal_amdxdna_chain_command_cache_find_lru_evictable_entry(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache) {
+  iree_hal_amdxdna_chain_command_cache_entry_t* entry = NULL;
+  for (iree_host_size_t i = 0; i < cache->entry_count; ++i) {
+    iree_hal_amdxdna_chain_command_cache_entry_t* candidate =
+        &cache->entries[i];
+    if (candidate->in_flight_count != 0) continue;
+    if (!iree_hal_amdxdna_chain_command_cache_entry_has_resources(candidate)) {
+      continue;
+    }
+    if (!entry || candidate->last_use < entry->last_use) {
+      entry = candidate;
+    }
+  }
+  return entry;
+}
+
+static void iree_hal_amdxdna_chain_command_cache_entry_prepare_empty(
+    iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
+  memset(entry, 0, sizeof(*entry));
+  iree_hal_amdxdna_chain_group_initialize(&entry->group);
 }
 
 static bool iree_hal_amdxdna_u32_span_equal(const uint32_t* lhs,
@@ -636,6 +775,30 @@ bool iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
   return true;
 }
 
+bool iree_hal_amdxdna_chain_command_cache_trim_for_group(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots) {
+  const iree_hal_amdxdna_chain_cache_resources_t requested =
+      iree_hal_amdxdna_chain_group_estimate_cache_resources(group, max_slots);
+  if (!iree_hal_amdxdna_chain_cache_resources_fit(&requested)) {
+    return false;
+  }
+
+  for (;;) {
+    iree_hal_amdxdna_chain_cache_resources_t total =
+        iree_hal_amdxdna_chain_command_cache_total_resources(cache);
+    iree_hal_amdxdna_chain_cache_resources_add(&total, &requested);
+    if (iree_hal_amdxdna_chain_cache_resources_fit(&total)) return true;
+
+    iree_hal_amdxdna_chain_command_cache_entry_t* evict_entry =
+        iree_hal_amdxdna_chain_command_cache_find_lru_evictable_entry(cache);
+    if (!evict_entry) return false;
+    iree_hal_amdxdna_chain_command_cache_entry_deinitialize(
+        cache->host_allocator, evict_entry);
+    iree_hal_amdxdna_chain_command_cache_entry_prepare_empty(evict_entry);
+  }
+}
+
 iree_status_t iree_hal_amdxdna_update_cached_chain_cmd(
     iree_hal_amdxdna_chain_cmd_t* cached,
     const iree_hal_amdxdna_chain_cmd_t* fresh, bool* out_packet_changed,
@@ -728,27 +891,28 @@ iree_status_t iree_hal_amdxdna_chain_command_cache_entry_append_chain(
 
 iree_hal_amdxdna_chain_command_cache_entry_t*
 iree_hal_amdxdna_chain_command_cache_allocate_entry(
-    iree_hal_amdxdna_device_chain_command_cache_t* cache) {
-  iree_hal_amdxdna_chain_command_cache_entry_t* entry = NULL;
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    const iree_hal_amdxdna_chain_group_t* group, uint32_t max_slots) {
+  if (!iree_hal_amdxdna_chain_command_cache_trim_for_group(cache, group,
+                                                           max_slots)) {
+    return NULL;
+  }
+
+  iree_hal_amdxdna_chain_command_cache_entry_t* entry =
+      iree_hal_amdxdna_chain_command_cache_find_empty_entry(cache);
+  if (entry) return entry;
+
   if (cache->entry_count < kAmdxdnaChainCommandCacheCapacity) {
     entry = &cache->entries[cache->entry_count++];
-    memset(entry, 0, sizeof(*entry));
-    iree_hal_amdxdna_chain_group_initialize(&entry->group);
+    iree_hal_amdxdna_chain_command_cache_entry_prepare_empty(entry);
     return entry;
   }
-  entry = NULL;
-  for (iree_host_size_t i = 0; i < cache->entry_count; ++i) {
-    iree_hal_amdxdna_chain_command_cache_entry_t* candidate =
-        &cache->entries[i];
-    if (candidate->in_flight_count != 0) continue;
-    if (!entry || candidate->last_use < entry->last_use) {
-      entry = candidate;
-    }
-  }
+
+  entry = iree_hal_amdxdna_chain_command_cache_find_lru_evictable_entry(cache);
   if (!entry) return NULL;
   iree_hal_amdxdna_chain_command_cache_entry_deinitialize(cache->host_allocator,
                                                           entry);
-  iree_hal_amdxdna_chain_group_initialize(&entry->group);
+  iree_hal_amdxdna_chain_command_cache_entry_prepare_empty(entry);
   return entry;
 }
 

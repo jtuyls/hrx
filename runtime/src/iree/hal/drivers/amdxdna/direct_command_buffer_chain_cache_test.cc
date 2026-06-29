@@ -78,6 +78,30 @@ void AppendCmd(iree_hal_amdxdna_chain_group_t* group,
                                                              group, cmd));
 }
 
+void AppendResourceOnlyCmd(iree_hal_amdxdna_chain_group_t* group,
+                           iree_host_size_t ctrl_word_count) {
+  iree_hal_amdxdna_chain_cmd_t cmd;
+  iree_hal_amdxdna_chain_cmd_initialize(&cmd);
+  cmd.ctrl_word_count = ctrl_word_count;
+  AppendCmd(group, &cmd);
+}
+
+iree_hal_amdxdna_chain_group_t MakeResourceGroup(
+    iree_host_size_t cmd_count, iree_host_size_t ctrl_word_count = 1) {
+  iree_hal_amdxdna_chain_group_t group = MakeEmptyGroup();
+  for (iree_host_size_t i = 0; i < cmd_count; ++i) {
+    AppendResourceOnlyCmd(&group, ctrl_word_count);
+  }
+  return group;
+}
+
+void SetResourceEntry(iree_hal_amdxdna_chain_command_cache_entry_t* entry,
+                      iree_host_size_t cmd_count, uint64_t last_use) {
+  iree_hal_amdxdna_chain_group_t group = MakeResourceGroup(cmd_count);
+  iree_hal_amdxdna_chain_group_move(&entry->group, &group);
+  entry->last_use = last_use;
+}
+
 iree_hal_amdxdna_chain_group_t MakeGroup1(iree_hal_amdxdna_chain_cmd_t* cmd) {
   iree_hal_amdxdna_chain_group_t group = MakeEmptyGroup();
   AppendCmd(&group, cmd);
@@ -263,9 +287,52 @@ TEST(ChainCommandCacheTest, AllocateEntryReturnsNullWhenAllEntriesAreInFlight) {
     cache.entries[i].last_use = i + 1;
     cache.entries[i].in_flight_count = 1;
   }
+  auto request_group = MakeResourceGroup(1);
 
-  EXPECT_EQ(iree_hal_amdxdna_chain_command_cache_allocate_entry(&cache),
+  EXPECT_EQ(iree_hal_amdxdna_chain_command_cache_allocate_entry(
+                &cache, &request_group, /*max_slots=*/24),
             nullptr);
+
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &request_group);
+}
+
+TEST(ChainCommandCacheTest, AllocateEntryRejectsOverBudgetRequest) {
+  iree_hal_amdxdna_device_chain_command_cache_t cache = {};
+  cache.host_allocator = TestAllocator();
+  auto request_group =
+      MakeResourceGroup(kAmdxdnaChainCommandCacheMaxChildCommands + 1);
+
+  EXPECT_EQ(iree_hal_amdxdna_chain_command_cache_allocate_entry(
+                &cache, &request_group, /*max_slots=*/24),
+            nullptr);
+
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &request_group);
+}
+
+TEST(ChainCommandCacheTest, AllocateEntryEvictsLruToFitResourceBudget) {
+  iree_hal_amdxdna_device_chain_command_cache_t cache = {};
+  cache.host_allocator = TestAllocator();
+  cache.entry_count = 2;
+  iree_hal_amdxdna_chain_group_initialize(&cache.entries[0].group);
+  iree_hal_amdxdna_chain_group_initialize(&cache.entries[1].group);
+  SetResourceEntry(&cache.entries[0],
+                   kAmdxdnaChainCommandCacheMaxChildCommands - 1,
+                   /*last_use=*/1);
+  SetResourceEntry(&cache.entries[1], 1, /*last_use=*/2);
+  auto request_group = MakeResourceGroup(1);
+
+  iree_hal_amdxdna_chain_command_cache_entry_t* entry =
+      iree_hal_amdxdna_chain_command_cache_allocate_entry(
+          &cache, &request_group, /*max_slots=*/24);
+
+  EXPECT_EQ(entry, &cache.entries[0]);
+  EXPECT_EQ(cache.entries[1].group.cmd_count, 1u);
+
+  iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(), &request_group);
+  for (iree_host_size_t i = 0; i < cache.entry_count; ++i) {
+    iree_hal_amdxdna_chain_group_deinitialize(TestAllocator(),
+                                              &cache.entries[i].group);
+  }
 }
 
 }  // namespace

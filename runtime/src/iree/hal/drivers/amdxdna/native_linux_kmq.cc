@@ -437,9 +437,16 @@ iree_status_t iree_hal_amdxdna_native_device_alloc_buffer(
 
   std::unique_ptr<shim_xdna::bo> bo;
   const size_t host_size = static_cast<size_t>(size);
-  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_status_from_errno(
-      device->shim_device->alloc_bo(host_size, to_shim_buffer_flags(type), &bo),
-      "amdxdna native BO allocation failed"));
+  const int err =
+      device->shim_device->alloc_bo(host_size, to_shim_buffer_flags(type), &bo);
+  if (err != 0) {
+    const int normalized_err = err < 0 ? -err : err;
+    return iree_make_status(
+        iree_status_code_from_errno(normalized_err),
+        "amdxdna native BO allocation failed: type=%d size=%" PRIu64
+        " flags=0x%08x errno %d",
+        (int)type, (uint64_t)size, to_shim_buffer_flags(type), normalized_err);
+  }
   *out_buffer = new iree_hal_amdxdna_native_buffer_t(std::move(bo));
   return iree_ok_status();
 }
@@ -625,8 +632,15 @@ iree_status_t iree_hal_amdxdna_native_command_create(
     kernel = std::make_unique<shim_xdna::kernel>(
         device->shim_device->get_pdev(), to_ert_opcode(opcode));
   }
-  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_status_from_errno(
-      kernel->init_errno(), "amdxdna native command allocation failed"));
+  if (kernel->init_errno() != 0) {
+    const int normalized_err =
+        kernel->init_errno() < 0 ? -kernel->init_errno() : kernel->init_errno();
+    return iree_make_status(
+        iree_status_code_from_errno(normalized_err),
+        "amdxdna native command allocation failed: opcode=%d exec_bo_size=%zu "
+        "errno %d",
+        (int)opcode, (size_t)kMaxExecBoSize, normalized_err);
+  }
   *out_command =
       new iree_hal_amdxdna_native_command_t(device, opcode, std::move(kernel));
   return iree_ok_status();

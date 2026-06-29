@@ -1763,6 +1763,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
         // ctrl_words-based device/shape/miss logic below can match, update,
         // or cache them.
         if (!chain_cache) {
+          fallback_uncached =
+              !iree_hal_amdxdna_chain_command_cache_trim_for_group(
+                  device_chain_cache, group, max_slots);
           for (iree_host_size_t i = 0;
                i < group->cmd_count && iree_status_is_ok(status); ++i) {
             iree_hal_amdxdna_chain_cmd_t* cmd = &group->cmds[i];
@@ -1836,7 +1839,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
         } else if (iree_status_is_ok(status) && !chain_cache &&
                    !fallback_uncached) {
           chain_cache = iree_hal_amdxdna_chain_command_cache_allocate_entry(
-              device_chain_cache);
+              device_chain_cache, group, max_slots);
           if (!chain_cache) {
             fallback_uncached = true;
           } else {
