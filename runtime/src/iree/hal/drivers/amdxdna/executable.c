@@ -179,6 +179,13 @@ static void iree_hal_amdxdna_kernel_params_deinitialize(
   iree_allocator_free(host_allocator, params->patch_runlist);
   params->patch_runlist = NULL;
   params->patch_runlist_count = 0;
+  for (iree_host_size_t i = 0; i < params->constant_patch_runlist_count; ++i) {
+    iree_hal_amdxdna_write32_constant_patch_list_deinitialize(
+        host_allocator, &params->constant_patch_runlist[i]);
+  }
+  iree_allocator_free(host_allocator, params->constant_patch_runlist);
+  params->constant_patch_runlist = NULL;
+  params->constant_patch_runlist_count = 0;
   iree_allocator_free(host_allocator, (void*)params->kernel_name.data);
   params->kernel_name = iree_string_view_empty();
   iree_hal_amdxdna_native_context_ref_release(params->cached_context);
@@ -562,6 +569,10 @@ static iree_status_t iree_hal_amdxdna_append_run_params(
     flatbuffers_uint32_vec_t patch_table) {
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_copy_u32_vec(
       host_allocator, control_code, &params->asm_inst_runlist[run_ordinal]));
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_build_write32_constant_patch_list(
+      host_allocator, params->asm_inst_runlist[run_ordinal].data,
+      params->asm_inst_runlist[run_ordinal].count,
+      &params->constant_patch_runlist[run_ordinal]));
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_copy_u32_vec(
       host_allocator, patch_table, &params->patch_runlist[run_ordinal]));
   if (data_payload && flatbuffers_uint32_vec_len(data_payload) != 0) {
@@ -586,12 +597,18 @@ static iree_status_t iree_hal_amdxdna_kernel_params_allocate_runlists(
       (void**)&params->patch_runlist));
   memset(params->patch_runlist, 0, run_count * sizeof(*params->patch_runlist));
   IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, run_count * sizeof(*params->constant_patch_runlist),
+      (void**)&params->constant_patch_runlist));
+  memset(params->constant_patch_runlist, 0,
+         run_count * sizeof(*params->constant_patch_runlist));
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
       host_allocator, run_count * sizeof(*params->reconf_data_runlist),
       (void**)&params->reconf_data_runlist));
   memset(params->reconf_data_runlist, 0,
          run_count * sizeof(*params->reconf_data_runlist));
   params->asm_inst_runlist_count = run_count;
   params->patch_runlist_count = run_count;
+  params->constant_patch_runlist_count = run_count;
   return iree_ok_status();
 }
 

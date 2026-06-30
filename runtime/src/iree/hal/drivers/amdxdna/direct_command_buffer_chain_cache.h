@@ -62,10 +62,12 @@ typedef struct iree_hal_amdxdna_chain_cmd_t {
   // above are built lazily on a cache miss in flush.
   const iree_hal_amdxdna_u32_list_t* src_asm_inst;
   const iree_hal_amdxdna_u32_list_t* src_patches;
+  const iree_hal_amdxdna_write32_constant_patch_list_t* src_constant_patches;
   // Device-cache entries clone executable-owned template lists here before
   // they outlive the executable or one-shot command buffer that recorded them.
   iree_hal_amdxdna_u32_list_t owned_src_asm_inst;
   iree_hal_amdxdna_u32_list_t owned_src_patches;
+  iree_hal_amdxdna_write32_constant_patch_list_t owned_src_constant_patches;
   uint8_t* src_constants;
   iree_host_size_t src_constant_count;
   iree_hal_amdxdna_native_c_cu_index_t src_cu_idx;
@@ -150,6 +152,7 @@ iree_status_t iree_hal_amdxdna_chain_cmd_set_deferred_descriptor(
     iree_allocator_t host_allocator, iree_hal_amdxdna_chain_cmd_t* cmd,
     const iree_hal_amdxdna_u32_list_t* asm_inst,
     const iree_hal_amdxdna_u32_list_t* patches,
+    const iree_hal_amdxdna_write32_constant_patch_list_t* constant_patches,
     iree_hal_amdxdna_native_c_cu_index_t cu_idx,
     iree_const_byte_span_t constants, bool use_native_partial_elf,
     iree_hal_amdxdna_native_buffer_t* const* binding_buffers,
@@ -170,6 +173,9 @@ iree_status_t iree_hal_amdxdna_chain_group_append_cmd_move(
 iree_status_t iree_hal_amdxdna_chain_group_append_reconf_buffer(
     iree_allocator_t host_allocator, iree_hal_amdxdna_chain_group_t* group,
     iree_hal_amdxdna_native_buffer_t* buffer);
+iree_status_t iree_hal_amdxdna_chain_group_take_reconf_buffers(
+    iree_allocator_t host_allocator, iree_hal_amdxdna_chain_group_t* dst,
+    iree_hal_amdxdna_chain_group_t* src);
 iree_status_t iree_hal_amdxdna_chain_group_append_binding_ref_unique(
     iree_allocator_t host_allocator, iree_hal_amdxdna_chain_group_t* group,
     iree_hal_buffer_ref_t binding_ref);
@@ -180,6 +186,9 @@ iree_status_t iree_hal_amdxdna_chain_group_set_binding_refs(
     iree_allocator_t host_allocator, iree_hal_amdxdna_chain_group_t* dst,
     const iree_hal_amdxdna_chain_group_t* src);
 bool iree_hal_amdxdna_chain_group_binding_refs_match(
+    const iree_hal_amdxdna_chain_group_t* lhs,
+    const iree_hal_amdxdna_chain_group_t* rhs);
+bool iree_hal_amdxdna_chain_group_reconf_buffers_match(
     const iree_hal_amdxdna_chain_group_t* lhs,
     const iree_hal_amdxdna_chain_group_t* rhs);
 

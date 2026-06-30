@@ -657,52 +657,55 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
     iree_hal_amdxdna_native_buffer_t* const* arg_buffers,
     const iree_device_size_t* arg_offsets,
     const iree_device_size_t* arg_lengths, size_t arg_count,
-    iree_const_byte_span_t constants, bool use_native_partial_elf,
+    iree_const_byte_span_t constants,
+    const iree_hal_amdxdna_write32_constant_patch_list_t* constant_patches,
+    bool use_native_partial_elf, bool retain_signature,
     iree_hal_amdxdna_chain_cmd_t* out_cmd) {
   size_t bytes = txn->count * sizeof(uint32_t);
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_device_c_alloc_buffer(
       command_buffer->device->native_device, bytes,
       IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION, &out_cmd->ctrl_code));
+
   void* mapped_ptr = NULL;
   IREE_RETURN_IF_ERROR(
       iree_hal_amdxdna_native_buffer_c_map(out_cmd->ctrl_code, &mapped_ptr));
   out_cmd->ctrl_code_mapped_ptr = mapped_ptr;
   uint32_t* dst = (uint32_t*)mapped_ptr;
   memcpy(dst, txn->data, bytes);
-  IREE_RETURN_IF_ERROR(
-      iree_hal_amdxdna_patch_write32_constants(dst, txn->count, constants));
+
+  if (constant_patches) {
+    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_patch_write32_constants_with_list(
+        dst, txn->count, constant_patches, constants));
+  } else {
+    IREE_RETURN_IF_ERROR(
+        iree_hal_amdxdna_patch_write32_constants(dst, txn->count, constants));
+  }
+
   if (!iree_hal_amdxdna_apply_patch_table(dst, txn->count, patches->data,
                                           patches->count, args, arg_count)) {
     return iree_make_status(
         IREE_STATUS_INTERNAL,
         "amdxdna cmd-chain: invalid host patch table for control code");
   }
-  uint64_t* binding_device_addrs = NULL;
-  if (arg_count != 0) {
-    IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
-        command_buffer->host_allocator, arg_count,
-        sizeof(*binding_device_addrs), (void**)&binding_device_addrs));
+
+  if (retain_signature) {
+    iree_status_t status = iree_hal_amdxdna_chain_cmd_set_signature(
+        command_buffer->host_allocator, out_cmd, dst, txn->count, arg_buffers,
+        args, arg_offsets, arg_lengths, arg_count);
+    IREE_RETURN_IF_ERROR(status);
+
+    // The signature setter copies and then frees any prior command-owned
+    // arrays; the input pointers may alias those arrays when a deferred
+    // descriptor is materialized in place. Use the copied command-owned arrays
+    // after this point.
+    arg_buffers = out_cmd->binding_buffers;
+    args = out_cmd->binding_device_addrs;
+    arg_offsets = out_cmd->binding_offsets;
+    arg_lengths = out_cmd->binding_lengths;
   }
-  for (size_t i = 0; i < arg_count; ++i) {
-    binding_device_addrs[i] =
-        iree_hal_amdxdna_native_buffer_c_device_address(arg_buffers[i]) +
-        arg_offsets[i];
-  }
-  iree_status_t status = iree_hal_amdxdna_chain_cmd_set_signature(
-      command_buffer->host_allocator, out_cmd, dst, txn->count, arg_buffers,
-      binding_device_addrs, arg_offsets, arg_lengths, arg_count);
-  iree_allocator_free(command_buffer->host_allocator, binding_device_addrs);
-  IREE_RETURN_IF_ERROR(status);
-  // The signature setter copies and then frees any prior command-owned arrays;
-  // the input pointers may alias those arrays when a deferred descriptor is
-  // materialized in place. Use the copied command-owned arrays after this
-  // point.
-  arg_buffers = out_cmd->binding_buffers;
-  args = out_cmd->binding_device_addrs;
-  arg_offsets = out_cmd->binding_offsets;
-  arg_lengths = out_cmd->binding_lengths;
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_sync_all(
       out_cmd->ctrl_code, IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
+
   const iree_hal_amdxdna_native_c_command_opcode_t command_opcode =
       use_native_partial_elf
           ? IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF
@@ -710,6 +713,7 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_command_c_create(
       command_buffer->device->native_device, command_opcode,
       &out_cmd->command));
+
   IREE_RETURN_IF_ERROR(
       iree_hal_amdxdna_native_command_c_set_cu_index(out_cmd->command, cu_idx));
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_command_c_add_control_buffer(
@@ -751,6 +755,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_emit_chain_cmd(
     iree_hal_amdxdna_chain_group_t* group,
     const iree_hal_amdxdna_u32_list_t* control_code,
     const iree_hal_amdxdna_u32_list_t* patch_table, const uint64_t* args,
+    const iree_hal_amdxdna_write32_constant_patch_list_t* constant_patches,
     iree_hal_amdxdna_native_buffer_t* const* arg_buffers,
     const iree_device_size_t* arg_offsets,
     const iree_device_size_t* arg_lengths, size_t arg_count,
@@ -760,14 +765,14 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_emit_chain_cmd(
   iree_hal_amdxdna_chain_cmd_t cmd;
   iree_hal_amdxdna_chain_cmd_initialize(&cmd);
   iree_status_t status = iree_hal_amdxdna_chain_cmd_set_deferred_descriptor(
-      command_buffer->host_allocator, &cmd, control_code, patch_table, cu_idx,
-      constants, use_native_partial_elf, arg_buffers, args, arg_offsets,
-      arg_lengths, arg_count);
+      command_buffer->host_allocator, &cmd, control_code, patch_table,
+      constant_patches, cu_idx, constants, use_native_partial_elf, arg_buffers,
+      args, arg_offsets, arg_lengths, arg_count);
   if (iree_status_is_ok(status) && !defer_build) {
     status = iree_hal_amdxdna_make_npu_cmd(
         command_buffer, cu_idx, control_code, patch_table, args, arg_buffers,
-        arg_offsets, arg_lengths, arg_count, constants, use_native_partial_elf,
-        &cmd);
+        arg_offsets, arg_lengths, arg_count, constants, constant_patches,
+        use_native_partial_elf, /*retain_signature=*/true, &cmd);
   }
   if (iree_status_is_ok(status)) {
     status = iree_hal_amdxdna_chain_group_append_cmd_move(
@@ -812,8 +817,9 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_start_npu_cmd(
     cached->ctrl_code_mapped_ptr = mapped_ptr;
   }
   uint32_t* dst = (uint32_t*)mapped_ptr;
+  memcpy(dst, txn->data, bytes);
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_patch_dynamic_fields_from_template(
-      dst, txn->data, txn->count,
+      dst, txn->data, txn->count, fresh->src_constant_patches,
       iree_make_const_byte_span(fresh->src_constants,
                                 fresh->src_constant_count),
       patches->data, patches->count, fresh->binding_device_addrs,
@@ -924,8 +930,9 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_single_start_npu_cmd(
     cached->ctrl_code_mapped_ptr = mapped_ptr;
   }
   uint32_t* dst = (uint32_t*)mapped_ptr;
+  memcpy(dst, txn->data, bytes);
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_patch_dynamic_fields_from_template(
-      dst, txn->data, txn->count,
+      dst, txn->data, txn->count, fresh->src_constant_patches,
       iree_make_const_byte_span(fresh->src_constants,
                                 fresh->src_constant_count),
       patches->data, patches->count, fresh->binding_device_addrs,
@@ -1097,8 +1104,11 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
   if (iree_status_is_ok(status) && plan->data_payload_count == 0) {
     status = iree_hal_amdxdna_direct_command_buffer_emit_chain_cmd(
         command_buffer, group, &plan->control_codes[0], &plan->patch_tables[0],
-        binding_addrs, binding_buffers, binding_offsets, binding_lengths,
-        bindings.count, cu_idx, constants, use_native_partial_elf, defer_build);
+        binding_addrs,
+        plan->constant_patch_table_count > 0 ? &plan->constant_patch_tables[0]
+                                             : NULL,
+        binding_buffers, binding_offsets, binding_lengths, bindings.count,
+        cu_idx, constants, use_native_partial_elf, defer_build);
   } else if (iree_status_is_ok(status)) {
     for (size_t i = 0;
          iree_status_is_ok(status) && i < plan->data_payload_count; i++) {
@@ -1135,17 +1145,23 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_accumulate_chained(
            iree_status_is_ok(status) && r < plan->data_payload_run_count; r++) {
         status = iree_hal_amdxdna_direct_command_buffer_emit_chain_cmd(
             command_buffer, group, &plan->control_codes[2 * i],
-            &plan->patch_tables[2 * i], &reconf_arg, &reconf_buffer,
-            &reconf_offset, &reconf_length,
+            &plan->patch_tables[2 * i], &reconf_arg,
+            plan->constant_patch_table_count > 2 * i
+                ? &plan->constant_patch_tables[2 * i]
+                : NULL,
+            &reconf_buffer, &reconf_offset, &reconf_length,
             /*arg_count=*/1, cu_idx, constants, use_native_partial_elf,
             defer_build);
       }
       if (iree_status_is_ok(status)) {
         status = iree_hal_amdxdna_direct_command_buffer_emit_chain_cmd(
             command_buffer, group, &plan->control_codes[2 * i + 1],
-            &plan->patch_tables[2 * i + 1], binding_addrs, binding_buffers,
-            binding_offsets, binding_lengths, bindings.count, cu_idx, constants,
-            use_native_partial_elf, defer_build);
+            &plan->patch_tables[2 * i + 1], binding_addrs,
+            plan->constant_patch_table_count > 2 * i + 1
+                ? &plan->constant_patch_tables[2 * i + 1]
+                : NULL,
+            binding_buffers, binding_offsets, binding_lengths, bindings.count,
+            cu_idx, constants, use_native_partial_elf, defer_build);
       }
     }
   }
@@ -1427,7 +1443,8 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
             cmd->binding_offsets, cmd->binding_lengths, cmd->binding_count,
             iree_make_const_byte_span(cmd->src_constants,
                                       cmd->src_constant_count),
-            cmd->src_use_native_partial_elf, cmd);
+            cmd->src_constant_patches, cmd->src_use_native_partial_elf,
+            /*retain_signature=*/true, cmd);
       }
       submit_command = cmd->command;
       if (iree_status_is_ok(status) && single_command_cache) {
@@ -1689,7 +1706,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
           command_buffer, group);
     } else {
       iree_hal_amdxdna_chain_command_cache_entry_t* chain_cache = NULL;
-      if (group->reconf_buffer_count == 0) {
+      {
         iree_hal_amdxdna_device_chain_command_cache_t* device_chain_cache =
             iree_hal_amdxdna_get_chain_command_cache(command_buffer->device);
         bool fallback_uncached = false;
@@ -1743,19 +1760,35 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             const bool binding_refs_changed =
                 !iree_hal_amdxdna_chain_group_binding_refs_match(
                     &chain_cache->group, group);
+            const bool reconf_buffers_changed =
+                !iree_hal_amdxdna_chain_group_reconf_buffers_match(
+                    &chain_cache->group, group);
             for (iree_host_size_t i = 0;
                  i < group->cmd_count && iree_status_is_ok(status); ++i) {
               status = iree_hal_amdxdna_rewrite_cached_start_npu_cmd(
                   command_buffer, &chain_cache->group.cmds[i], &group->cmds[i]);
             }
-            if (iree_status_is_ok(status) && binding_refs_changed) {
-              // Parent ERT_CMD_CHAIN packets contain only the stable cached
-              // child command BO handles. Linux START_NPU template hits rewrite
-              // the child control-code BOs in place, so changed data bindings
-              // only require refreshing host-side sync/readback refs, not
-              // rebuilding parent chain packets.
-              status = iree_hal_amdxdna_chain_group_set_binding_refs(
-                  command_buffer->host_allocator, &chain_cache->group, group);
+            if (iree_status_is_ok(status) &&
+                (binding_refs_changed || reconf_buffers_changed)) {
+              // Parent ERT_CMD_CHAIN packets contain stable cached child
+              // command BO handles, but non-partial START_NPU parent chains
+              // also bind the data and reconfiguration BOs referenced by the
+              // group for residency.
+              // Linux KMQ cannot rebind a prepared native command in place, so
+              // changed refs require rebuilding the parent chain commands
+              // after refreshing the cached refs.
+              if (reconf_buffers_changed) {
+                status = iree_hal_amdxdna_chain_group_take_reconf_buffers(
+                    command_buffer->host_allocator, &chain_cache->group, group);
+              }
+              if (iree_status_is_ok(status) && binding_refs_changed) {
+                status = iree_hal_amdxdna_chain_group_set_binding_refs(
+                    command_buffer->host_allocator, &chain_cache->group, group);
+              }
+              if (iree_status_is_ok(status)) {
+                status = iree_hal_amdxdna_rebuild_cached_parent_chains(
+                    command_buffer, chain_cache, max_slots);
+              }
             }
           }
         }
@@ -1777,7 +1810,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
                 cmd->binding_lengths, cmd->binding_count,
                 iree_make_const_byte_span(cmd->src_constants,
                                           cmd->src_constant_count),
-                cmd->src_use_native_partial_elf, cmd);
+                cmd->src_constant_patches, cmd->src_use_native_partial_elf,
+                /*retain_signature=*/!fallback_uncached, cmd);
           }
         }
         if (chain_cache) {
@@ -1849,6 +1883,10 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             chain_cache->group.native_partial_elf = group->native_partial_elf;
             status = iree_hal_amdxdna_chain_group_take_cmds(
                 command_buffer->host_allocator, &chain_cache->group, group);
+            if (iree_status_is_ok(status)) {
+              status = iree_hal_amdxdna_chain_group_take_reconf_buffers(
+                  command_buffer->host_allocator, &chain_cache->group, group);
+            }
             for (iree_host_size_t i = 0;
                  i < chain_cache->group.cmd_count && iree_status_is_ok(status);
                  ++i) {
@@ -1896,10 +1934,6 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
                     command_buffer, group, max_slots);
           }
         }
-      } else {
-        status =
-            iree_hal_amdxdna_direct_command_buffer_submit_uncached_parent_chains(
-                command_buffer, group, max_slots);
       }
     }
     if (!iree_status_is_ok(status)) break;
@@ -1907,18 +1941,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
     // sync model, so on backends that own binding sync we invalidate this
     // group's I/O bindings back to host once the chains complete.
     //
-    // BUT on CALLER_SYNCS_BINDINGS backends (e.g. Linux KMQ / npu4) the caller
-    // owns all host<->device sync, and the single-dispatch path
-    // (submit_accumulated_single) already performs NO invalidate here. Doing a
-    // blanket invalidate over *every* binding on the chain path is therefore
-    // (a) redundant with the caller's own sync and (b) catastrophically
-    // wasteful for the chain: a runlist binds all of its inputs, so this
-    // invalidates the full working set -- including multi-GB read-only weight
-    // inputs -- on every flush. Measured on npu4 a 28-kernel decode runlist
-    // invalidated ~3.9 GB of CPU cache (~37 ms/runlist), ~4x the chain's actual
-    // device time and the entire cause of chaining being slower than separate
-    // dispatches. Skip it when the caller syncs bindings, matching the
-    // single-dispatch path.
+    // On CALLER_SYNCS_BINDINGS backends (for example Linux KMQ) the caller owns
+    // host<->device synchronization. Match the single-dispatch path by avoiding
+    // redundant post-submit invalidation over every runlist binding here.
     const bool caller_syncs_bindings =
         command_buffer->device->native_caps.buffer_sync_model ==
         IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
@@ -2483,6 +2508,9 @@ iree_status_t iree_hal_amdxdna_dispatch_plan_initialize(
   out_plan->control_codes = kernel_params->asm_inst_runlist;
   out_plan->patch_table_count = kernel_params->patch_runlist_count;
   out_plan->patch_tables = kernel_params->patch_runlist;
+  out_plan->constant_patch_table_count =
+      kernel_params->constant_patch_runlist_count;
+  out_plan->constant_patch_tables = kernel_params->constant_patch_runlist;
   out_plan->data_payload_count = kernel_params->reconf_data_runlist_count;
   out_plan->data_payloads = kernel_params->reconf_data_runlist;
   out_plan->data_payload_run_count = kernel_params->n_reconfigure_runs;

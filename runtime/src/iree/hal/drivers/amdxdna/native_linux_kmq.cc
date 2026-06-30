@@ -760,6 +760,8 @@ iree_status_t iree_hal_amdxdna_native_command_reset_bound_buffers(
 
 iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
     iree_hal_amdxdna_native_command_t* command) {
+  ert_packet* packet = command_packet(command);
+  packet->state = ERT_CMD_STATE_NEW;
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->get_exec_buf_bo()->sync(
           shim_xdna::direction::host2device),
@@ -768,6 +770,8 @@ iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
 
 iree_status_t iree_hal_amdxdna_native_command_mark_code_dirty(
     iree_hal_amdxdna_native_command_t* command) {
+  ert_packet* packet = command_packet(command);
+  packet->state = ERT_CMD_STATE_NEW;
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->get_exec_buf_bo()->sync(
           shim_xdna::direction::host2device),
