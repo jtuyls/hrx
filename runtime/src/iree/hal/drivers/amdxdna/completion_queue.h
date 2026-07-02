@@ -28,10 +28,8 @@ extern "C" {
 
 // Creates a per-device native-completion queue. The async queue owns issue
 // ordering; this queue usually owns native waits, post-completion actions,
-// cleanup, and HAL semaphore signaling after native completion. An infinite host
-// wait on a batch may also perform that same completion work inline when it wins
-// the batch finish-owner race. Destroy drains all submitted batches before
-// returning.
+// cleanup, and HAL semaphore signaling after native completion. Destroy drains
+// all submitted batches before returning.
 iree_status_t iree_hal_amdxdna_completion_queue_create(
     iree_allocator_t host_allocator,
     iree_hal_amdxdna_completion_queue_t** out_queue);
@@ -78,9 +76,7 @@ iree_status_t iree_hal_amdxdna_completion_batch_add_submission(
 
 // Adds an ordered post-completion action. Actions with |run_on_error=false|
 // are skipped after an earlier native wait/action fails. Actions and cleanups
-// must be thread-agnostic and must not submit new queue work: completion may run
-// either on the completion worker or on an infinite host waiter that is directly
-// waiting for this batch.
+// run on the completion worker and must not submit new queue work.
 iree_status_t iree_hal_amdxdna_completion_batch_add_action(
     iree_hal_amdxdna_completion_batch_t* batch,
     iree_hal_amdxdna_completion_action_fn_t action_fn,
@@ -105,11 +101,9 @@ bool iree_hal_amdxdna_completion_batch_has_work(
 iree_status_t iree_hal_amdxdna_completion_batch_submit(
     iree_hal_amdxdna_completion_batch_t* batch);
 
-// Waits for a submitted batch to finish. An infinite wait may finish the batch
-// inline if no other finisher has claimed it yet, either by removing it from the
-// pending completion queue or by winning the finish-owner race before the worker
-// starts finishing a popped batch. Only infinite timeouts may claim native work
-// because native submission waits do not yet honor finite HAL deadlines.
+// Waits for the completion worker to finish a submitted batch. Finite timeouts
+// only bound the host wait; native waits/actions continue on the worker until
+// the batch is signaled or failed.
 iree_status_t iree_hal_amdxdna_completion_batch_wait(
     iree_hal_amdxdna_completion_batch_t* batch, iree_timeout_t timeout,
     iree_async_wait_flags_t flags);

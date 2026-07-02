@@ -326,9 +326,9 @@ static iree_status_t iree_hal_amdxdna_record_direct_command(
 //     async_queue/transfer_queue.
 //
 // Queue entry points must not wait for native completion, run file-transfer
-// loops, or perform large map/sync/memcpy operations on the caller thread. Ready
-// dispatch submit remains asynchronous: it returns after driver submission, and
-// native completion/signaling is owned by the completion queue.
+// loops, or perform large map/sync/memcpy operations on the caller thread.
+// Ready dispatch submit remains asynchronous: it returns after driver
+// submission, and native completion/signaling is owned by the completion queue.
 static iree_status_t iree_hal_amdxdna_enqueue_signal_op(
     iree_hal_amdxdna_device* device,
     const iree_hal_semaphore_list_t wait_semaphore_list,
