@@ -82,6 +82,9 @@ struct iree_hal_amdxdna_native_context_ref_t {
   iree_hal_amdxdna_native_context_t* context;
 };
 
+void iree_hal_amdxdna_native_submission_destroy(
+    iree_hal_amdxdna_native_submission_t* submission);
+
 iree_status_t iree_hal_amdxdna_native_device_query_caps(
     iree_hal_amdxdna_native_device_t* device,
     iree_hal_amdxdna_native_c_device_caps_t* out_caps);

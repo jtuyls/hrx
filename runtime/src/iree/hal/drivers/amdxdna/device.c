@@ -14,6 +14,7 @@
 #include "iree/async/notification.h"
 #include "iree/async/util/proactor_pool.h"
 #include "iree/base/internal/atomics.h"
+#include "iree/base/time.h"
 #include "iree/hal/drivers/amdxdna/allocator.h"
 #include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/buffer.h"
@@ -35,6 +36,9 @@
 #define ARENA_BLOCK_SIZE (32 * 1024)
 
 static const iree_hal_device_vtable_t iree_hal_amdxdna_device_vtable;
+
+static bool iree_hal_amdxdna_semaphore_list_is_ready(
+    iree_hal_semaphore_list_t semaphore_list);
 
 static void iree_hal_amdxdna_device_initialize(
     iree_hal_amdxdna_device* device, iree_allocator_t host_allocator) {
@@ -316,13 +320,15 @@ static iree_status_t iree_hal_amdxdna_record_direct_command(
 // Device queue entry-point contract:
 //   * validate arguments and reject unsupported flags;
 //   * retain resources and copy small submission metadata into op-owned memory;
-//   * register wait timepoints and enqueue work to async_queue/transfer_queue.
+//   * issue immediately only when all waits are already satisfied and the
+//     operation can hand completion/signaling to a native completion batch;
+//   * otherwise register wait timepoints and enqueue work to
+//     async_queue/transfer_queue.
 //
-// Queue entry points must not issue NPU work, wait for native completion,
-// replay command buffers, run file-transfer loops, or perform large
-// map/sync/memcpy operations on the caller thread. Even empty wait lists route
-// through the queue as ready ops instead of executing inline; the workers own
-// execution and signal/fail the caller-provided signal list.
+// Queue entry points must not wait for native completion, run file-transfer
+// loops, or perform large map/sync/memcpy operations on the caller thread. Ready
+// dispatch submit remains asynchronous: it returns after driver submission, and
+// native completion/signaling is owned by the completion queue.
 static iree_status_t iree_hal_amdxdna_enqueue_signal_op(
     iree_hal_amdxdna_device* device,
     const iree_hal_semaphore_list_t wait_semaphore_list,
@@ -634,6 +640,17 @@ static iree_status_t iree_hal_amdxdna_queue_execute_op_fn(void* user_data) {
   return status;
 }
 
+static iree_status_t iree_hal_amdxdna_queue_execute_issue_ready(
+    iree_hal_amdxdna_queue_execute_op_t* op) {
+  iree_status_t status = iree_hal_amdxdna_queue_execute_op_fn(op);
+  if (iree_status_is_deferred(status)) {
+    iree_status_ignore(status);
+    status = iree_ok_status();
+  }
+  iree_hal_amdxdna_queue_execute_op_release(op);
+  return status;
+}
+
 static iree_status_t iree_hal_amdxdna_device_queue_execute(
     iree_hal_device_t* base_device, iree_hal_queue_affinity_t queue_affinity,
     const iree_hal_semaphore_list_t wait_semaphore_list,
@@ -672,18 +689,28 @@ static iree_status_t iree_hal_amdxdna_device_queue_execute(
         completion_batch_owns_signal_list = true;
         signal_list_handled = true;
       }
-      status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
-          device->async_queue, wait_semaphore_list, async_signal_list,
-          iree_hal_amdxdna_queue_execute_op_fn, failure_fn,
-          iree_hal_amdxdna_queue_execute_op_release, op,
-          /*retained_resources=*/NULL, /*retained_resource_count=*/0);
-      if (iree_status_is_ok(status)) {
-        op = NULL;  // async queue owns op.
-      } else if (op->completion_batch) {
-        iree_status_t enqueue_status = status;
-        iree_status_ignore(iree_hal_amdxdna_queue_execute_submit_error_batch(
-            op, iree_status_clone(status)));
-        status = enqueue_status;
+      bool direct_ready_submit = false;
+      if (op->completion_batch) {
+        direct_ready_submit =
+            iree_hal_amdxdna_semaphore_list_is_ready(wait_semaphore_list);
+      }
+      if (direct_ready_submit) {
+        status = iree_hal_amdxdna_queue_execute_issue_ready(op);
+        op = NULL;
+      } else {
+        status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
+            device->async_queue, wait_semaphore_list, async_signal_list,
+            iree_hal_amdxdna_queue_execute_op_fn, failure_fn,
+            iree_hal_amdxdna_queue_execute_op_release, op,
+            /*retained_resources=*/NULL, /*retained_resource_count=*/0);
+        if (iree_status_is_ok(status)) {
+          op = NULL;  // async queue owns op.
+        } else if (op->completion_batch) {
+          iree_status_t enqueue_status = status;
+          iree_status_ignore(iree_hal_amdxdna_queue_execute_submit_error_batch(
+              op, iree_status_clone(status)));
+          status = enqueue_status;
+        }
       }
       if (!iree_status_is_ok(status)) {
         iree_hal_amdxdna_queue_execute_op_release(op);
@@ -1518,6 +1545,21 @@ static iree_status_t iree_hal_amdxdna_apply_dispatch_plan(
       command_buffer, &op->plan, op->constants, op->bindings, op->flags);
 }
 
+static bool iree_hal_amdxdna_semaphore_list_is_ready(
+    iree_hal_semaphore_list_t semaphore_list) {
+  for (iree_host_size_t i = 0; i < semaphore_list.count; ++i) {
+    uint64_t current_value = 0;
+    iree_status_t status =
+        iree_hal_semaphore_query(semaphore_list.semaphores[i], &current_value);
+    if (!iree_status_is_ok(status)) {
+      iree_status_ignore(status);
+      return false;
+    }
+    if (current_value < semaphore_list.payload_values[i]) return false;
+  }
+  return true;
+}
+
 static iree_status_t iree_hal_amdxdna_queue_dispatch_op_fn(void* user_data) {
   iree_hal_amdxdna_queue_dispatch_op_t* op =
       (iree_hal_amdxdna_queue_dispatch_op_t*)user_data;
@@ -1546,6 +1588,18 @@ static iree_status_t iree_hal_amdxdna_queue_dispatch_op_fn(void* user_data) {
   if (!completion_cleanup_owned) {
     iree_hal_amdxdna_queue_dispatch_op_cleanup(op);
   }
+  return status;
+}
+
+static iree_status_t iree_hal_amdxdna_queue_dispatch_issue_ready(
+    iree_hal_amdxdna_queue_dispatch_op_t* op) {
+  iree_status_t status = iree_hal_amdxdna_queue_dispatch_op_fn(op);
+  const bool deferred = iree_status_is_deferred(status);
+  if (deferred) {
+    iree_status_ignore(status);
+    status = iree_ok_status();
+  }
+  iree_hal_amdxdna_queue_dispatch_op_cleanup(op);
   return status;
 }
 
@@ -1694,21 +1748,31 @@ static iree_status_t iree_hal_amdxdna_device_queue_dispatch(
       failure_fn = iree_hal_amdxdna_queue_dispatch_wait_failure_fn;
       signal_list_handled = true;
     }
-    status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
-        device->async_queue, wait_semaphore_list, async_signal_list,
-        iree_hal_amdxdna_queue_dispatch_op_fn, failure_fn,
-        iree_hal_amdxdna_queue_dispatch_op_cleanup, op,
-        /*retained_resources=*/NULL, /*retained_resource_count=*/0);
-    if (iree_status_is_ok(status)) {
-      op = NULL;  // async queue owns op.
-    } else if (op->completion_batch) {
-      iree_status_t enqueue_status = status;
-      iree_hal_amdxdna_completion_batch_record_error(op->completion_batch,
-                                                     iree_status_clone(status));
-      iree_status_ignore(
-          iree_hal_amdxdna_completion_batch_submit(op->completion_batch));
-      op->completion_batch = NULL;
-      status = enqueue_status;
+    bool direct_ready_submit = false;
+    if (op->completion_batch) {
+      direct_ready_submit =
+          iree_hal_amdxdna_semaphore_list_is_ready(wait_semaphore_list);
+    }
+    if (direct_ready_submit) {
+      status = iree_hal_amdxdna_queue_dispatch_issue_ready(op);
+      op = NULL;  // ready submit released queue-entry ownership.
+    } else {
+      status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
+          device->async_queue, wait_semaphore_list, async_signal_list,
+          iree_hal_amdxdna_queue_dispatch_op_fn, failure_fn,
+          iree_hal_amdxdna_queue_dispatch_op_cleanup, op,
+          /*retained_resources=*/NULL, /*retained_resource_count=*/0);
+      if (iree_status_is_ok(status)) {
+        op = NULL;  // async queue owns op.
+      } else if (op->completion_batch) {
+        iree_status_t enqueue_status = status;
+        iree_hal_amdxdna_completion_batch_record_error(
+            op->completion_batch, iree_status_clone(status));
+        iree_status_ignore(
+            iree_hal_amdxdna_completion_batch_submit(op->completion_batch));
+        op->completion_batch = NULL;
+        status = enqueue_status;
+      }
     }
   }
   iree_allocator_free(device->host_allocator, retained_resources);

@@ -12,6 +12,7 @@
 #include "iree/base/threading/mutex.h"
 #include "iree/base/threading/notification.h"
 #include "iree/base/threading/thread.h"
+#include "iree/base/time.h"
 #include "iree/hal/drivers/amdxdna/semaphore.h"
 
 typedef enum iree_hal_amdxdna_completion_item_kind_e {
@@ -47,6 +48,8 @@ struct iree_hal_amdxdna_completion_batch_t {
   iree_status_t status;
   iree_notification_t done_notification;
   iree_atomic_int32_t done;
+  iree_atomic_int32_t done_waiter_count;
+  iree_atomic_int32_t finish_owner;
   iree_atomic_int32_t submitted;
   bool cleanups_ran;
   bool native_signals_published;
@@ -75,6 +78,51 @@ struct iree_hal_amdxdna_completion_queue_t {
   iree_atomic_uint64_t* frontier_epoch;
 };
 
+typedef enum iree_hal_amdxdna_completion_finish_owner_e {
+  IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_NONE = 0,
+  IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_WORKER = 1,
+  IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_WAITER = 2,
+} iree_hal_amdxdna_completion_finish_owner_t;
+
+static bool iree_hal_amdxdna_completion_batch_is_done(void* arg);
+
+static bool iree_hal_amdxdna_completion_batch_try_begin_finish(
+    iree_hal_amdxdna_completion_batch_t* batch,
+    iree_hal_amdxdna_completion_finish_owner_t owner) {
+  int32_t expected = IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_NONE;
+  return iree_atomic_compare_exchange_strong(
+      &batch->finish_owner, &expected, owner, iree_memory_order_acq_rel,
+      iree_memory_order_acquire);
+}
+
+static bool iree_hal_amdxdna_completion_batch_try_begin_waiter_finish(
+    iree_hal_amdxdna_completion_batch_t* batch) {
+  return iree_hal_amdxdna_completion_batch_try_begin_finish(
+      batch, IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_WAITER);
+}
+
+static bool iree_hal_amdxdna_completion_batch_await_done(
+    iree_hal_amdxdna_completion_batch_t* batch, iree_timeout_t timeout) {
+  if (IREE_LIKELY(iree_hal_amdxdna_completion_batch_is_done(batch))) {
+    return true;
+  }
+  if (iree_timeout_is_immediate(timeout)) return false;
+  const iree_time_t deadline_ns = iree_timeout_as_deadline_ns(timeout);
+  while (true) {
+    iree_wait_token_t wait_token =
+        iree_notification_prepare_wait(&batch->done_notification);
+    if (iree_hal_amdxdna_completion_batch_is_done(batch)) {
+      iree_notification_cancel_wait(&batch->done_notification);
+      return true;
+    }
+    if (!iree_notification_commit_wait(&batch->done_notification, wait_token,
+                                       IREE_DURATION_ZERO, deadline_ns)) {
+      return false;
+    }
+    if (iree_hal_amdxdna_completion_batch_is_done(batch)) return true;
+  }
+}
+
 static bool iree_hal_amdxdna_completion_queue_is_drained(void* arg) {
   iree_hal_amdxdna_completion_queue_t* queue =
       (iree_hal_amdxdna_completion_queue_t*)arg;
@@ -91,7 +139,10 @@ static bool iree_hal_amdxdna_completion_batch_is_done(void* arg) {
 static void iree_hal_amdxdna_completion_batch_mark_done(
     iree_hal_amdxdna_completion_batch_t* batch) {
   iree_atomic_store(&batch->done, 1, iree_memory_order_release);
-  iree_notification_post(&batch->done_notification, IREE_ALL_WAITERS);
+  int32_t waiter_count =
+      iree_atomic_load(&batch->done_waiter_count, iree_memory_order_acquire);
+  iree_notification_post(&batch->done_notification,
+                         waiter_count > 0 ? waiter_count : 1);
 }
 
 static void iree_hal_amdxdna_completion_queue_complete_inflight(
@@ -284,15 +335,29 @@ static int iree_hal_amdxdna_completion_queue_worker_main(void* arg) {
     iree_hal_amdxdna_completion_batch_t* batch = NULL;
     iree_slim_mutex_lock(&queue->mutex);
     iree_hal_amdxdna_completion_queue_pop_locked(queue, &batch);
+    const bool retain_for_takeover = batch != NULL;
+    if (retain_for_takeover) {
+      iree_hal_amdxdna_completion_batch_retain(batch);
+    }
     const bool shutdown = iree_atomic_load(&queue->shutdown_requested,
                                            iree_memory_order_acquire) != 0;
     iree_slim_mutex_unlock(&queue->mutex);
 
     if (batch) {
-      iree_hal_amdxdna_completion_batch_finish(batch);
-      iree_hal_amdxdna_completion_batch_mark_done(batch);
-      iree_hal_amdxdna_completion_queue_complete_inflight(queue);
-      iree_hal_amdxdna_completion_batch_destroy(batch);
+      bool owns_finish = iree_hal_amdxdna_completion_batch_try_begin_finish(
+          batch, IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_WORKER);
+      if (owns_finish) {
+        iree_hal_amdxdna_completion_batch_finish(batch);
+        iree_hal_amdxdna_completion_batch_mark_done(batch);
+        iree_hal_amdxdna_completion_queue_complete_inflight(queue);
+        iree_hal_amdxdna_completion_batch_destroy(batch);
+      } else {
+        iree_hal_amdxdna_completion_batch_await_done(
+            batch, iree_infinite_timeout());
+      }
+      if (retain_for_takeover) {
+        iree_hal_amdxdna_completion_batch_destroy(batch);
+      }
       continue;
     }
     if (shutdown) return 0;
@@ -398,6 +463,10 @@ iree_status_t iree_hal_amdxdna_completion_batch_create(
   batch->status = iree_ok_status();
   iree_notification_initialize(&batch->done_notification);
   iree_atomic_store(&batch->done, 0, iree_memory_order_relaxed);
+  iree_atomic_store(&batch->done_waiter_count, 0, iree_memory_order_relaxed);
+  iree_atomic_store(&batch->finish_owner,
+                    IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_NONE,
+                    iree_memory_order_relaxed);
   iree_atomic_store(&batch->submitted, 0, iree_memory_order_relaxed);
   batch->item_tail_link = &batch->item_head;
   batch->cleanup_tail_link = &batch->cleanup_head;
@@ -552,25 +621,79 @@ iree_status_t iree_hal_amdxdna_completion_batch_wait(
   (void)flags;
 
   iree_hal_amdxdna_completion_queue_t* queue = batch->queue;
+  bool registered_waiter = false;
+  if (iree_timeout_is_infinite(timeout) &&
+      iree_atomic_load(&batch->submitted, iree_memory_order_acquire) != 0 &&
+      !iree_hal_amdxdna_completion_batch_is_done(batch)) {
+    iree_atomic_fetch_add(&batch->done_waiter_count, 1,
+                          iree_memory_order_acq_rel);
+    registered_waiter = true;
+  }
   bool claimed = false;
   if (iree_timeout_is_infinite(timeout) &&
       iree_atomic_load(&batch->submitted, iree_memory_order_acquire) != 0) {
     iree_slim_mutex_lock(&queue->mutex);
     claimed = iree_hal_amdxdna_completion_queue_claim_locked(queue, batch);
+    if (claimed) {
+      bool began_finish = iree_hal_amdxdna_completion_batch_try_begin_finish(
+          batch, IREE_HAL_AMDXDNA_COMPLETION_FINISH_OWNER_WAITER);
+      IREE_ASSERT(began_finish, "pending claimed batch already has an owner");
+    }
     iree_slim_mutex_unlock(&queue->mutex);
   }
 
   if (claimed) {
     iree_hal_amdxdna_completion_batch_finish(batch);
+    if (registered_waiter) {
+      iree_atomic_fetch_sub(&batch->done_waiter_count, 1,
+                            iree_memory_order_acq_rel);
+      registered_waiter = false;
+    }
     iree_hal_amdxdna_completion_batch_mark_done(batch);
     iree_hal_amdxdna_completion_queue_complete_inflight(queue);
     iree_hal_amdxdna_completion_batch_destroy(batch);
     return iree_ok_status();
   }
 
-  if (iree_notification_await(&batch->done_notification,
-                              iree_hal_amdxdna_completion_batch_is_done, batch,
-                              timeout)) {
+  const bool should_takeover =
+      iree_timeout_is_infinite(timeout) &&
+      iree_atomic_load(&batch->submitted, iree_memory_order_acquire) != 0 &&
+      !iree_hal_amdxdna_completion_batch_is_done(batch);
+  // Match the host-waiter progress model used by other HAL queues: an infinite
+  // wait may perform completion inline if no worker has started finishing this
+  // batch yet. There is no polling or delay; this is a single ownership race.
+  if (should_takeover &&
+      iree_hal_amdxdna_completion_batch_try_begin_waiter_finish(batch)) {
+    iree_hal_amdxdna_completion_batch_finish(batch);
+    if (registered_waiter) {
+      iree_atomic_fetch_sub(&batch->done_waiter_count, 1,
+                            iree_memory_order_acq_rel);
+      registered_waiter = false;
+    }
+    iree_hal_amdxdna_completion_batch_mark_done(batch);
+    iree_hal_amdxdna_completion_queue_complete_inflight(queue);
+    iree_hal_amdxdna_completion_batch_destroy(batch);
+    return iree_ok_status();
+  }
+
+  if (iree_hal_amdxdna_completion_batch_is_done(batch)) {
+    if (registered_waiter) {
+      iree_atomic_fetch_sub(&batch->done_waiter_count, 1,
+                            iree_memory_order_acq_rel);
+    }
+    return iree_ok_status();
+  }
+  if (!registered_waiter) {
+    iree_atomic_fetch_add(&batch->done_waiter_count, 1,
+                          iree_memory_order_acq_rel);
+    registered_waiter = true;
+  }
+  bool completed =
+      iree_hal_amdxdna_completion_batch_await_done(batch, timeout);
+  iree_atomic_fetch_sub(&batch->done_waiter_count, 1,
+                        iree_memory_order_acq_rel);
+  registered_waiter = false;
+  if (completed) {
     return iree_ok_status();
   }
   return iree_status_from_code(IREE_STATUS_DEADLINE_EXCEEDED);

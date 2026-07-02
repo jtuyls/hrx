@@ -320,6 +320,24 @@ TEST(ChainCommandCacheTest,
 }
 
 TEST(ChainCommandCacheTest,
+     DescriptorTemplateMatchRejectsChangedReconfigurationCount) {
+  auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  auto fresh_cmd = MakeCmd(FakeBuffer(0x20), /*device_addr=*/0x90000000);
+  auto cached_group = MakeGroup1(&cached_cmd);
+  auto fresh_group = MakeGroup1(&fresh_cmd);
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_reconf_buffer(
+      TestAllocator(), &cached_group, FakeBuffer(0x1000)));
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_reconf_buffer(
+      TestAllocator(), &fresh_group, FakeBuffer(0x2000)));
+  IREE_CHECK_OK(iree_hal_amdxdna_chain_group_append_reconf_buffer(
+      TestAllocator(), &fresh_group, FakeBuffer(0x3000)));
+  auto entry = MakeCacheEntry(&cached_group);
+
+  EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
+}
+
+TEST(ChainCommandCacheTest,
      DescriptorTemplateMatchAllowsPatchTableDynamicControlWords) {
   uint32_t cached_control_data[] = {0xA, 0x1000, 0x0, 0xD};
   uint32_t fresh_control_data[] = {0xA, 0x2000, 0x1, 0xD};
@@ -420,9 +438,13 @@ TEST(ChainCommandCacheTest, InFlightEntryIsNotMatchedUntilReleased) {
   iree_hal_amdxdna_chain_command_cache_entry_acquire_in_flight(&entry);
   EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
       &entry, &fresh_group, /*max_slots=*/24));
+  EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
 
   iree_hal_amdxdna_chain_command_cache_entry_release_in_flight(&cache, &entry);
   EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
+  EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
       &entry, &fresh_group, /*max_slots=*/24));
 
   iree_slim_mutex_deinitialize(&cache.mutex);
