@@ -936,6 +936,9 @@ struct iree_hal_amdxdna_native_submission_t {
   iree_allocator_t host_allocator;
   iree_hal_amdxdna_native_queue_t* queue;
   iree_hal_amdxdna_native_command_t* command;
+  iree_hal_amdxdna_native_command_t** commands;
+  iree_host_size_t command_count;
+  iree_host_size_t issued_count;
   char label[128];
   size_t label_size;
   bool issued;
@@ -982,6 +985,48 @@ iree_status_t iree_hal_amdxdna_native_queue_submit(
   return iree_ok_status();
 }
 
+iree_status_t iree_hal_amdxdna_native_queue_submit_all(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission) {
+  IREE_ASSERT_ARGUMENT(queue);
+  IREE_ASSERT_ARGUMENT(commands);
+  IREE_ASSERT_ARGUMENT(out_submission);
+  *out_submission = nullptr;
+  if (command_count == 0) return iree_ok_status();
+
+  iree_hal_amdxdna_native_submission_t* submission = nullptr;
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      queue->host_allocator, sizeof(*submission), (void**)&submission));
+  std::memset(submission, 0, sizeof(*submission));
+  submission->host_allocator = queue->host_allocator;
+  submission->queue = queue;
+  submission->command_count = command_count;
+  submission->status = iree_ok_status();
+  iree_hal_amdxdna_native_submission_set_label(submission, label);
+
+  iree_status_t status = iree_allocator_malloc_array(
+      queue->host_allocator, command_count, sizeof(*submission->commands),
+      (void**)&submission->commands);
+  if (iree_status_is_ok(status)) {
+    std::memcpy(submission->commands, commands,
+                command_count * sizeof(*submission->commands));
+    for (iree_host_size_t i = 0; i < command_count; ++i) {
+      status = iree_hal_amdxdna_native_queue_issue(queue, commands[i]);
+      if (!iree_status_is_ok(status)) break;
+      submission->issued = true;
+      submission->issued_count = i + 1;
+    }
+  }
+  if (!iree_status_is_ok(status)) {
+    iree_hal_amdxdna_native_submission_destroy(submission);
+    return status;
+  }
+  *out_submission = submission;
+  return iree_ok_status();
+}
+
 iree_status_t iree_hal_amdxdna_native_submission_wait(
     iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns) {
   IREE_ASSERT_ARGUMENT(submission);
@@ -990,9 +1035,33 @@ iree_status_t iree_hal_amdxdna_native_submission_wait(
   // deadline enforcement for now, matching the Windows MCDM async DDI.
   (void)timeout_ns;
   if (!submission->waited) {
-    submission->status = iree_hal_amdxdna_native_queue_wait_issued(
-        submission->queue, submission->command,
-        iree_make_string_view(submission->label, submission->label_size));
+    iree_string_view_t label =
+        iree_make_string_view(submission->label, submission->label_size);
+    if (submission->command_count != 0) {
+      if (IREE_UNLIKELY(submission->issued_count == 0)) {
+        submission->status = iree_make_status(
+            IREE_STATUS_FAILED_PRECONDITION,
+            "amdxdna native submit_all wait on a submission that was not "
+            "issued");
+      } else {
+        iree_status_t wait_status = iree_hal_amdxdna_native_queue_wait_issued(
+            submission->queue,
+            submission->commands[submission->issued_count - 1], label);
+        for (iree_host_size_t i = 0; i + 1 < submission->issued_count; ++i) {
+          iree_status_t earlier_status =
+              iree_hal_amdxdna_native_queue_wait_issued(
+                  submission->queue, submission->commands[i], label);
+          if (!iree_status_is_ok(earlier_status)) {
+            iree_status_ignore(wait_status);
+            wait_status = earlier_status;
+          }
+        }
+        submission->status = wait_status;
+      }
+    } else {
+      submission->status = iree_hal_amdxdna_native_queue_wait_issued(
+          submission->queue, submission->command, label);
+    }
     submission->waited = true;
   }
   return iree_status_clone(submission->status);
@@ -1006,7 +1075,11 @@ iree_status_t iree_hal_amdxdna_native_submission_query(
     *out_ready = true;
     return iree_ok_status();
   }
-  shim_xdna::bo* exec_bo = submission->command->kernel->get_exec_buf_bo();
+  iree_hal_amdxdna_native_command_t* command =
+      submission->command_count == 0
+          ? submission->command
+          : submission->commands[submission->issued_count - 1];
+  shim_xdna::bo* exec_bo = command->kernel->get_exec_buf_bo();
   *out_ready = shim_xdna::poll_command(exec_bo) != 0;
   return iree_ok_status();
 }
@@ -1015,12 +1088,12 @@ void iree_hal_amdxdna_native_submission_destroy(
     iree_hal_amdxdna_native_submission_t* submission) {
   if (!submission) return;
   if (submission->issued && !submission->waited) {
-    submission->status = iree_hal_amdxdna_native_queue_wait_issued(
-        submission->queue, submission->command,
-        iree_make_string_view(submission->label, submission->label_size));
-    submission->waited = true;
+    iree_status_t wait_status = iree_hal_amdxdna_native_submission_wait(
+        submission, /*timeout_ns=*/UINT64_MAX);
+    iree_status_ignore(wait_status);
   }
   iree_status_ignore(submission->status);
+  iree_allocator_free(submission->host_allocator, submission->commands);
   iree_allocator_free(submission->host_allocator, submission);
 }
 
@@ -1310,6 +1383,15 @@ extern "C" iree_status_t iree_hal_amdxdna_native_queue_c_submit(
     iree_hal_amdxdna_native_submission_t** out_submission) {
   return iree_hal_amdxdna_native_queue_submit(queue, command, label,
                                               out_submission);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_queue_c_submit_all(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission) {
+  return iree_hal_amdxdna_native_queue_submit_all(
+      queue, commands, command_count, label, out_submission);
 }
 
 extern "C" iree_status_t iree_hal_amdxdna_native_submission_c_wait(

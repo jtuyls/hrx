@@ -274,6 +274,12 @@ iree_status_t iree_hal_amdxdna_native_queue_c_submit(
     iree_hal_amdxdna_native_command_t* command, iree_string_view_t label,
     iree_hal_amdxdna_native_submission_t** out_submission);
 
+iree_status_t iree_hal_amdxdna_native_queue_c_submit_all(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_command_t* const* commands,
+    iree_host_size_t command_count, iree_string_view_t label,
+    iree_hal_amdxdna_native_submission_t** out_submission);
+
 iree_status_t iree_hal_amdxdna_native_submission_c_wait(
     iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns);
 

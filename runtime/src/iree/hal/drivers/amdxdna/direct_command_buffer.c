@@ -280,21 +280,22 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_submit_all(
         queue, commands, command_count, label);
   }
 
-  iree_status_t status = iree_ok_status();
-  for (iree_host_size_t i = 0; i < command_count && iree_status_is_ok(status);
-       ++i) {
-    iree_hal_amdxdna_native_submission_t* submission = NULL;
-    status = iree_hal_amdxdna_native_queue_c_submit(queue, commands[i], label,
-                                                    &submission);
+  // This helper is only used for parent-chain batches. Keep those in the native
+  // batch path so Windows MCDM can issue all parent chains into distinct
+  // completion slots and retire them with one collective wait. Represent the
+  // whole native batch as one async completion item instead of splitting it
+  // into independent parent submissions.
+  iree_hal_amdxdna_native_submission_t* submission = NULL;
+  iree_status_t status = iree_hal_amdxdna_native_queue_c_submit_all(
+      queue, commands, command_count, label, &submission);
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_amdxdna_completion_batch_add_submission(
+        command_buffer->completion_batch, submission);
     if (iree_status_is_ok(status)) {
-      status = iree_hal_amdxdna_completion_batch_add_submission(
-          command_buffer->completion_batch, submission);
-      if (iree_status_is_ok(status)) {
-        submission = NULL;  // completion batch owns it.
-      }
+      submission = NULL;  // completion batch owns it.
     }
-    iree_hal_amdxdna_native_submission_c_destroy(submission);
   }
+  iree_hal_amdxdna_native_submission_c_destroy(submission);
   return status;
 }
 
