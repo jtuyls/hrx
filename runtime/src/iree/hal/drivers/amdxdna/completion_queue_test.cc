@@ -8,7 +8,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "iree/async/proactor.h"
 #include "iree/async/proactor_platform.h"
@@ -30,6 +34,21 @@ typedef struct OrderedCleanup {
   int32_t value;
 } OrderedCleanup;
 
+typedef struct BlockingActionState {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool started = false;
+  bool release = false;
+  std::atomic<int32_t> action_count{0};
+  std::atomic<int32_t> cleanup_count{0};
+} BlockingActionState;
+
+typedef struct ThreadActionState {
+  std::atomic<int32_t> action_count{0};
+  std::atomic<int32_t> cleanup_count{0};
+  std::atomic<size_t> action_thread_hash{0};
+} ThreadActionState;
+
 static iree_status_t IncrementAction(void* user_data) {
   TestState* state = reinterpret_cast<TestState*>(user_data);
   iree_atomic_fetch_add(&state->action_count, 1, iree_memory_order_acq_rel);
@@ -46,6 +65,60 @@ static void RecordOrderedCleanup(void* user_data) {
   int32_t index = iree_atomic_fetch_add(&cleanup->state->cleanup_count, 1,
                                         iree_memory_order_acq_rel);
   cleanup->state->cleanup_order[index] = cleanup->value;
+}
+
+static iree_status_t BlockingAction(void* user_data) {
+  BlockingActionState* state =
+      reinterpret_cast<BlockingActionState*>(user_data);
+  state->action_count.fetch_add(1, std::memory_order_acq_rel);
+  std::unique_lock<std::mutex> lock(state->mutex);
+  state->started = true;
+  state->cv.notify_all();
+  state->cv.wait(lock, [&] { return state->release; });
+  return iree_ok_status();
+}
+
+static void BlockingCleanup(void* user_data) {
+  BlockingActionState* state =
+      reinterpret_cast<BlockingActionState*>(user_data);
+  state->cleanup_count.fetch_add(1, std::memory_order_acq_rel);
+}
+
+static bool WaitForBlockingActionStarted(BlockingActionState* state) {
+  std::unique_lock<std::mutex> lock(state->mutex);
+  return state->cv.wait_for(lock, std::chrono::seconds(5),
+                            [&] { return state->started; });
+}
+
+static void ReleaseBlockingAction(BlockingActionState* state) {
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->release = true;
+  }
+  state->cv.notify_all();
+}
+
+static bool WaitForStartedCount(const std::atomic<int32_t>& count,
+                                int32_t expected) {
+  for (int i = 0; i < 5000; ++i) {
+    if (count.load(std::memory_order_acquire) >= expected) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return count.load(std::memory_order_acquire) >= expected;
+}
+
+static iree_status_t RecordActionThread(void* user_data) {
+  ThreadActionState* state = reinterpret_cast<ThreadActionState*>(user_data);
+  state->action_count.fetch_add(1, std::memory_order_acq_rel);
+  state->action_thread_hash.store(
+      std::hash<std::thread::id>{}(std::this_thread::get_id()),
+      std::memory_order_release);
+  return iree_ok_status();
+}
+
+static void RecordActionCleanup(void* user_data) {
+  ThreadActionState* state = reinterpret_cast<ThreadActionState*>(user_data);
+  state->cleanup_count.fetch_add(1, std::memory_order_acq_rel);
 }
 
 static iree_async_proactor_t* CreateProactor() {
@@ -73,6 +146,20 @@ static iree_hal_semaphore_list_t MakeSemaphoreList(
   list.semaphores = semaphores;
   list.payload_values = values;
   return list;
+}
+
+static bool SubmitBlockingBatch(iree_hal_amdxdna_completion_queue_t* queue,
+                                BlockingActionState* state) {
+  iree_hal_amdxdna_completion_batch_t* batch = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, iree_hal_semaphore_list_empty(), &batch));
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_add_action(
+      batch, BlockingAction, BlockingCleanup, state,
+      /*run_on_error=*/false));
+  iree_status_t status = iree_hal_amdxdna_completion_batch_submit(batch);
+  bool deferred = iree_status_is_deferred(status);
+  iree_status_ignore(status);
+  return deferred;
 }
 
 TEST(CompletionQueueTest, RunsActionAndCleanupBeforeDestroyReturns) {
@@ -223,4 +310,167 @@ TEST(CompletionQueueTest, PublishedEmptyBatchFailsAfterRecordedError) {
   iree_async_proactor_release(proactor);
 }
 
+TEST(CompletionQueueTest, InfiniteWaitClaimsPendingBatchWhileWorkerBusy) {
+  iree_async_proactor_t* proactor = CreateProactor();
+  iree_hal_semaphore_t* semaphore = CreateSemaphore(proactor, 0);
+  iree_hal_semaphore_t* semaphores[] = {semaphore};
+  uint64_t values[] = {1};
+
+  iree_hal_amdxdna_completion_queue_t* queue = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_queue_create(
+      iree_allocator_system(), &queue));
+
+  BlockingActionState blocker;
+  ASSERT_TRUE(SubmitBlockingBatch(queue, &blocker));
+  ASSERT_TRUE(WaitForBlockingActionStarted(&blocker));
+
+  ThreadActionState claimed;
+  iree_hal_amdxdna_completion_batch_t* batch = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, MakeSemaphoreList(semaphores, values, IREE_ARRAYSIZE(semaphores)),
+      &batch));
+  iree_hal_amdxdna_completion_batch_publish_signals(batch);
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_add_action(
+      batch, RecordActionThread, RecordActionCleanup, &claimed,
+      /*run_on_error=*/false));
+  iree_status_t status = iree_hal_amdxdna_completion_batch_submit(batch);
+  EXPECT_TRUE(iree_status_is_deferred(status));
+  iree_status_ignore(status);
+
+  const size_t main_thread_hash =
+      std::hash<std::thread::id>{}(std::this_thread::get_id());
+  status = iree_hal_semaphore_wait(semaphore, 1, iree_infinite_timeout(),
+                                   IREE_ASYNC_WAIT_FLAG_NONE);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_OK);
+  iree_status_free(status);
+  EXPECT_EQ(claimed.action_count.load(std::memory_order_acquire), 1);
+  EXPECT_EQ(claimed.cleanup_count.load(std::memory_order_acquire), 1);
+  EXPECT_EQ(claimed.action_thread_hash.load(std::memory_order_acquire),
+            main_thread_hash);
+  EXPECT_EQ(blocker.cleanup_count.load(std::memory_order_acquire), 0);
+  uint64_t value = 0;
+  IREE_ASSERT_OK(iree_hal_semaphore_query(semaphore, &value));
+  EXPECT_EQ(value, 1ull);
+
+  ReleaseBlockingAction(&blocker);
+  iree_hal_amdxdna_completion_queue_destroy(queue);
+  EXPECT_EQ(blocker.cleanup_count.load(std::memory_order_acquire), 1);
+  iree_hal_semaphore_release(semaphore);
+  iree_async_proactor_release(proactor);
+}
+
+TEST(CompletionQueueTest, WorkerOwnedBatchWakesMultipleWaitersOnce) {
+  iree_async_proactor_t* proactor = CreateProactor();
+  iree_hal_semaphore_t* semaphore = CreateSemaphore(proactor, 0);
+  iree_hal_semaphore_t* semaphores[] = {semaphore};
+  uint64_t values[] = {1};
+
+  iree_hal_amdxdna_completion_queue_t* queue = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_queue_create(
+      iree_allocator_system(), &queue));
+  BlockingActionState state;
+  iree_hal_amdxdna_completion_batch_t* batch = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, MakeSemaphoreList(semaphores, values, IREE_ARRAYSIZE(semaphores)),
+      &batch));
+  iree_hal_amdxdna_completion_batch_publish_signals(batch);
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_add_action(
+      batch, BlockingAction, BlockingCleanup, &state,
+      /*run_on_error=*/false));
+  iree_status_t status = iree_hal_amdxdna_completion_batch_submit(batch);
+  EXPECT_TRUE(iree_status_is_deferred(status));
+  iree_status_ignore(status);
+  ASSERT_TRUE(WaitForBlockingActionStarted(&state));
+
+  constexpr int32_t kWaiterCount = 4;
+  std::atomic<int32_t> wait_started{0};
+  std::vector<iree_status_code_t> wait_codes(kWaiterCount, IREE_STATUS_UNKNOWN);
+  std::vector<std::thread> waiters;
+  waiters.reserve(kWaiterCount);
+  for (int32_t i = 0; i < kWaiterCount; ++i) {
+    waiters.emplace_back([&, i] {
+      wait_started.fetch_add(1, std::memory_order_acq_rel);
+      iree_status_t wait_status = iree_hal_semaphore_wait(
+          semaphore, 1, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE);
+      wait_codes[i] = iree_status_code(wait_status);
+      iree_status_free(wait_status);
+    });
+  }
+  EXPECT_TRUE(WaitForStartedCount(wait_started, kWaiterCount));
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(state.action_count.load(std::memory_order_acquire), 1);
+  EXPECT_EQ(state.cleanup_count.load(std::memory_order_acquire), 0);
+
+  ReleaseBlockingAction(&state);
+  for (std::thread& waiter : waiters) {
+    waiter.join();
+  }
+  for (iree_status_code_t code : wait_codes) {
+    EXPECT_EQ(code, IREE_STATUS_OK);
+  }
+  EXPECT_EQ(state.action_count.load(std::memory_order_acquire), 1);
+  EXPECT_EQ(state.cleanup_count.load(std::memory_order_acquire), 1);
+  uint64_t value = 0;
+  IREE_ASSERT_OK(iree_hal_semaphore_query(semaphore, &value));
+  EXPECT_EQ(value, 1ull);
+
+  iree_hal_amdxdna_completion_queue_destroy(queue);
+  iree_hal_semaphore_release(semaphore);
+  iree_async_proactor_release(proactor);
+}
+
+TEST(CompletionQueueTest, FiniteWaitDoesNotClaimPendingBatch) {
+  iree_hal_amdxdna_completion_queue_t* queue = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_queue_create(
+      iree_allocator_system(), &queue));
+
+  BlockingActionState blocker;
+  ASSERT_TRUE(SubmitBlockingBatch(queue, &blocker));
+  ASSERT_TRUE(WaitForBlockingActionStarted(&blocker));
+
+  TestState pending_state = {};
+  iree_atomic_store(&pending_state.action_count, 0, iree_memory_order_relaxed);
+  iree_atomic_store(&pending_state.cleanup_count, 0, iree_memory_order_relaxed);
+  iree_hal_amdxdna_completion_batch_t* pending_batch = nullptr;
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, iree_hal_semaphore_list_empty(), &pending_batch));
+  IREE_CHECK_OK(iree_hal_amdxdna_completion_batch_add_action(
+      pending_batch, IncrementAction, IncrementCleanup, &pending_state,
+      /*run_on_error=*/false));
+  iree_hal_amdxdna_completion_batch_retain(pending_batch);
+  iree_status_t status =
+      iree_hal_amdxdna_completion_batch_submit(pending_batch);
+  EXPECT_TRUE(iree_status_is_deferred(status));
+  iree_status_ignore(status);
+
+  status = iree_hal_amdxdna_completion_batch_wait(
+      pending_batch, iree_immediate_timeout(), IREE_ASYNC_WAIT_FLAG_NONE);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_DEADLINE_EXCEEDED);
+  iree_status_free(status);
+  EXPECT_EQ(
+      iree_atomic_load(&pending_state.action_count, iree_memory_order_acquire),
+      0);
+  EXPECT_EQ(
+      iree_atomic_load(&pending_state.cleanup_count, iree_memory_order_acquire),
+      0);
+
+  status = iree_hal_amdxdna_completion_batch_wait(
+      pending_batch, iree_infinite_timeout(), IREE_ASYNC_WAIT_FLAG_NONE);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_OK);
+  iree_status_free(status);
+  EXPECT_EQ(
+      iree_atomic_load(&pending_state.action_count, iree_memory_order_acquire),
+      1);
+  EXPECT_EQ(
+      iree_atomic_load(&pending_state.cleanup_count, iree_memory_order_acquire),
+      0);
+  iree_hal_amdxdna_completion_batch_destroy(pending_batch);
+  EXPECT_EQ(
+      iree_atomic_load(&pending_state.cleanup_count, iree_memory_order_acquire),
+      1);
+
+  ReleaseBlockingAction(&blocker);
+  iree_hal_amdxdna_completion_queue_destroy(queue);
+  EXPECT_EQ(blocker.cleanup_count.load(std::memory_order_acquire), 1);
+}
 }  // namespace
