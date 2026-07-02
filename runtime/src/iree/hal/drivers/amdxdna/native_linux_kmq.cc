@@ -212,7 +212,10 @@ uint32_t to_ert_opcode(iree_hal_amdxdna_native_c_command_opcode_t opcode) {
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU:
       return ERT_START_CU;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU:
+      return ERT_START_NPU;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF:
+      IREE_ASSERT_UNREACHABLE(
+          "Linux KMQ rejects PARTIAL_ELF before opcode conversion");
       return ERT_START_NPU;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN:
       return ERT_CMD_CHAIN;
@@ -626,6 +629,13 @@ iree_status_t iree_hal_amdxdna_native_command_create(
   IREE_ASSERT_ARGUMENT(device);
   IREE_ASSERT_ARGUMENT(out_command);
   *out_command = nullptr;
+
+  if (opcode == IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "amdxdna Linux KMQ does not support START_NPU_PARTIAL_ELF; "
+        "PARTIAL_ELF dispatch is not advertised");
+  }
 
   const bool poolable_start_npu =
       opcode == IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU;
