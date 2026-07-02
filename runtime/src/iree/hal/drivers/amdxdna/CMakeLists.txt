@@ -42,6 +42,8 @@ iree_cc_library(
     buffer.h
     command_buffer.c
     command_buffer.h
+    completion_queue.c
+    completion_queue.h
     context_cache.c
     context_cache.h
     direct_command_buffer.c
@@ -172,6 +174,20 @@ iree_cc_test(
     iree::async
     iree::base
     iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    ${_AMDXDNA_UNIT_TEST_LABELS}
+)
+
+iree_cc_test(
+  NAME
+    completion_queue_test
+  SRCS
+    "completion_queue_test.cc"
+  DEPS
+    iree::hal::drivers::amdxdna
+    iree::base
     iree::testing::gtest
     iree::testing::gtest_main
   LABELS
