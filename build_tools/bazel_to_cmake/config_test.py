@@ -333,6 +333,9 @@ loom_check_test_suite(
         self.assertIn("  SHARED\n", converter.body)
         self.assertIn("  TESTONLY\n", converter.body)
         self.assertIn("iree::hal::local::executable_library", converter.body)
+        self.assertIn('OUTPUT_NAME "elementwise_mul_library.so"', converter.body)
+        self.assertIn('PREFIX ""', converter.body)
+        self.assertIn('SUFFIX ""', converter.body)
 
     def test_cc_library_linkopts_expand_location_make_variables(self):
         converter = SimpleNamespace(body="")
@@ -396,6 +399,58 @@ loom_check_test_suite(
             converter.body,
         )
         self.assertNotIn('"elementwise_mul_library.so"', converter.body)
+
+    def test_c_embed_data_srcs_can_select_generated_targets(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        converter = SimpleNamespace(body="")
+        functions = bazel_to_cmake_converter.BuildFileFunctions(
+            converter=converter,
+            targets=bazel_to_cmake_targets.TargetConverter(repo_map={"@iree": ""}),
+            build_dir="runtime/src/iree/hal/local/elf/testdata",
+            repo_root=str(repo_root),
+        )
+
+        functions.cc_binary(
+            name="generated_elementwise_mul_x86_64.so",
+            srcs=["elementwise_mul_x86_64.c"],
+            deps=["//runtime/src/iree/hal/local:executable_library"],
+            testonly=True,
+            linkshared=True,
+            target_compatible_with=functions.select(
+                {
+                    "@platforms//os:linux": [],
+                    "//conditions:default": ["@platforms//:incompatible"],
+                }
+            ),
+        )
+        converter.body = ""
+
+        functions.iree_c_embed_data(
+            name="elementwise_mul",
+            srcs=["elementwise_mul_arm_64.so"]
+            + functions.select(
+                {
+                    "@platforms//os:linux": [
+                        ":generated_elementwise_mul_x86_64.so"
+                    ],
+                    "//conditions:default": ["elementwise_mul_x86_64.so"],
+                }
+            ),
+            c_file_output="elementwise_mul.c",
+            h_file_output="elementwise_mul.h",
+            testonly=True,
+            flatten=True,
+        )
+
+        self.assertIn('if(CMAKE_SYSTEM_NAME STREQUAL "Linux")', converter.body)
+        self.assertIn(
+            "$<TARGET_FILE:iree::hal::local::elf::testdata::generated_elementwise_mul_x86_64.so>",
+            converter.body,
+        )
+        self.assertIn(
+            "list(APPEND _elementwise_mul_platform_srcs elementwise_mul_x86_64.so)",
+            converter.body,
+        )
 
     def test_c_embed_data_srcs_preserve_generated_file_labels(self):
         repo_root = Path(__file__).resolve().parents[2]

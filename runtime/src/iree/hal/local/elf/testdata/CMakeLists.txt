@@ -9,12 +9,47 @@
 
 iree_add_all_subdirs()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+iree_cc_library(
+  NAME
+    generated_elementwise_mul_x86_64.so
+  SRCS
+    "elementwise_mul_x86_64.c"
+  DEPS
+    iree::hal::local::executable_library
+  LINKOPTS
+    "-nostdlib"
+    "-Wl,--build-id=none"
+    "-Wl,--hash-style=sysv"
+    "-Wl,-z,noexecstack"
+    "-Wl,-z,now"
+  TESTONLY
+  SHARED
+)
+
+iree_package_target_name(_generated_elementwise_mul_x86_64_so_target ::generated_elementwise_mul_x86_64.so)
+set_target_properties(${_generated_elementwise_mul_x86_64_so_target} PROPERTIES
+  OUTPUT_NAME "generated_elementwise_mul_x86_64.so"
+  PREFIX ""
+  SUFFIX ""
+)
+endif()
+
 file(GLOB _GLOB_ELEMENTWISE_MUL_X_SO LIST_DIRECTORIES false RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS elementwise_mul_*.so)
+file(GLOB _GLOB_ELEMENTWISE_MUL_X86_64_SO LIST_DIRECTORIES false RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS elementwise_mul_x86_64.so)
+list(REMOVE_ITEM _GLOB_ELEMENTWISE_MUL_X_SO ${_GLOB_ELEMENTWISE_MUL_X86_64_SO})
+set(_elementwise_mul_platform_srcs "")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND _elementwise_mul_platform_srcs $<TARGET_FILE:iree::hal::local::elf::testdata::generated_elementwise_mul_x86_64.so>)
+else()
+  list(APPEND _elementwise_mul_platform_srcs elementwise_mul_x86_64.so)
+endif()
 iree_c_embed_data(
   NAME
     elementwise_mul
   SRCS
     "${_GLOB_ELEMENTWISE_MUL_X_SO}"
+    ${_elementwise_mul_platform_srcs}
   C_FILE_OUTPUT
     "elementwise_mul.c"
   H_FILE_OUTPUT

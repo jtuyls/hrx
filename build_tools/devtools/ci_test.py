@@ -716,10 +716,7 @@ class CiTest(unittest.TestCase):
             "^iree/tokenizer/",
             ci_config.CPU_SANITIZERS_CTEST_EXCLUDE_REGEX,
         )
-        self.assertIn(
-            "^iree/hal/local/elf/elf_module_test$",
-            ci_config.CPU_CTEST_EXCLUDE_REGEX,
-        )
+        self.assertEqual(ci_config.CPU_CTEST_EXCLUDE_REGEX, "")
         self.assertEqual(ci_config.AMDGPU_XFAIL_TARGETS, ())
         self.assertEqual(ci_config.AMDGPU_CTEST_EXCLUDE_REGEX, "")
         self.assertEqual(ci_config.AMDGPU_SANITIZERS_XFAIL_TARGETS, ())

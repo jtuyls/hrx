@@ -895,10 +895,7 @@ class BuildFileFunctions(object):
 
         return self._convert_string_list_block(block_name, srcs, sort=True)
 
-    def _convert_data_srcs_block(self, srcs, block_name="SRCS"):
-        if not srcs:
-            return ""
-
+    def _convert_data_srcs(self, srcs):
         converted_srcs = []
         for src in srcs:
             if src.startswith(":") or src.startswith("//"):
@@ -917,8 +914,59 @@ class BuildFileFunctions(object):
                 converted_srcs.append(
                     self._filegroup_dep_filename(self._normalize_label(src))
                 )
+        return converted_srcs
 
-        return self._convert_string_list_block(block_name, converted_srcs, sort=True)
+    def _convert_data_srcs_blocks(self, name, srcs, block_name="SRCS"):
+        if not srcs:
+            return "", ""
+        if isinstance(srcs, ConditionSelect):
+            srcs = MixedDeps(unconditional=[], selects=[srcs])
+        if not isinstance(srcs, MixedDeps):
+            return (
+                self._convert_string_list_block(
+                    block_name, self._convert_data_srcs(srcs), sort=True
+                ),
+                "",
+            )
+
+        var_name = f"_{self._cmake_variable_name(name)}_platform_{block_name.lower()}"
+        var_block = f'set({var_name} "")\n'
+
+        for ps in srcs.selects:
+            first = True
+            for label, selected_srcs in ps.conditions.items():
+                if label == "//conditions:default":
+                    continue
+                cond = self._convert_select_condition(label)
+                if not cond:
+                    raise NotImplementedError(f"select condition: {label}")
+                keyword = "if" if first else "elseif"
+                var_block += f"{keyword}({cond})\n"
+                for src in sorted(self._convert_data_srcs(selected_srcs)):
+                    var_block += f"  list(APPEND {var_name} {src})\n"
+                first = False
+            default_srcs = ps.conditions.get("//conditions:default", [])
+            if default_srcs:
+                var_block += "else()\n"
+                for src in sorted(self._convert_data_srcs(default_srcs)):
+                    var_block += f"  list(APPEND {var_name} {src})\n"
+            var_block += "endif()\n"
+
+        srcs_block = self._convert_string_list_block(
+            block_name, self._convert_data_srcs(srcs.unconditional), sort=True
+        )
+        if srcs_block:
+            srcs_block = srcs_block.rstrip("\n") + f"\n    ${{{var_name}}}\n"
+        else:
+            srcs_block = f"  {block_name}\n    ${{{var_name}}}\n"
+
+        return srcs_block, var_block
+
+    def _convert_data_srcs_block(self, srcs, block_name="SRCS"):
+        srcs_block, var_block = self._convert_data_srcs_blocks("", srcs, block_name)
+        if var_block:
+            raise NotImplementedError(f"{block_name} with select()")
+        return srcs_block
 
     def _convert_target(self, target):
         """Returns a list of targets that correspond to the specified Bazel target.
@@ -1791,6 +1839,7 @@ class BuildFileFunctions(object):
         if platform_linkopts_block:
             self._converter.body += platform_linkopts_block
         if linkshared:
+            target_var = f"_{self._cmake_variable_name(name)}_target"
             self._converter.body += (
                 f"iree_cc_library(\n"
                 f"{name_block}"
@@ -1803,6 +1852,12 @@ class BuildFileFunctions(object):
                 f"{testonly_block}"
                 f"{includes_block}"
                 f"  SHARED\n"
+                f")\n\n"
+                f"iree_package_target_name({target_var} ::{name})\n"
+                f"set_target_properties(${{{target_var}}} PROPERTIES\n"
+                f'  OUTPUT_NAME "{name}"\n'
+                f'  PREFIX ""\n'
+                f'  SUFFIX ""\n'
                 f")\n\n"
             )
             self._emit_platform_guard_end(target_compatible_with)
@@ -1898,7 +1953,9 @@ class BuildFileFunctions(object):
         if self._should_skip_target(**kwargs):
             return
         name_block = self._convert_string_arg_block("NAME", name, quote=False)
-        srcs_block = self._convert_data_srcs_block(srcs)
+        srcs_block, platform_srcs_block = self._convert_data_srcs_blocks(
+            name, srcs
+        )
         c_file_output_block = self._convert_string_arg_block(
             "C_FILE_OUTPUT", c_file_output
         )
@@ -1912,6 +1969,8 @@ class BuildFileFunctions(object):
         deps_block = self._convert_target_list_block("DEPS", deps)
 
         self._emit_platform_guard_begin(target_compatible_with)
+        if platform_srcs_block:
+            self._converter.body += platform_srcs_block
         self._converter.body += (
             f"iree_c_embed_data(\n"
             f"{name_block}"

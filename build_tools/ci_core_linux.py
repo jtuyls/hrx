@@ -87,7 +87,7 @@ PUBLIC_DEPS_OPTIONAL_GLOBS = [
     "lib/rocm_sysdeps/lib/*.so*",
 ]
 
-CORE_CTEST_EXCLUDE_REGEXES = ("^iree/hal/local/elf/elf_module_test$",)
+CORE_CTEST_EXCLUDE_REGEXES = ()
 
 
 @dataclass(frozen=True)

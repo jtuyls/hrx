@@ -5,6 +5,10 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 load("//build_tools/embed_data:build_defs.bzl", "iree_c_embed_data")
+load(
+    "//runtime/build_tools/bazel:cc.bzl",
+    "iree_runtime_cc_binary",
+)
 
 package(
     default_visibility = ["//visibility:public"],
@@ -12,9 +16,36 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+iree_runtime_cc_binary(
+    name = "generated_elementwise_mul_x86_64.so",
+    testonly = True,
+    srcs = ["elementwise_mul_x86_64.c"],
+    linkshared = True,
+    linkopts = [
+        "-nostdlib",
+        "-Wl,--build-id=none",
+        "-Wl,--hash-style=sysv",
+        "-Wl,-z,noexecstack",
+        "-Wl,-z,now",
+    ],
+    target_compatible_with = select({
+        "@platforms//os:linux": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//runtime/src/iree/hal/local:executable_library",
+    ],
+)
+
 iree_c_embed_data(
     name = "elementwise_mul",
-    srcs = glob(["elementwise_mul_*.so"]),
+    srcs = glob(
+        ["elementwise_mul_*.so"],
+        exclude = ["elementwise_mul_x86_64.so"],
+    ) + select({
+        "@platforms//os:linux": [":generated_elementwise_mul_x86_64.so"],
+        "//conditions:default": ["elementwise_mul_x86_64.so"],
+    }),
     c_file_output = "elementwise_mul.c",
     flatten = True,
     h_file_output = "elementwise_mul.h",
