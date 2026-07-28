@@ -41,8 +41,8 @@ typedef struct iree_hal_amdxdna_direct_command_buffer {
 
   iree_hal_amdxdna_device* device;
 
-  // Dispatches lowered through the host-patched path accumulate here until end().
-  // A single child is submitted directly. Multi-child groups flush as
+  // Dispatches lowered through the host-patched path accumulate here until
+  // end(). A single child is submitted directly. Multi-child groups flush as
   // ERT_CMD_CHAIN(s) when supported, or as direct child submissions otherwise.
   iree_hal_amdxdna_chain_accum_t chain_accum;
   // Optional batch installed by queue execution. When present and native caps
@@ -786,8 +786,7 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_start_npu_cmd(
 
   if (!command_buffer->device->native_caps.command_stages_control_code) {
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_sync_all(
-        cached->ctrl_code,
-        IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
+        cached->ctrl_code, IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
   }
 
   const bool native_uses_dpu_regmap_args =
@@ -943,8 +942,7 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_single_start_npu_cmd(
   return iree_ok_status();
 }
 
-static iree_status_t
-iree_hal_amdxdna_rewrite_cached_single_partial_elf_cmd(
+static iree_status_t iree_hal_amdxdna_rewrite_cached_single_partial_elf_cmd(
     iree_hal_amdxdna_direct_command_buffer* command_buffer,
     iree_hal_amdxdna_single_command_cache_entry_t* cached,
     const iree_hal_amdxdna_chain_cmd_t* fresh) {
@@ -967,8 +965,7 @@ iree_hal_amdxdna_rewrite_cached_single_partial_elf_cmd(
     cached->ctrl_code_mapped_ptr = mapped_ptr;
   }
   uint32_t* dst = (uint32_t*)mapped_ptr;
-  const size_t control_bytes =
-      fresh->src_asm_inst->count * sizeof(*dst);
+  const size_t control_bytes = fresh->src_asm_inst->count * sizeof(*dst);
   memcpy(dst, fresh->src_asm_inst->data, control_bytes);
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_patch_dynamic_fields_from_template(
       dst, fresh->src_asm_inst->data, fresh->src_asm_inst->count,
@@ -1026,9 +1023,8 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_chain_partial_elf_cmd(
   IREE_ASSERT_ARGUMENT(out_bindings_changed);
   *out_code_changed = false;
   *out_bindings_changed = false;
-  if (IREE_UNLIKELY(!cached->built || !cached->ctrl_code ||
-                    !cached->command || !fresh->src_asm_inst ||
-                    !fresh->src_patches ||
+  if (IREE_UNLIKELY(!cached->built || !cached->ctrl_code || !cached->command ||
+                    !fresh->src_asm_inst || !fresh->src_patches ||
                     !fresh->src_use_native_partial_elf ||
                     cached->ctrl_word_count != fresh->src_asm_inst->count ||
                     cached->binding_count != fresh->binding_count)) {
@@ -1039,8 +1035,8 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_chain_partial_elf_cmd(
 
   void* mapped_ptr = cached->ctrl_code_mapped_ptr;
   if (!mapped_ptr) {
-    IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_map(
-        cached->ctrl_code, &mapped_ptr));
+    IREE_RETURN_IF_ERROR(
+        iree_hal_amdxdna_native_buffer_c_map(cached->ctrl_code, &mapped_ptr));
     cached->ctrl_code_mapped_ptr = mapped_ptr;
   }
   uint32_t* dst = (uint32_t*)mapped_ptr;
@@ -1050,8 +1046,8 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_chain_partial_elf_cmd(
               fresh->src_constant_count) != 0) ||
       (fresh->binding_count != 0 &&
        memcmp(cached->binding_device_addrs, fresh->binding_device_addrs,
-              fresh->binding_count *
-                  sizeof(*cached->binding_device_addrs)) != 0);
+              fresh->binding_count * sizeof(*cached->binding_device_addrs)) !=
+           0);
   const bool bindings_changed =
       fresh->binding_count != 0 &&
       (memcmp(cached->binding_buffers, fresh->binding_buffers,
@@ -1709,15 +1705,15 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
       status = iree_hal_amdxdna_update_single_command_cache_entry(
           single_command_cache, single_cache_entry, prepared_ctrl_words,
           cmd->src_asm_inst->count, cmd->binding_buffers,
-          cmd->binding_device_addrs, cmd->binding_offsets,
-          cmd->binding_lengths, cmd->binding_count);
+          cmd->binding_device_addrs, cmd->binding_offsets, cmd->binding_lengths,
+          cmd->binding_count);
     }
     if (iree_status_is_ok(status) && !single_cache_entry) {
       status = iree_hal_amdxdna_find_single_command_cache_entry(
           single_command_cache, group->queue, cmd->src_cu_idx.index,
           prepared_ctrl_words, cmd->src_asm_inst->count, cmd->binding_buffers,
-          cmd->binding_device_addrs, cmd->binding_offsets,
-          cmd->binding_lengths, cmd->binding_count, &single_cache_entry);
+          cmd->binding_device_addrs, cmd->binding_offsets, cmd->binding_lengths,
+          cmd->binding_count, &single_cache_entry);
     }
   }
 
@@ -1832,9 +1828,9 @@ iree_hal_amdxdna_direct_command_buffer_materialize_accumulated_child(
     iree_hal_amdxdna_chain_cmd_t* cmd) {
   if (cmd->built) return iree_ok_status();
   if (!cmd->src_asm_inst || !cmd->src_patches) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "serial dispatch fallback is missing recorded control-code descriptors");
+    return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                            "serial dispatch fallback is missing recorded "
+                            "control-code descriptors");
   }
   return iree_hal_amdxdna_make_npu_cmd(
       command_buffer, cmd->src_cu_idx, cmd->src_asm_inst, cmd->src_patches,
@@ -1955,8 +1951,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
         // the descriptor inputs (control-code template + constants +
         // bindings) match exactly, without building this group's children at
         // all.
-        for (iree_host_size_t i = 0; i < device_chain_cache->entry_count;
-             ++i) {
+        for (iree_host_size_t i = 0; i < device_chain_cache->entry_count; ++i) {
           iree_hal_amdxdna_chain_command_cache_entry_t* entry =
               &device_chain_cache->entries[i];
           if (iree_hal_amdxdna_chain_command_cache_descriptor_matches(
@@ -1997,10 +1992,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
               if (group->native_partial_elf) {
                 bool child_code_changed = false;
                 bool child_bindings_changed = false;
-                status =
-                    iree_hal_amdxdna_rewrite_cached_chain_partial_elf_cmd(
-                        &chain_cache->group.cmds[i], &group->cmds[i],
-                        &child_code_changed, &child_bindings_changed);
+                status = iree_hal_amdxdna_rewrite_cached_chain_partial_elf_cmd(
+                    &chain_cache->group.cmds[i], &group->cmds[i],
+                    &child_code_changed, &child_bindings_changed);
                 chain_code_changed |= child_code_changed;
                 binding_refs_changed |= child_bindings_changed;
               } else {
@@ -2020,12 +2014,10 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             }
             if (iree_status_is_ok(status) &&
                 (binding_refs_changed || reconf_buffers_changed)) {
-              // Parent ERT_CMD_CHAIN packets contain stable cached child
-              // command BO handles, but also bind data and reconfiguration BOs
-              // referenced by the group for residency.
-              // Linux KMQ cannot rebind a prepared native command in place, so
-              // changed refs require rebuilding the parent chain commands
-              // after refreshing the cached refs.
+              // Partial-ELF parents reference only stable child command BOs;
+              // each child owns and has already refreshed its data BO table.
+              // Other parent formats also bind group resources for residency
+              // and must be rebuilt when those resources change.
               if (reconf_buffers_changed) {
                 status = iree_hal_amdxdna_chain_group_take_reconf_buffers(
                     command_buffer->host_allocator, &chain_cache->group, group);
@@ -2034,7 +2026,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
                 status = iree_hal_amdxdna_chain_group_set_binding_refs(
                     command_buffer->host_allocator, &chain_cache->group, group);
               }
-              if (iree_status_is_ok(status)) {
+              if (iree_status_is_ok(status) &&
+                  !chain_cache->group.native_partial_elf) {
                 status = iree_hal_amdxdna_rebuild_cached_parent_chains(
                     command_buffer, chain_cache, max_slots);
               }

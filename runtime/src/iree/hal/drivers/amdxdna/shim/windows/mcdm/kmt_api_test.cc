@@ -978,6 +978,68 @@ TEST(KmtApiTest,
   }
 }
 
+TEST(KmtApiTest, ExecBufferAllocationPreservesLogicalCommandSize) {
+  for (McdmAbi mcdm_abi : {McdmAbi::legacy, McdmAbi::compact}) {
+    for (uint64_t logical_size : {uint64_t{224}, uint64_t{4096}}) {
+      ResetFakes();
+      KmtApi api = {};
+      api.create_allocation2 = FakeCreateAllocation;
+      api.map_gpu_virtual_address = FakeMapGpuVirtualAddress;
+      api.make_resident = FakeMakeResident;
+      api.lock2 = FakeLock2;
+      Device device = {};
+      device.device = 0x10;
+      device.paging_queue = 0x11;
+      device.mcdm_abi = mcdm_abi;
+      Buffer buffer = {};
+      Error error = {};
+
+      ASSERT_TRUE(CreateBuffer(api, device, BufferKind::execbuf, logical_size,
+                               &buffer, &error))
+          << ErrorMessage(&error);
+      const uint64_t requested_size =
+          logical_size + GetMcdmAbiInfo(mcdm_abi).submit_private_prefix_size;
+      EXPECT_EQ(buffer.size, logical_size);
+      EXPECT_EQ(buffer.requested_size, requested_size);
+      EXPECT_EQ(buffer.mapped_size, (requested_size + 4095) & ~uint64_t{4095});
+    }
+  }
+}
+
+TEST(KmtApiTest, CompletedPathBSubmitSkipsRedundantCpuFenceWait) {
+  auto run = [](uint64_t completed_fence) {
+    ResetFakes();
+    KmtApi api = {};
+    api.wait_from_cpu = FakeWaitFromCpu;
+    api.invalidate_cache = FakeInvalidateCache;
+    Device device = {};
+    device.device = 0x10;
+    uint64_t progress_fence = completed_fence;
+    Context context = {};
+    context.hw_queue = 0x20;
+    context.progress_fence = 0x21;
+    context.progress_fence_cpu = &progress_fence;
+    uint32_t slot_state = 4;
+    uint32_t packet_header = 0;
+    PathBPendingSubmit pending = {};
+    pending.fence_id = 7;
+    pending.slot_cpu = reinterpret_cast<uint8_t*>(&slot_state);
+    pending.packet_header = &packet_header;
+    pending.ring.allocation = 0x30;
+    pending.ring.size = sizeof(slot_state);
+    Error error = {};
+
+    EXPECT_TRUE(
+        WaitForPathBSubmits(api, device, &context, &pending, 1, &error))
+        << ErrorMessage(&error);
+    EXPECT_EQ(packet_header & 0xFu, 4u);
+    return g_wait_count;
+  };
+
+  EXPECT_EQ(run(/*completed_fence=*/7), 0u);
+  EXPECT_EQ(run(/*completed_fence=*/6), 1u);
+}
+
 TEST(KmtApiTest, PublishBufferCpuWritesValidatesRangeAndPreservesData) {
   alignas(64) std::array<uint8_t, 256> storage = {};
   std::fill(storage.begin(), storage.end(), 0x5a);

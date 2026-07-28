@@ -915,19 +915,14 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
                   uint64_t size, Buffer* out_buffer, Error* out_error) {
   BufferKindInfo kind_info = GetBufferKindInfo(kind);
   const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
-  // XRT's exec BO submit path asks the driver for the 4 KiB command BO plus
-  // the negotiated private prefix used by SubmitCommandToHwQueue. The HAL
-  // still sees only the 4 KiB command capacity.
+  // XRT's exec BO submit path asks the driver for the logical command capacity
+  // plus the negotiated private prefix used by SubmitCommandToHwQueue. A
+  // state-3 command therefore requests 4096 + prefix bytes, while a compact
+  // runlist parent requests only its 224-byte packet + prefix. The HAL still
+  // sees only the logical command capacity.
   uint64_t requested_size = std::max<uint64_t>(size, 1);
   if (kind == BufferKind::execbuf) {
-    // Match XRT exactly: it allocates a full 4 KiB command page plus the ABI
-    // prefix for every exec BO, so each runlist BO
-    // lands on its own page pair. We were allocating only the exact runlist
-    // bytes (~0x148, single 4 KiB page), packing multiple parents' exec BOs
-    // into one coherence granule and racing the firmware on multi-parent
-    // re-runs. The HAL still sees only the logical command capacity.
-    requested_size = std::max<uint64_t>(requested_size, 0x1000) +
-                      abi.submit_private_prefix_size;
+    requested_size += abi.submit_private_prefix_size;
   }
   uint64_t aligned_size = AlignUpToPage(requested_size);
   uint64_t size_pages = aligned_size / 4096;
@@ -2416,11 +2411,13 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
   // execution means earlier parent chunks have retired when the last fence is
   // reached. Completion state for each parent is still checked below.
   PathBPendingSubmit& last = pending[pending_count - 1];
-  if (!WaitForHwQueueFenceCpu(
-          api, device, *context, last.fence_id,
-          "D3DKMTWaitForSynchronizationObjectFromCpu(pathb batch)",
-          out_error)) {
-    return false;
+  if (!IsPathBSubmitComplete(*context, last)) {
+    if (!WaitForHwQueueFenceCpu(
+            api, device, *context, last.fence_id,
+            "D3DKMTWaitForSynchronizationObjectFromCpu(pathb batch)",
+            out_error)) {
+      return false;
+    }
   }
   // Every pending parent in a context reports through the same completion
   // ring. The final HWQ fence makes all preceding slots complete; invalidate
