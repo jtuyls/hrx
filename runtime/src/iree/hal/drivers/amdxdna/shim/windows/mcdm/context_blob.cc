@@ -14,7 +14,7 @@ namespace iree::hal::amdxdna::mcdm {
 namespace {
 
 constexpr size_t kAxlfBaseOffset = 0xE8;
-constexpr size_t kContextTailSize = 0x3C8;
+constexpr size_t kContextTailSize = 0x370;
 constexpr uint64_t kCommandApertureBase = 0x04000000;
 constexpr uint64_t kContextCommandBoSize = 0x1000;
 constexpr size_t kCompactContextPrivateDataSize = 0xA0;
@@ -554,11 +554,12 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
     }
     blob[tail + 0x3F] = '0';
     WriteU64(blob, tail + 0x40, 0x10000);
-    WriteU64(blob, tail + 0x48, 9);
-    WriteU32(blob, tail + 0x3B8, 0x800);
-    WriteU32(blob, tail + 0x3BC, 1);
-    WriteU32(blob, tail + 0x3C0, info.column_width);
-    WriteU32(blob, tail + 0x3C4, info.start_column);
+    WriteU64(blob, tail + 0x48, 8);
+    WriteU64(blob, tail + 0x58, 0x901);
+    WriteU32(blob, tail + 0x360, 0x800);
+    WriteU32(blob, tail + 0x364, 1);
+    WriteU32(blob, tail + 0x368, info.column_width);
+    WriteU32(blob, tail + 0x36C, info.start_column);
 
     *out_blob = iree_make_byte_span(blob, total_size);
   }

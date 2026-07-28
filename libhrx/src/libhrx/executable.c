@@ -77,7 +77,7 @@ static iree_status_t hrx_executable_snapshot_export_names(
   return iree_ok_status();
 }
 
-static hrx_status_t hrx_executable_wrap(
+hrx_status_t hrx_executable_wrap(
     hrx_device_t device, iree_hal_executable_cache_t* hal_executable_cache,
     iree_hal_executable_t* hal_executable, hrx_executable_t* executable) {
   iree_host_size_t export_count = 0;

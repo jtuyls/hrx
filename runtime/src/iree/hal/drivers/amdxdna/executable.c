@@ -19,6 +19,8 @@
 #include "iree/schemas/pdi_executable_def_verifier.h"
 
 static const iree_hal_executable_vtable_t iree_hal_amdxdna_executable_vtable;
+static iree_atomic_int64_t iree_hal_amdxdna_next_executable_cache_identity =
+    IREE_ATOMIC_VAR_INIT(1);
 
 static const iree_string_view_t kAmdxdnaPdiExecutableFormat = {"amdxdna-pdi-fb",
                                                                14};
@@ -541,6 +543,9 @@ static iree_status_t iree_hal_amdxdna_executable_allocate(
   iree_hal_resource_initialize(&iree_hal_amdxdna_executable_vtable,
                                &executable->resource);
   executable->host_allocator = host_allocator;
+  executable->cache_identity = (uint64_t)iree_atomic_fetch_add(
+      &iree_hal_amdxdna_next_executable_cache_identity, 1,
+      iree_memory_order_relaxed);
   executable->entry_point_count = entry_point_count;
   iree_slim_mutex_initialize(&executable->context_mutex);
   if (entry_point_count > 0) {
@@ -610,6 +615,126 @@ static iree_status_t iree_hal_amdxdna_kernel_params_allocate_runlists(
   params->asm_inst_runlist_count = run_count;
   params->patch_runlist_count = run_count;
   params->constant_patch_runlist_count = run_count;
+  return iree_ok_status();
+}
+
+static iree_status_t iree_hal_amdxdna_copy_u32_span(
+    iree_allocator_t host_allocator, iree_const_byte_span_t source,
+    iree_hal_amdxdna_u32_list_t* out_list) {
+  out_list->data = NULL;
+  out_list->count = 0;
+  if (source.data_length == 0) return iree_ok_status();
+  if ((source.data_length % sizeof(uint32_t)) != 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna executable uint32 data is misaligned");
+  }
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(
+      host_allocator, source.data_length, (void**)&out_list->data));
+  memcpy(out_list->data, source.data, source.data_length);
+  out_list->count = source.data_length / sizeof(uint32_t);
+  return iree_ok_status();
+}
+
+iree_status_t iree_hal_amdxdna_native_executable_create_from_description(
+    const iree_hal_amdxdna_executable_description_t* description,
+    iree_allocator_t host_allocator, iree_hal_executable_t** out_executable) {
+  IREE_ASSERT_ARGUMENT(description);
+  IREE_ASSERT_ARGUMENT(out_executable);
+  *out_executable = NULL;
+
+  iree_hal_amdxdna_executable* executable = NULL;
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_executable_allocate(
+      host_allocator, description->entry_point_count, &executable));
+
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t entry_ordinal = 0;
+       entry_ordinal < description->entry_point_count &&
+       iree_status_is_ok(status);
+       ++entry_ordinal) {
+    const iree_hal_amdxdna_executable_entry_description_t* source_entry =
+        &description->entry_points[entry_ordinal];
+    iree_hal_amdxdna_kernel_params_t* params =
+        &executable->entry_points[entry_ordinal];
+
+    status = iree_hal_amdxdna_copy_string_view(
+        host_allocator, source_entry->name, &params->kernel_name);
+    if (!iree_status_is_ok(status)) break;
+
+    if (source_entry->xclbin_ordinal >= 0) {
+      if ((iree_host_size_t)source_entry->xclbin_ordinal >=
+          description->xclbin_count) {
+        status = iree_make_status(
+            IREE_STATUS_OUT_OF_RANGE,
+            "amdxdna executable xclbin ordinal is out of range");
+        break;
+      }
+      status = iree_hal_amdxdna_copy_u8_span(
+          host_allocator,
+          description->xclbins[source_entry->xclbin_ordinal],
+          &params->xclbin);
+      if (!iree_status_is_ok(status)) break;
+    }
+    if (source_entry->pdi_ordinal >= 0) {
+      iree_byte_span_t pdi_span = iree_byte_span_empty();
+      status = iree_hal_amdxdna_xclbin_extract_pdi(
+          iree_make_const_byte_span(params->xclbin.data, params->xclbin.count),
+          (uint32_t)source_entry->pdi_ordinal, host_allocator, &pdi_span);
+      if (iree_status_is_ok(status)) {
+        params->pdi.data = pdi_span.data;
+        params->pdi.count = pdi_span.data_length;
+      }
+      if (!iree_status_is_ok(status)) break;
+    }
+
+    status = iree_hal_amdxdna_kernel_params_allocate_runlists(
+        host_allocator, params, source_entry->run_count);
+    for (iree_host_size_t run_ordinal = 0;
+         run_ordinal < source_entry->run_count && iree_status_is_ok(status);
+         ++run_ordinal) {
+      const iree_hal_amdxdna_executable_run_description_t* source_run =
+          &source_entry->runs[run_ordinal];
+      status = iree_hal_amdxdna_copy_u32_span(
+          host_allocator, source_run->transaction,
+          &params->asm_inst_runlist[run_ordinal]);
+      if (iree_status_is_ok(status)) {
+        status = iree_hal_amdxdna_build_write32_constant_patch_list(
+            host_allocator, params->asm_inst_runlist[run_ordinal].data,
+            params->asm_inst_runlist[run_ordinal].count,
+            &params->constant_patch_runlist[run_ordinal]);
+      }
+      if (iree_status_is_ok(status)) {
+        iree_hal_amdxdna_host_patch_table_t patch_table = {0};
+        status = iree_hal_amdxdna_build_host_patch_table(
+            host_allocator, source_run->transaction, &patch_table);
+        if (iree_status_is_ok(status)) {
+          params->patch_runlist[run_ordinal].data = patch_table.data;
+          params->patch_runlist[run_ordinal].count = patch_table.count;
+        }
+      }
+      if (iree_status_is_ok(status) &&
+          source_run->data_payload.data_length != 0) {
+        status = iree_hal_amdxdna_copy_u32_span(
+            host_allocator, source_run->data_payload,
+            &params->reconf_data_runlist[params->reconf_data_runlist_count++]);
+      }
+    }
+
+    IREE_TRACE({
+      if (iree_status_is_ok(status)) {
+        status = iree_hal_amdxdna_copy_string_view(
+            host_allocator, source_entry->source_file,
+            &params->source_filename);
+        params->source_line = source_entry->source_line;
+      }
+    });
+  }
+
+  if (!iree_status_is_ok(status)) {
+    iree_hal_amdxdna_executable_deinitialize(executable);
+    iree_allocator_free(host_allocator, executable);
+    return status;
+  }
+  *out_executable = (iree_hal_executable_t*)executable;
   return iree_ok_status();
 }
 

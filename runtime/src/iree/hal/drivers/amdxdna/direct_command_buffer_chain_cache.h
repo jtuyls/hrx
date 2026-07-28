@@ -36,9 +36,11 @@ extern "C" {
 // a structural guard: each entry may retain many native child command BOs,
 // instruction/control BOs, and parent chain BOs. Admission is therefore also
 // resource-budgeted in the cache implementation and evicts LRU non-in-flight
-// entries before retaining a new template.
+// entries before retaining a new template. The child budget accommodates the
+// complete FLM model working set while retaining the original entry, parent,
+// and instruction-memory bounds.
 enum { kAmdxdnaChainCommandCacheCapacity = 64 };
-enum { kAmdxdnaChainCommandCacheMaxChildCommands = 896 };
+enum { kAmdxdnaChainCommandCacheMaxChildCommands = 1024 };
 enum { kAmdxdnaChainCommandCacheMaxParentCommands = 96 };
 enum { kAmdxdnaChainCommandCacheMaxInstructionBytes = 32 * 1024 * 1024 };
 
@@ -63,6 +65,9 @@ typedef struct iree_hal_amdxdna_chain_cmd_t {
   const iree_hal_amdxdna_u32_list_t* src_asm_inst;
   const iree_hal_amdxdna_u32_list_t* src_patches;
   const iree_hal_amdxdna_write32_constant_patch_list_t* src_constant_patches;
+  uint64_t src_executable_identity;
+  uint32_t src_entry_point;
+  uint32_t src_run_ordinal;
   // Device-cache entries clone executable-owned template lists here before
   // they outlive the executable or one-shot command buffer that recorded them.
   iree_hal_amdxdna_u32_list_t owned_src_asm_inst;

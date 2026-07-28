@@ -573,6 +573,10 @@ typedef struct hrx_executable_s {
   const char** export_names;
 } hrx_executable_s;
 
+hrx_status_t hrx_executable_wrap(
+    hrx_device_t device, iree_hal_executable_cache_t* hal_executable_cache,
+    iree_hal_executable_t* hal_executable, hrx_executable_t* executable);
+
 typedef struct iree_async_proactor_pool_t iree_async_proactor_pool_t;
 
 //===----------------------------------------------------------------------===//

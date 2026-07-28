@@ -766,9 +766,20 @@ bool iree_hal_amdxdna_chain_command_cache_shape_matches(
 bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
     const iree_hal_amdxdna_chain_cmd_t* lhs,
     const iree_hal_amdxdna_chain_cmd_t* rhs) {
-  return iree_hal_amdxdna_u32_list_equal(lhs->src_asm_inst,
-                                         rhs->src_asm_inst) &&
-         iree_hal_amdxdna_u32_list_equal(lhs->src_patches, rhs->src_patches) &&
+  const bool same_immutable_source =
+      lhs->src_executable_identity != 0 &&
+      lhs->src_executable_identity == rhs->src_executable_identity &&
+      lhs->src_entry_point == rhs->src_entry_point &&
+      lhs->src_run_ordinal == rhs->src_run_ordinal;
+  const bool has_immutable_source =
+      lhs->src_executable_identity != 0 ||
+      rhs->src_executable_identity != 0;
+  return ((has_immutable_source && same_immutable_source) ||
+          (!has_immutable_source &&
+           iree_hal_amdxdna_u32_list_equal(lhs->src_asm_inst,
+                                           rhs->src_asm_inst) &&
+           iree_hal_amdxdna_u32_list_equal(lhs->src_patches,
+                                           rhs->src_patches))) &&
          lhs->src_use_native_partial_elf == rhs->src_use_native_partial_elf &&
          lhs->src_cu_idx.index == rhs->src_cu_idx.index &&
          iree_hal_amdxdna_u8_span_equal(
@@ -810,8 +821,17 @@ bool iree_hal_amdxdna_chain_command_cache_descriptor_matches(
 bool iree_hal_amdxdna_chain_cmd_descriptor_template_matches(
     const iree_hal_amdxdna_chain_cmd_t* lhs,
     const iree_hal_amdxdna_chain_cmd_t* rhs) {
-  return lhs->src_asm_inst && rhs->src_asm_inst &&
-         lhs->src_asm_inst->count == rhs->src_asm_inst->count &&
+  const bool same_immutable_source =
+      lhs->src_executable_identity != 0 &&
+      lhs->src_executable_identity == rhs->src_executable_identity &&
+      lhs->src_entry_point == rhs->src_entry_point &&
+      lhs->src_run_ordinal == rhs->src_run_ordinal;
+  const bool has_immutable_source =
+      lhs->src_executable_identity != 0 ||
+      rhs->src_executable_identity != 0;
+  return ((has_immutable_source && same_immutable_source) ||
+          (!has_immutable_source && lhs->src_asm_inst && rhs->src_asm_inst &&
+           lhs->src_asm_inst->count == rhs->src_asm_inst->count)) &&
          lhs->src_use_native_partial_elf == rhs->src_use_native_partial_elf &&
          lhs->src_cu_idx.index == rhs->src_cu_idx.index &&
          lhs->src_constant_count == rhs->src_constant_count &&
