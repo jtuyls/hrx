@@ -11,7 +11,9 @@
 
 #if defined(HRX_HAS_IREE_AMDXDNA_DRIVER)
 #include "iree/base/internal/flatcc/building.h"
+#include "iree/hal/drivers/amdxdna/api.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer_planning.h"
+#include "iree/hal/drivers/amdxdna/executable.h"
 #include "iree/schemas/amdxdna_xclbin_executable_def_builder.h"
 
 static bool hrx_amdxdna_span_is_valid(hrx_const_byte_span_t span) {
@@ -456,16 +458,117 @@ hrx_status_t hrx_amdxdna_executable_create(
                            "device or executable is NULL");
   }
   *executable = NULL;
-  hrx_host_allocator_t host_allocator = hrx_host_allocator_system();
-  uint8_t* executable_data = NULL;
-  size_t executable_data_size = 0;
-  hrx_status_t status = hrx_amdxdna_xadx_serialize(
-      params, host_allocator, &executable_data, &executable_data_size);
-  if (hrx_status_is_ok(status)) {
-    status =
-        hrx_executable_load_data(device, executable_data, executable_data_size,
-                                 "amdxdna-xclbin-fb", executable);
+#if !defined(HRX_HAS_IREE_AMDXDNA_DRIVER)
+  (void)params;
+  return hrx_make_status(HRX_STATUS_UNIMPLEMENTED,
+                         "HRX was built without the amdxdna driver");
+#else
+  hrx_status_t status = hrx_amdxdna_validate_executable_create(params);
+  if (!hrx_status_is_ok(status)) return status;
+
+  iree_allocator_t host_allocator = iree_allocator_system();
+  iree_const_byte_span_t* xclbins = NULL;
+  iree_hal_amdxdna_executable_entry_description_t* entries = NULL;
+  iree_hal_amdxdna_executable_run_description_t** entry_runs = NULL;
+  iree_hal_executable_cache_t* hal_executable_cache = NULL;
+  iree_hal_executable_t* hal_executable = NULL;
+
+  iree_status_t iree_status = iree_allocator_malloc_array(
+      host_allocator, params->xclbin_count, sizeof(*xclbins),
+      (void**)&xclbins);
+  if (iree_status_is_ok(iree_status)) {
+    iree_status = iree_allocator_malloc_array(
+        host_allocator, params->entry_point_count, sizeof(*entries),
+        (void**)&entries);
   }
-  hrx_host_allocator_free(host_allocator, executable_data);
+  if (iree_status_is_ok(iree_status)) {
+    iree_status = iree_allocator_malloc_array(
+        host_allocator, params->entry_point_count, sizeof(*entry_runs),
+        (void**)&entry_runs);
+  }
+  if (!iree_status_is_ok(iree_status)) {
+    status = hrx_status_from_iree(iree_status);
+    goto cleanup;
+  }
+  memset(entries, 0, params->entry_point_count * sizeof(*entries));
+  memset(entry_runs, 0, params->entry_point_count * sizeof(*entry_runs));
+
+  for (size_t i = 0; i < params->xclbin_count; ++i) {
+    xclbins[i] = iree_make_const_byte_span(params->xclbins[i].data,
+                                           params->xclbins[i].data_length);
+  }
+  const hrx_amdxdna_executable_entry_point_t* source_entry =
+      params->entry_points;
+  for (size_t i = 0; i < params->entry_point_count; ++i) {
+    iree_status = iree_allocator_malloc_array(
+        host_allocator, source_entry->run_count, sizeof(*entry_runs[i]),
+        (void**)&entry_runs[i]);
+    if (!iree_status_is_ok(iree_status)) {
+      status = hrx_status_from_iree(iree_status);
+      goto cleanup;
+    }
+    const hrx_amdxdna_executable_run_t* source_run = source_entry->runs;
+    for (size_t j = 0; j < source_entry->run_count; ++j) {
+      entry_runs[i][j].transaction = iree_make_const_byte_span(
+          source_run->transaction.data, source_run->transaction.data_length);
+      entry_runs[i][j].data_payload = iree_make_const_byte_span(
+          source_run->data_payload.data,
+          source_run->data_payload.data_length);
+      source_run = hrx_amdxdna_next_run(source_run);
+    }
+    entries[i].name =
+        iree_make_string_view(source_entry->name.data, source_entry->name.size);
+    entries[i].source_file = iree_make_string_view(
+        source_entry->source_file.data, source_entry->source_file.size);
+    entries[i].source_line = source_entry->source_line;
+    entries[i].xclbin_ordinal =
+        source_entry->context_mode == HRX_AMDXDNA_CONTEXT_MODE_CREATE
+            ? (int32_t)source_entry->xclbin_ordinal
+            : -1;
+    entries[i].pdi_ordinal =
+        source_entry->context_mode == HRX_AMDXDNA_CONTEXT_MODE_CREATE
+            ? (int32_t)source_entry->pdi_ordinal
+            : -1;
+    entries[i].runs = entry_runs[i];
+    entries[i].run_count = source_entry->run_count;
+    source_entry = hrx_amdxdna_next_entry(source_entry);
+  }
+
+  {
+    iree_hal_amdxdna_executable_description_t description = {
+        .xclbins = xclbins,
+        .xclbin_count = params->xclbin_count,
+        .entry_points = entries,
+        .entry_point_count = params->entry_point_count,
+    };
+    iree_status = iree_hal_executable_cache_create(
+        device->hal_device, IREE_SV("hrx"), &hal_executable_cache);
+    if (iree_status_is_ok(iree_status)) {
+      iree_status =
+          iree_hal_amdxdna_native_executable_create_from_description(
+              &description, host_allocator, &hal_executable);
+    }
+    if (iree_status_is_ok(iree_status)) {
+      status = hrx_executable_wrap(device, hal_executable_cache, hal_executable,
+                                   executable);
+      hal_executable_cache = NULL;
+      hal_executable = NULL;
+    } else {
+      status = hrx_status_from_iree(iree_status);
+    }
+  }
+
+cleanup:
+  iree_hal_executable_release(hal_executable);
+  iree_hal_executable_cache_release(hal_executable_cache);
+  if (entry_runs) {
+    for (size_t i = 0; i < params->entry_point_count; ++i) {
+      iree_allocator_free(host_allocator, entry_runs[i]);
+    }
+  }
+  iree_allocator_free(host_allocator, entry_runs);
+  iree_allocator_free(host_allocator, entries);
+  iree_allocator_free(host_allocator, xclbins);
   return status;
+#endif
 }

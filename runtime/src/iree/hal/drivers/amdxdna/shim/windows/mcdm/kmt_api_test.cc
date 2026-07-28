@@ -140,6 +140,7 @@ void ExpectPrivatePacketsMatchSnapshot(McdmAbi mcdm_abi) {
   aperture.gpu_allocation = 0x55667788;
   aperture.status_gpu_va = 0x1111222233334000ull;
   aperture.gpu_va = 0x5555666677778000ull;
+  aperture.protocol_gpu_va = aperture.gpu_va;
   aperture.cpu_ptr = reinterpret_cast<void*>(0x123456789ABCull);
 
   std::array<uint8_t, kMaxMcdmPrivateDataSize> expected = {};
@@ -511,10 +512,11 @@ TEST(KmtApiTest, CompactContextTeardownMatchesXrtOwnershipOrder) {
   EXPECT_EQ(g_destroy_calls[2].flags, 0x3u);
 }
 
-TEST(KmtApiTest, CodeRangeFollowsSetupPayloadAllocatorForBothAbis) {
+TEST(KmtApiTest, CodeRangeUsesProtocolVaIndependentOfAllocatorMapping) {
   CommandAperture aperture = {};
   aperture.gpu_allocation = 0x20;
-  aperture.gpu_va = 0x04000000;
+  aperture.gpu_va = 0x08000000;
+  aperture.protocol_gpu_va = 0x04000000;
   aperture.gpu_va_size = 0x04000000;
   Error error = {};
 
@@ -1005,6 +1007,7 @@ TEST(KmtApiTest, CompactPathBSetupMakesApertureResidentAfterBootstrap) {
   aperture.allocation = 0x40;
   aperture.gpu_allocation = 0x50;
   aperture.gpu_va = 0x100000;
+  aperture.protocol_gpu_va = aperture.gpu_va;
   aperture.gpu_va_size = g_locked_aperture.size();
   uint32_t setup_completion = 0xffffffffu;
   aperture.cpu_ptr = &setup_completion;
@@ -1090,7 +1093,8 @@ TEST(KmtApiTest, LegacyPathBSetupPublishesPayloadAfterFinalWrite) {
             0);
 }
 
-TEST(KmtApiTest, CreateBufferPreservesPendingResidencyFenceForBothAbis) {
+TEST(KmtApiTest,
+     CreateHostBufferUsesOnlyDevicePagingStateAndPreservesResidencyFence) {
   const McdmAbi abis[] = {McdmAbi::legacy, McdmAbi::compact};
   for (McdmAbi mcdm_abi : abis) {
     ResetFakes();
@@ -1131,14 +1135,94 @@ TEST(KmtApiTest, PublishBufferCpuWritesValidatesRangeAndPreservesData) {
   ASSERT_TRUE(PublishBufferCpuWrites(buffer, 3, 65, &error))
       << ErrorMessage(&error);
   EXPECT_EQ(storage, expected);
+  ASSERT_TRUE(InvalidateBufferCpuReads(buffer, 3, 65, &error))
+      << ErrorMessage(&error);
+  EXPECT_EQ(storage, expected);
   EXPECT_TRUE(PublishBufferCpuWrites(buffer, buffer.size, 0, &error));
+  EXPECT_TRUE(InvalidateBufferCpuReads(buffer, buffer.size, 0, &error));
 
   EXPECT_FALSE(PublishBufferCpuWrites(buffer, buffer.size, 1, &error));
   EXPECT_FALSE(PublishBufferCpuWrites(buffer, 200, 64, &error));
+  EXPECT_FALSE(InvalidateBufferCpuReads(buffer, buffer.size, 1, &error));
+  EXPECT_FALSE(InvalidateBufferCpuReads(buffer, 200, 64, &error));
 
   buffer.cpu_ptr = nullptr;
   EXPECT_FALSE(PublishBufferCpuWrites(buffer, 0, 1, &error));
   EXPECT_TRUE(PublishBufferCpuWrites(buffer, 0, 0, &error));
+  EXPECT_FALSE(InvalidateBufferCpuReads(buffer, 0, 1, &error));
+  EXPECT_TRUE(InvalidateBufferCpuReads(buffer, 0, 0, &error));
+}
+
+TEST(KmtApiTest, CopyAndCommitPathBCodeWritesCopiesAlignedRangesAndTails) {
+  alignas(64) std::array<uint8_t, 512> storage = {};
+  std::fill(storage.begin(), storage.end(), 0xcc);
+  std::array<uint8_t, 193> source = {};
+  for (size_t i = 0; i < source.size(); ++i) {
+    source[i] = static_cast<uint8_t>((i * 17) & 0xff);
+  }
+
+  CommandAperture aperture = {};
+  aperture.gpu_cpu_ptr = storage.data();
+  aperture.gpu_va_size = storage.size();
+  const CpuCopyRange range = {64, source.data(), source.size()};
+  Error error = {};
+
+  ASSERT_TRUE(CopyAndCommitPathBCodeWrites(aperture, &range, 1, &error))
+      << ErrorMessage(&error);
+  EXPECT_TRUE(std::equal(source.begin(), source.end(), storage.begin() + 64));
+  EXPECT_TRUE(std::all_of(storage.begin(), storage.begin() + 64,
+                          [](uint8_t value) { return value == 0xcc; }));
+  EXPECT_EQ(storage[64 + source.size()], 0xcc);
+}
+
+TEST(KmtApiTest, CopyAndCommitPathBCodeWritesHandlesMultipleAndUnalignedRanges) {
+  alignas(64) std::array<uint8_t, 512> storage = {};
+  std::fill(storage.begin(), storage.end(), 0xcc);
+  std::array<uint8_t, 67> first = {};
+  std::array<uint8_t, 96> second = {};
+  std::fill(first.begin(), first.end(), 0x35);
+  std::fill(second.begin(), second.end(), 0xa7);
+
+  CommandAperture aperture = {};
+  aperture.gpu_cpu_ptr = storage.data();
+  aperture.gpu_va_size = storage.size();
+  const CpuCopyRange ranges[] = {
+      {3, first.data(), first.size()},
+      {256, second.data(), second.size()},
+  };
+  Error error = {};
+
+  ASSERT_TRUE(CopyAndCommitPathBCodeWrites(aperture, ranges, 2, &error))
+      << ErrorMessage(&error);
+  EXPECT_TRUE(std::equal(first.begin(), first.end(), storage.begin() + 3));
+  EXPECT_TRUE(std::equal(second.begin(), second.end(), storage.begin() + 256));
+  EXPECT_EQ(storage[2], 0xcc);
+  EXPECT_EQ(storage[70], 0xcc);
+  EXPECT_EQ(storage[255], 0xcc);
+  EXPECT_EQ(storage[352], 0xcc);
+}
+
+TEST(KmtApiTest, CopyAndCommitPathBCodeWritesRejectsInvalidRanges) {
+  alignas(64) std::array<uint8_t, 128> storage = {};
+  std::array<uint8_t, 16> source = {};
+  CommandAperture aperture = {};
+  aperture.gpu_cpu_ptr = storage.data();
+  aperture.gpu_va_size = storage.size();
+  Error error = {};
+
+  EXPECT_TRUE(CopyAndCommitPathBCodeWrites(aperture, nullptr, 0, &error));
+  EXPECT_FALSE(CopyAndCommitPathBCodeWrites(aperture, nullptr, 1, &error));
+
+  CpuCopyRange range = {0, nullptr, 1};
+  EXPECT_FALSE(CopyAndCommitPathBCodeWrites(aperture, &range, 1, &error));
+  range = {120, source.data(), source.size()};
+  EXPECT_FALSE(CopyAndCommitPathBCodeWrites(aperture, &range, 1, &error));
+  range = {aperture.gpu_va_size, nullptr, 0};
+  EXPECT_TRUE(CopyAndCommitPathBCodeWrites(aperture, &range, 1, &error));
+
+  aperture.gpu_cpu_ptr = nullptr;
+  range = {0, source.data(), source.size()};
+  EXPECT_FALSE(CopyAndCommitPathBCodeWrites(aperture, &range, 1, &error));
 }
 
 TEST(KmtApiTest, BufferResidencyUsesNegotiatedPagingModel) {

@@ -89,4 +89,73 @@ TEST(NativeWindowsMcdmTxnTest, ResolvesReusedBdBeforeEachQueuePush) {
   EXPECT_EQ(ddr, bytes.data() + second_ddr);
 }
 
+TEST(NativeWindowsMcdmBufferRangeTest,
+     CoalescesPerBufferAndPreservesDisjointRanges) {
+  void* buffer_a = reinterpret_cast<void*>(0x1000);
+  void* buffer_b = reinterpret_cast<void*>(0x2000);
+  iree_hal_amdxdna_native_windows_buffer_range_t ranges[] = {
+      {buffer_a, 64, 64}, {buffer_b, 0, 16}, {buffer_a, 0, 32},
+      {buffer_a, 32, 32}, {nullptr, 0, 64},  {buffer_a, 256, 0},
+      {buffer_a, 256, 16}};
+
+  const size_t count =
+      iree_hal_amdxdna_native_windows_coalesce_buffer_ranges(
+          ranges, std::size(ranges));
+
+  ASSERT_EQ(count, 3u);
+  EXPECT_EQ(ranges[0].buffer, buffer_a);
+  EXPECT_EQ(ranges[0].offset, 0u);
+  EXPECT_EQ(ranges[0].length, 128u);
+  EXPECT_EQ(ranges[1].buffer, buffer_a);
+  EXPECT_EQ(ranges[1].offset, 256u);
+  EXPECT_EQ(ranges[1].length, 16u);
+  EXPECT_EQ(ranges[2].buffer, buffer_b);
+  EXPECT_EQ(ranges[2].offset, 0u);
+  EXPECT_EQ(ranges[2].length, 16u);
+}
+
+TEST(NativeWindowsMcdmBufferRangeTest, SaturatesOverflowingRangeEnd) {
+  void* buffer = reinterpret_cast<void*>(0x1000);
+  iree_hal_amdxdna_native_windows_buffer_range_t ranges[] = {
+      {buffer, UINT64_MAX - 7, 16}, {buffer, UINT64_MAX - 3, 4}};
+
+  const size_t count =
+      iree_hal_amdxdna_native_windows_coalesce_buffer_ranges(
+          ranges, std::size(ranges));
+
+  ASSERT_EQ(count, 1u);
+  EXPECT_EQ(ranges[0].offset, UINT64_MAX - 7);
+  EXPECT_EQ(ranges[0].length, 7u);
+}
+
+TEST(NativeWindowsMcdmPacketTest, CalculatesInitializedPacketBytes) {
+  size_t packet_bytes = 0;
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
+      /*payload_dword_count=*/5, /*allocation_size=*/4096, &packet_bytes));
+  EXPECT_EQ(packet_bytes, 24u);
+
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
+      /*payload_dword_count=*/1023, /*allocation_size=*/4096, &packet_bytes));
+  EXPECT_EQ(packet_bytes, 4096u);
+}
+
+TEST(NativeWindowsMcdmPacketTest, RejectsPacketsOutsideAllocation) {
+  size_t packet_bytes = 0;
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
+      /*payload_dword_count=*/0, /*allocation_size=*/0, &packet_bytes));
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
+      /*payload_dword_count=*/1024, /*allocation_size=*/4096, &packet_bytes));
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
+      /*payload_dword_count=*/0, /*allocation_size=*/4096, nullptr));
+}
+
+TEST(NativeWindowsMcdmBufferTest, DefersOnlyContextOwnedCommandStorage) {
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_buffer_requires_context(
+      IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_HOST_ONLY));
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_buffer_requires_context(
+      IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_CACHEABLE));
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_buffer_requires_context(
+      IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION));
+}
+
 }  // namespace

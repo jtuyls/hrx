@@ -241,6 +241,10 @@ struct Context {
   void* progress_fence_cpu = nullptr;
   D3DGPU_VIRTUAL_ADDRESS progress_fence_gpu = 0;
   uint64_t next_fence_id = 1;
+  // Highest paging-queue fence ordered onto this hardware queue. Queue order
+  // preserves that dependency for later submits, so only newly encountered
+  // paging work needs another GPU wait.
+  uint64_t ordered_paging_fence_value = 0;
   // Driver writeback in the context-private packet. XRT folds this cookie into
   // the 64 MiB command-aperture allocation private flags.
   uint32_t command_aperture_cookie = 0;
@@ -268,7 +272,11 @@ struct CommandAperture {
   D3DKMT_HANDLE resource = 0;
   D3DKMT_HANDLE gpu_resource = 0;
   D3DGPU_VIRTUAL_ADDRESS status_gpu_va = 0;
+  // Allocator-selected process VA used by KMT for mapping and bootstrap.
   D3DGPU_VIRTUAL_ADDRESS gpu_va = 0;
+  // Context-local address advertised to the MCDM protocol. Each context sees
+  // its command aperture at this address even when KMT assigns distinct VAs.
+  D3DGPU_VIRTUAL_ADDRESS protocol_gpu_va = 0;
   void* cpu_ptr = nullptr;
   void* gpu_cpu_ptr = nullptr;
   uint64_t cpu_ptr_size = 0;
@@ -310,11 +318,23 @@ McdmPrivateData BuildPathBSubmitPrivateData(
 
 struct PathBPendingSubmit {
   uint64_t fence_id = 0;
+  uint32_t command_state = 0;
   uint8_t* slot_cpu = nullptr;
   uint32_t slot_offset = 0;
   volatile uint32_t* packet_header = nullptr;
   Buffer exec_buffer;
   Buffer ring;
+};
+
+struct CpuWriteRange {
+  uint64_t offset = 0;
+  uint64_t length = 0;
+};
+
+struct CpuCopyRange {
+  uint64_t offset = 0;
+  const void* source = nullptr;
+  uint64_t length = 0;
 };
 
 bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter, Error* out_error);
@@ -331,6 +351,11 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
 // Buffer ownership must synchronize all writers into the calling thread.
 bool PublishBufferCpuWrites(const Buffer& buffer, uint64_t offset,
                             uint64_t length, Error* out_error);
+
+// Invalidates CPU cache lines for a Lock2-mapped buffer after device execution.
+// The caller must first wait for the device write to complete.
+bool InvalidateBufferCpuReads(const Buffer& buffer, uint64_t offset,
+                              uint64_t length, Error* out_error);
 
 // Returns the miniport-facing child handle stored in an ERT_CMD_CHAIN entry.
 // The negotiated device contract selects the record shape inside this DDI.
@@ -352,19 +377,11 @@ bool RefreshCommandApertureGpuMapping(const KmtApi& api, const Device& device,
                                       CommandAperture* aperture,
                                       Error* out_error);
 
-bool EnsureCommandApertureGpuMapping(const KmtApi& api, const Device& device,
-                                     CommandAperture* aperture,
-                                     Error* out_error);
-
-bool ReleaseCommandApertureGpuMapping(const KmtApi& api, const Device& device,
-                                      CommandAperture* aperture,
-                                      Error* out_error);
-
 bool RefreshBufferCpuMapping(const KmtApi& api, const Device& device,
                              Buffer* buffer, Error* out_error);
 
 bool WaitForBufferResidency(const KmtApi& api, const Device& device,
-                             const Context& context, const Buffer& buffer,
+                            Context& context, const Buffer& buffer,
                             const char* label, Error* out_error);
 
 void DestroyBuffer(const KmtApi& api, const Device& device, Buffer* buffer);
@@ -396,6 +413,14 @@ bool ConfigurePathBCodeRangeForSetupPayload(
     McdmAbi abi, size_t aperture_payload_size, CommandAperture* aperture,
     Error* out_error);
 
+bool EnsureCommandApertureGpuMapping(const KmtApi& api, const Device& device,
+                                     CommandAperture* aperture,
+                                     Error* out_error);
+
+bool ReleaseCommandApertureGpuMapping(const KmtApi& api, const Device& device,
+                                      CommandAperture* aperture,
+                                      Error* out_error);
+
 bool SubmitAndWaitCommandAperture(const KmtApi& api, const Device& device,
                                   Context* context, CommandAperture* aperture,
                                   Error* out_error);
@@ -426,6 +451,17 @@ bool AcquirePathBCodeRange(const KmtApi& api, const Device& device,
 bool CommitPathBCodeWrite(const KmtApi& api, const Device& device,
                            const CommandAperture& aperture, uint64_t offset,
                            uint64_t length, Error* out_error);
+
+bool CommitPathBCodeWrites(const KmtApi& api, const Device& device,
+                           const CommandAperture& aperture,
+                           const CpuWriteRange* ranges, size_t range_count,
+                           Error* out_error);
+
+// Copies CPU source ranges into the command aperture with non-temporal stores
+// and publishes them before a later opcode-9 marker submission.
+bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
+                                  const CpuCopyRange* ranges,
+                                  size_t range_count, Error* out_error);
 
 bool RefreshPathBSingleCodeMappingAfterWrite(
     const KmtApi& api, const Device& device, CommandAperture* aperture,

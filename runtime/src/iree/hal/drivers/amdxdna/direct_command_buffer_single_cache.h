@@ -85,6 +85,15 @@ iree_hal_amdxdna_find_single_command_cache_descriptor_template_entry(
     bool use_native_partial_elf, iree_host_size_t binding_count,
     iree_hal_amdxdna_single_command_cache_entry_t** out_entry);
 
+iree_status_t iree_hal_amdxdna_update_single_command_cache_entry(
+    iree_hal_amdxdna_device_single_command_cache_t* cache,
+    iree_hal_amdxdna_single_command_cache_entry_t* entry,
+    const uint32_t* ctrl_words, iree_host_size_t ctrl_word_count,
+    iree_hal_amdxdna_native_buffer_t* const* binding_buffers,
+    const uint64_t* binding_device_addrs,
+    const iree_device_size_t* binding_offsets,
+    const iree_device_size_t* binding_lengths, iree_host_size_t binding_count);
+
 iree_hal_amdxdna_single_command_cache_entry_t*
 iree_hal_amdxdna_store_single_command_cache_entry(
     iree_hal_amdxdna_device_single_command_cache_t* cache,
