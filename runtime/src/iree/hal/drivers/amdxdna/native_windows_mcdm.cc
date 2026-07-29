@@ -355,6 +355,9 @@ struct iree_hal_amdxdna_native_device_t {
   iree_allocator_t host_allocator;
   mcdm::KmtApi api;
   mcdm::Device device;
+  iree_hal_amdxdna_native_c_command_chain_status_t command_chain_status =
+      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
+  bool supports_command_chain = true;
   bool pathb_context_ready = false;
   std::mutex pathb_context_mutex;
   iree_hal_amdxdna_native_context_t* pathb_active_context = nullptr;
@@ -2196,6 +2199,29 @@ iree_status_t iree_hal_amdxdna_native_device_create(
       host_allocator, sizeof(*device), reinterpret_cast<void**>(&device)));
   new (device) iree_hal_amdxdna_native_device_t();
   device->host_allocator = host_allocator;
+  switch (options->command_chain_policy) {
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO:
+      break;
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED:
+      device->command_chain_status =
+          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_USER;
+      break;
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED:
+      device->command_chain_status =
+          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_BY_USER;
+      device->supports_command_chain = false;
+      break;
+    default: {
+      iree_status_t status = iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "Option 'amdxdna_command_chain_policy' expected to be auto | "
+          "force_enabled | force_disabled. Got raw enum value: %d",
+          static_cast<int>(options->command_chain_policy));
+      device->~iree_hal_amdxdna_native_device_t();
+      iree_allocator_free(host_allocator, device);
+      return status;
+    }
+  }
 
   mcdm::Error error;
   mcdm::Adapter adapter;
@@ -2206,9 +2232,8 @@ iree_status_t iree_hal_amdxdna_native_device_create(
     iree_allocator_free(host_allocator, device);
     return status;
   }
-  // NO XRT warmup: the pure-KMT replay works deterministically without any XRT
-  // (3/3 status=0 on clean firmware). A held-open XRT device actually CONFLICTS
-  // with our own kick by taking the NPU context. Talk to the driver directly.
+  // Direct KMT replay does not require an XRT warmup. Holding an XRT device
+  // open can take ownership of the NPU context and conflict with direct kicks.
 
   if (!mcdm::FindNpuAdapter(device->api, &adapter, &error)) {
     iree_status_t status = status_from_mcdm_error(
@@ -2305,21 +2330,26 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.max_effective_queues = 1;
   const size_t chain_exec_bo_size =
       static_cast<size_t>(windows_dpu_pathb_chain_exec_bo_size());
-  caps.max_command_chain_slots = chain_slot_capacity(chain_exec_bo_size);
+  caps.max_command_chain_slots =
+      device->supports_command_chain ? chain_slot_capacity(chain_exec_bo_size)
+                                     : 0;
   caps.context_image_models =
       IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_XCLBIN;
   caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_CU |
                          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU |
-                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF |
-                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
+                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF;
+  if (device->supports_command_chain) {
+    caps.dispatch_models |=
+        IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
+  }
   caps.buffer_sync_model =
       IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
   caps.completion_models =
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_PROGRESS_FENCE |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_COMPLETION_SLOT;
-  caps.supports_command_chain = true;
-  caps.supports_submit_many = true;
+  caps.supports_command_chain = device->supports_command_chain;
+  caps.supports_submit_many = device->supports_command_chain;
   caps.command_stages_control_code = true;
   // Issue may return before the native completion wait finishes. The HAL
   // retains native resources and keeps cache entries in flight until the
@@ -2330,8 +2360,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.supports_real_multi_queue = false;
   caps.default_dispatch_opcode =
       IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU;
-  caps.command_chain_status =
-      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
+  caps.command_chain_status = device->command_chain_status;
   *out_caps = caps;
   return iree_ok_status();
 }
@@ -3886,6 +3915,16 @@ extern "C" iree_status_t iree_hal_amdxdna_native_device_c_resolve_options(
         "Option 'amdxdna_n_core_cols' expected a non-negative int32_t but "
         "got %d",
         options->n_core_cols);
+  }
+  if (options->command_chain_policy <
+          IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO ||
+      options->command_chain_policy >
+          IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Option 'amdxdna_command_chain_policy' expected to be auto | "
+        "force_enabled | force_disabled. Got raw enum value: %d",
+        static_cast<int>(options->command_chain_policy));
   }
   if (!iree_string_view_is_empty(options->device_path) &&
       !iree_string_view_equal(options->device_path, IREE_SV("default")) &&

@@ -31,6 +31,48 @@ static bool iree_hal_amdxdna_power_mode_is_valid(iree_string_view_t value) {
          iree_string_view_equal(value, IREE_SV("turbo"));
 }
 
+static bool iree_hal_amdxdna_command_chain_policy_is_valid_value(
+    iree_hal_amdxdna_command_chain_policy_t value) {
+  return value == IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO ||
+         value == IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED ||
+         value == IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED;
+}
+
+static iree_string_view_t iree_hal_amdxdna_command_chain_policy_string(
+    iree_hal_amdxdna_command_chain_policy_t value) {
+  switch (value) {
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO:
+      return IREE_SV("auto");
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED:
+      return IREE_SV("force_enabled");
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED:
+      return IREE_SV("force_disabled");
+  }
+  return IREE_SV("<invalid>");
+}
+
+static iree_status_t iree_hal_amdxdna_parse_command_chain_policy_option(
+    iree_string_view_t key, iree_string_view_t value,
+    iree_hal_amdxdna_command_chain_policy_t* out_policy) {
+  if (iree_string_view_equal(value, IREE_SV("auto"))) {
+    *out_policy = IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO;
+    return iree_ok_status();
+  }
+  if (iree_string_view_equal(value, IREE_SV("force_enabled"))) {
+    *out_policy = IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED;
+    return iree_ok_status();
+  }
+  if (iree_string_view_equal(value, IREE_SV("force_disabled"))) {
+    *out_policy = IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED;
+    return iree_ok_status();
+  }
+  return iree_make_status(
+      IREE_STATUS_FAILED_PRECONDITION,
+      "Option '%.*s' expected to be auto | force_enabled | force_disabled. "
+      "Got: '%.*s'",
+      (int)key.size, key.data, (int)value.size, value.data);
+}
+
 static iree_status_t iree_hal_amdxdna_parse_non_negative_int32_option(
     iree_string_view_t key, iree_string_view_t value, int32_t* out_value) {
   if (!iree_string_view_atoi_int32(value, out_value)) {
@@ -46,24 +88,6 @@ static iree_status_t iree_hal_amdxdna_parse_non_negative_int32_option(
                             value.data);
   }
   return iree_ok_status();
-}
-
-static iree_status_t iree_hal_amdxdna_parse_bool_option(
-    iree_string_view_t key, iree_string_view_t value, bool* out_value) {
-  if (iree_string_view_equal(value, IREE_SV("1")) ||
-      iree_string_view_equal(value, IREE_SV("true"))) {
-    *out_value = true;
-    return iree_ok_status();
-  }
-  if (iree_string_view_equal(value, IREE_SV("0")) ||
-      iree_string_view_equal(value, IREE_SV("false"))) {
-    *out_value = false;
-    return iree_ok_status();
-  }
-  return iree_make_status(
-      IREE_STATUS_FAILED_PRECONDITION,
-      "Option '%.*s' expected to be bool (0/1/false/true). Got: '%.*s'",
-      (int)key.size, key.data, (int)value.size, value.data);
 }
 
 void iree_hal_amdxdna_driver_options_initialize(
@@ -107,11 +131,23 @@ iree_status_t iree_hal_amdxdna_device_options_parse(
             (int)value.size, value.data);
       }
       params->power_mode = value;
+    } else if (iree_string_view_equal(
+                   key, IREE_SV("amdxdna_command_chain_policy"))) {
+      IREE_RETURN_IF_ERROR(iree_hal_amdxdna_parse_command_chain_policy_option(
+          key, value, &params->command_chain_policy));
     } else {
       return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                               "Unrecognized option: %.*s", (int)key.size,
                               key.data);
     }
+  }
+  if (!iree_hal_amdxdna_command_chain_policy_is_valid_value(
+          params->command_chain_policy)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Option 'amdxdna_command_chain_policy' expected to be auto | "
+        "force_enabled | force_disabled. Got raw enum value: %d",
+        (int)params->command_chain_policy);
   }
   return iree_ok_status();
 }
@@ -232,6 +268,9 @@ static iree_status_t iree_hal_amdxdna_driver_dump_device_info(
       params->device_path.size ? params->device_path : IREE_SV("<auto>");
   const iree_string_view_t power_mode =
       params->power_mode.size ? params->power_mode : IREE_SV("<unchanged>");
+  const iree_string_view_t command_chain_policy =
+      iree_hal_amdxdna_command_chain_policy_string(
+          params->command_chain_policy);
 
   if (device_id != IREE_HAL_AMDXDNA_DEVICE_ID_DEFAULT) {
     return iree_make_status(IREE_STATUS_NOT_FOUND,
@@ -250,6 +289,9 @@ static iree_status_t iree_hal_amdxdna_driver_dump_device_info(
       params->n_core_cols));
   IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
       builder, "  power_mode: %.*s\n", (int)power_mode.size, power_mode.data));
+  IREE_RETURN_IF_ERROR(iree_string_builder_append_format(
+      builder, "  command_chain_policy: %.*s\n",
+      (int)command_chain_policy.size, command_chain_policy.data));
   return iree_ok_status();
 }
 

@@ -18,6 +18,8 @@ IREE_FLAG(string, amdxdna_device_path, "",
           "DRM accel device path to open (for example /dev/accel/accel0). "
           "Empty discovers the first /dev/accel/accel* node.");
 IREE_FLAG(string, amdxdna_power_mode, "", "Set the power mode of the NPU.");
+IREE_FLAG(string, amdxdna_command_chain_policy, "",
+          "Command-chain policy: auto, force_enabled, or force_disabled.");
 static const iree_string_view_t key_amdxdna_n_core_rows =
     iree_string_view_literal("amdxdna_n_core_rows");
 static const iree_string_view_t key_amdxdna_n_core_cols =
@@ -26,6 +28,8 @@ static const iree_string_view_t key_amdxdna_device_path =
     iree_string_view_literal("amdxdna_device_path");
 static const iree_string_view_t key_amdxdna_power_mode =
     iree_string_view_literal("amdxdna_power_mode");
+static const iree_string_view_t key_amdxdna_command_chain_policy =
+    iree_string_view_literal("amdxdna_command_chain_policy");
 static iree_status_t iree_hal_amdxdna_driver_factory_enumerate(
     void* self, iree_host_size_t* out_driver_info_count,
     const iree_hal_driver_info_t** out_driver_infos) {
@@ -66,6 +70,15 @@ static iree_status_t iree_hal_amdxdna_driver_parse_flags(
         z0, iree_string_pair_builder_add(
                 builder,
                 iree_make_string_pair(key_amdxdna_power_mode, power_mode)));
+  }
+  iree_string_view_t command_chain_policy =
+      IREE_SV(FLAG_amdxdna_command_chain_policy);
+  if (!iree_string_view_is_empty(command_chain_policy)) {
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(
+        z0,
+        iree_string_pair_builder_add(
+            builder, iree_make_string_pair(key_amdxdna_command_chain_policy,
+                                           command_chain_policy)));
   }
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();

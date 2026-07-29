@@ -15,6 +15,8 @@ TEST(DeviceTest, OptionsInitializeClearsAllFields) {
   params.n_core_cols = 5;
   params.device_path = IREE_SV("device");
   params.power_mode = IREE_SV("turbo");
+  params.command_chain_policy =
+      IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED;
 
   iree_hal_amdxdna_device_options_initialize(&params);
 
@@ -22,6 +24,8 @@ TEST(DeviceTest, OptionsInitializeClearsAllFields) {
   EXPECT_EQ(params.n_core_cols, 0);
   EXPECT_TRUE(iree_string_view_is_empty(params.device_path));
   EXPECT_TRUE(iree_string_view_is_empty(params.power_mode));
+  EXPECT_EQ(params.command_chain_policy,
+            IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO);
 }
 
 }  // namespace

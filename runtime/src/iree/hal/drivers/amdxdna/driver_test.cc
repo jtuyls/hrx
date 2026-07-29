@@ -24,6 +24,8 @@ TEST(DriverTest, DeviceOptionsParseOverridesDefaults) {
       iree_make_string_pair(IREE_SV("amdxdna_device_path"),
                             IREE_SV("/dev/accel/accel2")),
       iree_make_string_pair(IREE_SV("amdxdna_power_mode"), IREE_SV("turbo")),
+      iree_make_string_pair(IREE_SV("amdxdna_command_chain_policy"),
+                            IREE_SV("force_enabled")),
   };
   IREE_ASSERT_OK(iree_hal_amdxdna_device_options_parse(
       &params, IREE_ARRAYSIZE(pairs), pairs));
@@ -33,6 +35,8 @@ TEST(DriverTest, DeviceOptionsParseOverridesDefaults) {
   EXPECT_TRUE(
       iree_string_view_equal(params.device_path, IREE_SV("/dev/accel/accel2")));
   EXPECT_TRUE(iree_string_view_equal(params.power_mode, IREE_SV("turbo")));
+  EXPECT_EQ(params.command_chain_policy,
+            IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED);
 }
 
 TEST(DriverTest, DeviceOptionsParseRejectsInvalidValues) {
@@ -52,6 +56,16 @@ TEST(DriverTest, DeviceOptionsParseRejectsInvalidValues) {
   };
   status = iree_hal_amdxdna_device_options_parse(
       &params, IREE_ARRAYSIZE(bad_power_mode), bad_power_mode);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_FAILED_PRECONDITION);
+  iree_status_free(status);
+
+  iree_string_pair_t bad_command_chain_policy[] = {
+      iree_make_string_pair(IREE_SV("amdxdna_command_chain_policy"),
+                            IREE_SV("always")),
+  };
+  status = iree_hal_amdxdna_device_options_parse(
+      &params, IREE_ARRAYSIZE(bad_command_chain_policy),
+      bad_command_chain_policy);
   EXPECT_EQ(iree_status_code(status), IREE_STATUS_FAILED_PRECONDITION);
   iree_status_free(status);
 
@@ -151,6 +165,16 @@ TEST(DriverTest, DeviceCreateRejectsInvalidRawOptionsBeforeOpeningDevice) {
 
   iree_hal_amdxdna_device_options_initialize(&device_params);
   device_params.power_mode = IREE_SV("warp");
+  status = iree_hal_amdxdna_device_create(IREE_SV("amdxdna"), &device_params,
+                                          &create_params,
+                                          iree_allocator_system(), &device);
+  EXPECT_EQ(iree_status_code(status), IREE_STATUS_FAILED_PRECONDITION);
+  iree_status_free(status);
+  EXPECT_EQ(device, nullptr);
+
+  iree_hal_amdxdna_device_options_initialize(&device_params);
+  device_params.command_chain_policy =
+      (iree_hal_amdxdna_command_chain_policy_t)99;
   status = iree_hal_amdxdna_device_create(IREE_SV("amdxdna"), &device_params,
                                           &create_params,
                                           iree_allocator_system(), &device);

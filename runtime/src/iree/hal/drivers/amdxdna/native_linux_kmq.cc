@@ -8,7 +8,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -152,16 +151,6 @@ struct driver_stack_info_t {
   bool has_revision = false;
 };
 
-bool env_flag_enabled(const char* name) {
-  const char* raw_value = std::getenv(name);
-  if (!raw_value || raw_value[0] == '\0') return false;
-  std::string value(raw_value);
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return (char)std::tolower(c); });
-  return value != "0" && value != "false" && value != "off" &&
-         value != "no";
-}
-
 std::string read_first_line(const std::filesystem::path& path) {
   std::ifstream file(path);
   std::string line;
@@ -263,12 +252,15 @@ bool has_known_bad_amdxdna_srcversion(const driver_stack_info_t& info) {
 }
 
 iree_hal_amdxdna_native_c_command_chain_status_t select_command_chain_status(
-    const driver_stack_info_t& info) {
-  if (env_flag_enabled("IREE_HAL_AMDXDNA_DISABLE_COMMAND_CHAIN")) {
-    return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_BY_USER;
-  }
-  if (env_flag_enabled("IREE_HAL_AMDXDNA_ENABLE_COMMAND_CHAIN")) {
-    return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_USER;
+    const driver_stack_info_t& info,
+    iree_hal_amdxdna_command_chain_policy_t policy) {
+  switch (policy) {
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO:
+      break;
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_USER;
+    case IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_BY_USER;
   }
 
   if (has_known_bad_amdxdna_srcversion(info)) {
@@ -483,6 +475,16 @@ iree_status_t iree_hal_amdxdna_native_resolve_device_options(
         "got %d",
         options->n_core_cols);
   }
+  if (options->command_chain_policy <
+          IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO ||
+      options->command_chain_policy >
+          IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Option 'amdxdna_command_chain_policy' expected to be auto | "
+        "force_enabled | force_disabled. Got raw enum value: %d",
+        static_cast<int>(options->command_chain_policy));
+  }
   IREE_RETURN_IF_ERROR(parse_power_mode(options->power_mode, out_power_mode,
                                         out_should_set_power_mode));
 
@@ -555,7 +557,8 @@ iree_status_t iree_hal_amdxdna_native_device_create(
   const driver_stack_info_t driver_stack_info = query_driver_stack_info(device);
   record_driver_stack_info(device, driver_stack_info);
   device->command_chain_status =
-      select_command_chain_status(driver_stack_info);
+      select_command_chain_status(driver_stack_info,
+                                  options->command_chain_policy);
   device->supports_command_chain =
       command_chain_enabled(device->command_chain_status);
   *out_device = device;

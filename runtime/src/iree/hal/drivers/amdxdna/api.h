@@ -14,6 +14,12 @@
 extern "C" {
 #endif  // __cplusplus
 
+typedef enum iree_hal_amdxdna_command_chain_policy_t {
+  IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_AUTO = 0,
+  IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_ENABLED = 1,
+  IREE_HAL_AMDXDNA_COMMAND_CHAIN_POLICY_FORCE_DISABLED = 2,
+} iree_hal_amdxdna_command_chain_policy_t;
+
 struct iree_hal_amdxdna_device_params {
   // Number of core tile rows/cols to use. 0 discovers the hardware defaults.
   int32_t n_core_rows;
@@ -23,6 +29,7 @@ struct iree_hal_amdxdna_device_params {
   // Linux KMQ, or the default NPU adapter on Windows MCDM).
   iree_string_view_t device_path;
   iree_string_view_t power_mode;
+  iree_hal_amdxdna_command_chain_policy_t command_chain_policy;
 };
 
 IREE_API_EXPORT void iree_hal_amdxdna_device_options_initialize(
