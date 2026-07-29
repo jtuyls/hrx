@@ -330,6 +330,20 @@ enum class CpuCacheOperation {
   invalidate,
 };
 
+#if defined(__clang__)
+__attribute__((target("clflushopt")))
+#endif
+void FlushCpuCacheLineOptimized(void* address) {
+  _mm_clflushopt(address);
+}
+
+#if defined(__clang__)
+__attribute__((target("clwb")))
+#endif
+void WriteBackCpuCacheLine(void* address) {
+  _mm_clwb(address);
+}
+
 bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
                             const CpuWriteRange* ranges, size_t range_count,
                             uint64_t granularity, CpuCacheOperation operation,
@@ -399,9 +413,9 @@ bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
     while (line < end) {
       if (operation == CpuCacheOperation::writeback &&
           cache_capabilities.clwb) {
-        _mm_clwb(reinterpret_cast<void*>(line));
+        WriteBackCpuCacheLine(reinterpret_cast<void*>(line));
       } else if (cache_capabilities.clflushopt) {
-        _mm_clflushopt(reinterpret_cast<void*>(line));
+        FlushCpuCacheLineOptimized(reinterpret_cast<void*>(line));
       } else {
         _mm_clflush(reinterpret_cast<void const*>(line));
       }
@@ -2684,7 +2698,7 @@ bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
       std::memcpy(dst + streamed_length, src + streamed_length,
                   length - streamed_length);
       if (has_clflushopt) {
-        _mm_clflushopt(dst + streamed_length);
+        FlushCpuCacheLineOptimized(dst + streamed_length);
       } else {
         _mm_clflush(dst + streamed_length);
       }
