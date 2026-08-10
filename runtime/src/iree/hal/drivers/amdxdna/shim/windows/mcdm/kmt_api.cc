@@ -333,15 +333,21 @@ enum class CpuCacheOperation {
 #if defined(__clang__)
 __attribute__((target("clflushopt")))
 #endif
-void FlushCpuCacheLineOptimized(void* address) {
-  _mm_clflushopt(address);
+void FlushCpuCacheLinesOptimized(uintptr_t line, uintptr_t end) {
+  while (line < end) {
+    _mm_clflushopt(reinterpret_cast<void*>(line));
+    line += 64;
+  }
 }
 
 #if defined(__clang__)
 __attribute__((target("clwb")))
 #endif
-void WriteBackCpuCacheLine(void* address) {
-  _mm_clwb(address);
+void WriteBackCpuCacheLines(uintptr_t line, uintptr_t end) {
+  while (line < end) {
+    _mm_clwb(reinterpret_cast<void*>(line));
+    line += 64;
+  }
 }
 
 bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
@@ -410,16 +416,16 @@ bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
         (mapping_address + static_cast<uintptr_t>(begin_offset)) &
         ~(kCpuCacheLineSize - 1);
     const uintptr_t end = mapping_address + static_cast<uintptr_t>(end_offset);
-    while (line < end) {
-      if (operation == CpuCacheOperation::writeback &&
-          cache_capabilities.clwb) {
-        WriteBackCpuCacheLine(reinterpret_cast<void*>(line));
-      } else if (cache_capabilities.clflushopt) {
-        FlushCpuCacheLineOptimized(reinterpret_cast<void*>(line));
-      } else {
+    if (operation == CpuCacheOperation::writeback &&
+        cache_capabilities.clwb) {
+      WriteBackCpuCacheLines(line, end);
+    } else if (cache_capabilities.clflushopt) {
+      FlushCpuCacheLinesOptimized(line, end);
+    } else {
+      while (line < end) {
         _mm_clflush(reinterpret_cast<void const*>(line));
+        line += kCpuCacheLineSize;
       }
-      line += kCpuCacheLineSize;
     }
   }
   const bool uses_weakly_ordered_cache_operation =
@@ -2698,7 +2704,9 @@ bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
       std::memcpy(dst + streamed_length, src + streamed_length,
                   length - streamed_length);
       if (has_clflushopt) {
-        FlushCpuCacheLineOptimized(dst + streamed_length);
+        const uintptr_t line =
+            reinterpret_cast<uintptr_t>(dst + streamed_length);
+        FlushCpuCacheLinesOptimized(line, line + 64);
       } else {
         _mm_clflush(dst + streamed_length);
       }
