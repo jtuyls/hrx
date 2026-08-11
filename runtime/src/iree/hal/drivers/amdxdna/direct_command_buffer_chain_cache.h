@@ -36,9 +36,9 @@ extern "C" {
 // a structural guard: each entry may retain many native child command BOs,
 // instruction/control BOs, and parent chain BOs. Admission is therefore also
 // resource-budgeted in the cache implementation and evicts LRU non-in-flight
-// entries before retaining a new template. The child budget accommodates the
-// complete FLM model working set while retaining the original entry, parent,
-// and instruction-memory bounds.
+// entries before retaining a new template. Child, parent, and instruction
+// limits bound distinct native resources until backends expose queryable
+// retention limits through native capabilities.
 enum { kAmdxdnaChainCommandCacheCapacity = 64 };
 enum { kAmdxdnaChainCommandCacheMaxChildCommands = 1024 };
 enum { kAmdxdnaChainCommandCacheMaxParentCommands = 96 };

@@ -326,6 +326,10 @@ struct PathBPendingSubmit {
   Buffer ring;
 };
 
+// Returns the number of simultaneously pending Path-B submissions supported
+// by the context's completion ring after reserving the protocol-owned slot.
+size_t PathBCompletionCapacity(const Context& context);
+
 struct CpuWriteRange {
   uint64_t offset = 0;
   uint64_t length = 0;

@@ -3131,6 +3131,13 @@ bool IsPathBSubmitComplete(const Context& context,
   return current >= pending.fence_id;
 }
 
+size_t PathBCompletionCapacity(const Context& context) {
+  const size_t slot_count =
+      static_cast<size_t>(context.completion_ring.size) /
+      kQhdlCompletionSlotSize;
+  return slot_count > 1 ? slot_count - 1 : 0;
+}
+
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
                          size_t pending_count, Error* out_error) {

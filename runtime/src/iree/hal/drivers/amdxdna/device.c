@@ -26,7 +26,6 @@
 #include "iree/hal/drivers/amdxdna/nop_executable_cache.h"
 #include "iree/hal/drivers/amdxdna/semaphore.h"
 #include "iree/hal/drivers/amdxdna/util.h"
-#include "iree/hal/drivers/amdxdna/xclbin_util.h"
 #include "iree/hal/memory/cpu_slab_provider.h"
 #include "iree/hal/memory/passthrough_pool.h"
 #include "iree/hal/utils/device_spec_builder.h"

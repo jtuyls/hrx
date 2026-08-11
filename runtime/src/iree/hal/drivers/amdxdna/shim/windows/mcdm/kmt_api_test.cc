@@ -1215,6 +1215,20 @@ TEST(KmtApiTest, PublishBufferCpuWritesValidatesRangeAndPreservesData) {
   EXPECT_TRUE(InvalidateBufferCpuReads(buffer, 0, 0, &error));
 }
 
+TEST(KmtApiTest, PathBCompletionCapacityFollowsAllocatedRing) {
+  Context context = {};
+  EXPECT_EQ(PathBCompletionCapacity(context), 0u);
+
+  context.completion_ring.size = 8;
+  EXPECT_EQ(PathBCompletionCapacity(context), 0u);
+
+  context.completion_ring.size = 16;
+  EXPECT_EQ(PathBCompletionCapacity(context), 1u);
+
+  context.completion_ring.size = 4096;
+  EXPECT_EQ(PathBCompletionCapacity(context), 511u);
+}
+
 TEST(KmtApiTest, CopyAndCommitPathBCodeWritesCopiesAlignedRangesAndTails) {
   alignas(64) std::array<uint8_t, 512> storage = {};
   std::fill(storage.begin(), storage.end(), 0xcc);

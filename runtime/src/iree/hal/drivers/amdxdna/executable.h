@@ -14,28 +14,6 @@ struct iree_hal_amdxdna_executable;
 struct iree_hal_amdxdna_device;
 struct iree_hal_amdxdna_native_device_t;
 
-typedef struct iree_hal_amdxdna_executable_run_description_t {
-  iree_const_byte_span_t transaction;
-  iree_const_byte_span_t data_payload;
-} iree_hal_amdxdna_executable_run_description_t;
-
-typedef struct iree_hal_amdxdna_executable_entry_description_t {
-  iree_string_view_t name;
-  iree_string_view_t source_file;
-  uint32_t source_line;
-  int32_t xclbin_ordinal;
-  int32_t pdi_ordinal;
-  const iree_hal_amdxdna_executable_run_description_t* runs;
-  iree_host_size_t run_count;
-} iree_hal_amdxdna_executable_entry_description_t;
-
-typedef struct iree_hal_amdxdna_executable_description_t {
-  const iree_const_byte_span_t* xclbins;
-  iree_host_size_t xclbin_count;
-  const iree_hal_amdxdna_executable_entry_description_t* entry_points;
-  iree_host_size_t entry_point_count;
-} iree_hal_amdxdna_executable_description_t;
-
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -50,12 +28,6 @@ bool iree_hal_amdxdna_executable_format_supported(
 iree_status_t iree_hal_amdxdna_native_executable_create(
     struct iree_hal_amdxdna_native_device_t* native_device,
     const iree_hal_executable_params_t* executable_params,
-    iree_allocator_t host_allocator, iree_hal_executable_t** out_executable);
-
-// Creates the same native executable represented by the serialized XADX
-// format, without materializing and reparsing an intermediate FlatBuffer.
-iree_status_t iree_hal_amdxdna_native_executable_create_from_description(
-    const iree_hal_amdxdna_executable_description_t* description,
     iree_allocator_t host_allocator, iree_hal_executable_t** out_executable);
 
 // Preloads native contexts for self-contained entry points. This is executable
