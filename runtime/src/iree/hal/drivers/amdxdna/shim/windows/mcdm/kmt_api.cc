@@ -949,91 +949,60 @@ bool QueryProbedMcdmAbi(const KmtApi& api, D3DKMT_HANDLE adapter,
 }
 
 McdmAbiInfo GetMcdmAbiInfo(McdmAbi abi) {
+  McdmAbiInfo info = {};
+  info.command_aperture_code_slot_size = 0x8000;
   if (abi == McdmAbi::compact) {
-    return {/*status_private_type=*/0x332c,
-            /*status_policy=*/2,
-            /*status_xcl_flags=*/0x02000000,
-            /*submit_private_prefix_size=*/0x78,
-            /*setup_private_size=*/0x280,
-            /*pathb_private_size=*/0x278,
-            /*pathb_packet_offset=*/0x78,
-            /*chain_metadata_offset=*/0x58,
-            /*pathb_bo_table_entry_count=*/6,
-            /*status_has_gpu_va=*/true,
-            /*sync_has_allocation_handle=*/false,
-            /*command_aperture_code_slot_size=*/0x8000,
-            /*command_aperture_write_publish_mode=*/
-                CommandApertureWritePublishMode::cpu_cache_flush,
-            /*command_aperture_code_publish_granularity=*/0x8000,
-            /*command_aperture_residency_after_bootstrap=*/true,
-            /*command_aperture_remap_after_write=*/false,
-            // XRT 2.21 destroys both compact-ABI shared resources only after
-            // they are no longer in use and waits for destruction to finish.
-            /*shared_resource_destroy_flags=*/0x3,
-            // Compact XRT leaves mapped VA ownership with the allocation.
-            /*explicit_gpu_va_free_on_destroy=*/false};
+    info.status_private_type = 0x332c;
+    info.status_policy = 2;
+    info.status_xcl_flags = 0x02000000;
+    info.submit_private_prefix_size = 0x78;
+    info.setup_private_size = 0x280;
+    info.pathb_private_size = 0x278;
+    info.pathb_packet_offset = 0x78;
+    info.chain_metadata_offset = 0x58;
+    info.pathb_bo_table_entry_count = 6;
+    info.status_has_gpu_va = true;
+    info.sync_has_allocation_handle = false;
+    info.command_aperture_write_publish_mode =
+        CommandApertureWritePublishMode::cpu_cache_flush;
+    info.command_aperture_code_publish_granularity = 0x8000;
+    info.command_aperture_residency_after_bootstrap = true;
+    // XRT 2.21 waits for compact shared-resource destruction to finish and
+    // leaves mapped VA ownership with the allocation.
+    info.shared_resource_destroy_flags = 0x3;
+    return info;
   }
+  info.status_private_type = 0x332b;
+  info.sync_has_allocation_handle = true;
+  info.command_aperture_write_publish_mode =
+      CommandApertureWritePublishMode::kmt_invalidate;
+  info.command_aperture_remap_after_write = true;
+  info.explicit_gpu_va_free_on_destroy = true;
   if (abi == McdmAbi::legacy_v0) {
-    return {/*status_private_type=*/0x332b,
-            /*status_policy=*/0,
-            /*status_xcl_flags=*/0,
-            /*submit_private_prefix_size=*/0x58,
-            /*setup_private_size=*/0x260,
-            /*pathb_private_size=*/0x258,
-            /*pathb_packet_offset=*/0x58,
-            /*chain_metadata_offset=*/0x40,
-            /*pathb_bo_table_entry_count=*/5,
-            /*status_has_gpu_va=*/false,
-            /*sync_has_allocation_handle=*/true,
-            /*command_aperture_code_slot_size=*/0x8000,
-            /*command_aperture_write_publish_mode=*/
-            CommandApertureWritePublishMode::kmt_invalidate,
-            /*command_aperture_code_publish_granularity=*/0,
-            /*command_aperture_residency_after_bootstrap=*/false,
-            /*command_aperture_remap_after_write=*/true,
-            /*shared_resource_destroy_flags=*/0,
-            /*explicit_gpu_va_free_on_destroy=*/true};
+    info.submit_private_prefix_size = 0x58;
+    info.setup_private_size = 0x260;
+    info.pathb_private_size = 0x258;
+    info.pathb_packet_offset = 0x58;
+    info.chain_metadata_offset = 0x40;
+    info.pathb_bo_table_entry_count = 5;
+    return info;
   }
   if (abi == McdmAbi::legacy_v2) {
-    return {/*status_private_type=*/0x332b,
-            /*status_policy=*/0,
-            /*status_xcl_flags=*/0,
-            /*submit_private_prefix_size=*/0x60,
-            /*setup_private_size=*/0x268,
-            /*pathb_private_size=*/0x260,
-            /*pathb_packet_offset=*/0x60,
-            /*chain_metadata_offset=*/0x48,
-            /*pathb_bo_table_entry_count=*/5,
-            /*status_has_gpu_va=*/false,
-            /*sync_has_allocation_handle=*/true,
-            /*command_aperture_code_slot_size=*/0x8000,
-            /*command_aperture_write_publish_mode=*/
-            CommandApertureWritePublishMode::kmt_invalidate,
-            /*command_aperture_code_publish_granularity=*/0,
-            /*command_aperture_residency_after_bootstrap=*/false,
-            /*command_aperture_remap_after_write=*/true,
-            /*shared_resource_destroy_flags=*/0,
-            /*explicit_gpu_va_free_on_destroy=*/true};
+    info.submit_private_prefix_size = 0x60;
+    info.setup_private_size = 0x268;
+    info.pathb_private_size = 0x260;
+    info.pathb_packet_offset = 0x60;
+    info.chain_metadata_offset = 0x48;
+    info.pathb_bo_table_entry_count = 5;
+    return info;
   }
-  return {/*status_private_type=*/0x332b,
-          /*status_policy=*/0,
-          /*status_xcl_flags=*/0,
-          /*submit_private_prefix_size=*/0x68,
-          /*setup_private_size=*/0x270,
-          /*pathb_private_size=*/0x268,
-          /*pathb_packet_offset=*/0x68,
-          /*chain_metadata_offset=*/0x48,
-          /*pathb_bo_table_entry_count=*/5,
-          /*status_has_gpu_va=*/false,
-          /*sync_has_allocation_handle=*/true,
-          /*command_aperture_code_slot_size=*/0x8000,
-          /*command_aperture_write_publish_mode=*/
-              CommandApertureWritePublishMode::kmt_invalidate,
-          /*command_aperture_code_publish_granularity=*/0,
-          /*command_aperture_residency_after_bootstrap=*/false,
-          /*command_aperture_remap_after_write=*/true,
-          /*shared_resource_destroy_flags=*/0,
-          /*explicit_gpu_va_free_on_destroy=*/true};
+  info.submit_private_prefix_size = 0x68;
+  info.setup_private_size = 0x270;
+  info.pathb_private_size = 0x268;
+  info.pathb_packet_offset = 0x68;
+  info.chain_metadata_offset = 0x48;
+  info.pathb_bo_table_entry_count = 5;
+  return info;
 }
 
 McdmPrivateData BuildPathBSetupPrivateData(
@@ -3039,6 +3008,7 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
                            const void* ert_packet, uint32_t ert_bytes,
                            uint32_t command_state,
                            const PathBChainSubmitInfo* chain_info,
+                           uint32_t completion_slot_offset,
                            uint32_t* packet_header,
                            PathBPendingSubmit* out_pending, Error* out_error) {
   if (!out_pending) {
@@ -3072,14 +3042,15 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
   if (!EnsureStatusRing(api, device, context, out_error)) return false;
   Buffer& ring = context->completion_ring;
 
-  uint32_t slot_offset = context->completion_ring_offset;
-  if (slot_offset + kQhdlCompletionSlotSize > ring.size) {
-    slot_offset = kQhdlCompletionSlotSize;
+  if (!IsValidPathBCompletionSlot(ring.size, completion_slot_offset)) {
+    SetErrorFormat(out_error,
+                   "SubmitPathB invalid completion slot offset=0x%x "
+                   "ring_size=0x%llx",
+                   completion_slot_offset,
+                   static_cast<unsigned long long>(ring.size));
+    return false;
   }
-  context->completion_ring_offset =
-      (slot_offset + 2u * kQhdlCompletionSlotSize > ring.size)
-          ? kQhdlCompletionSlotSize
-          : slot_offset + kQhdlCompletionSlotSize;
+  const uint32_t slot_offset = completion_slot_offset;
   uint8_t* slot_cpu = static_cast<uint8_t*>(ring.cpu_ptr) + slot_offset;
   InitializeCompletionSlot(slot_cpu);
 
@@ -3136,6 +3107,13 @@ size_t PathBCompletionCapacity(const Context& context) {
       static_cast<size_t>(context.completion_ring.size) /
       kQhdlCompletionSlotSize;
   return slot_count > 1 ? slot_count - 1 : 0;
+}
+
+bool IsValidPathBCompletionSlot(uint64_t ring_size, uint32_t slot_offset) {
+  return slot_offset >= kQhdlCompletionSlotSize &&
+         slot_offset % kQhdlCompletionSlotSize == 0 &&
+         slot_offset <= ring_size &&
+         kQhdlCompletionSlotSize <= ring_size - slot_offset;
 }
 
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
@@ -3231,21 +3209,22 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       const Buffer& exec_buffer, const void* ert_packet,
                       uint32_t ert_bytes,
                       const PathBChainSubmitInfo& chain_info,
-                      uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                      Error* out_error) {
+                      uint32_t completion_slot_offset, uint32_t* packet_header,
+                      PathBPendingSubmit* out_pending, Error* out_error) {
   return SubmitPathBImplNoWait(
       api, device, context, exec_buffer, ert_packet, ert_bytes, 6, &chain_info,
-      packet_header, out_pending, out_error);
+      completion_slot_offset, packet_header, out_pending, out_error);
 }
 
 bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
-                 const Buffer& exec_buffer, const void* ert_packet,
-                 uint32_t ert_bytes, uint32_t command_state,
-                 uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                 Error* out_error) {
+                  const Buffer& exec_buffer, const void* ert_packet,
+                  uint32_t ert_bytes, uint32_t command_state,
+                  uint32_t completion_slot_offset, uint32_t* packet_header,
+                  PathBPendingSubmit* out_pending, Error* out_error) {
   return SubmitPathBImplNoWait(api, device, context, exec_buffer, ert_packet,
                                ert_bytes, command_state, /*chain_info=*/nullptr,
-                               packet_header, out_pending, out_error);
+                               completion_slot_offset, packet_header,
+                               out_pending, out_error);
 }
 
 static void BeginDestroyCommandAperture(const KmtApi& api,

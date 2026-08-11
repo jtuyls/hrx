@@ -158,4 +158,62 @@ TEST(NativeWindowsMcdmBufferTest, DefersOnlyContextOwnedCommandStorage) {
       IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION));
 }
 
+TEST(NativeWindowsMcdmCompletionSlotTest, ReservesAndReleasesAtomically) {
+  uint8_t slots[] = {0, 1, 0, 0};
+  uint32_t offsets[3] = {};
+  size_t next_slot = 0;
+  ASSERT_TRUE(iree_hal_amdxdna_native_windows_reserve_completion_slots(
+      slots, std::size(slots), std::size(offsets), /*start_slot=*/0, offsets,
+      &next_slot));
+  EXPECT_EQ(offsets[0], 8u);
+  EXPECT_EQ(offsets[1], 24u);
+  EXPECT_EQ(offsets[2], 32u);
+  EXPECT_EQ(next_slot, 0u);
+  EXPECT_EQ(std::vector<uint8_t>(std::begin(slots), std::end(slots)),
+            (std::vector<uint8_t>{1, 1, 1, 1}));
+
+  uint32_t unavailable_offset = 0;
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_reserve_completion_slots(
+      slots, std::size(slots), 1, /*start_slot=*/next_slot,
+      &unavailable_offset, &next_slot));
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_release_completion_slots(
+      slots, std::size(slots), std::size(offsets), offsets));
+  EXPECT_EQ(std::vector<uint8_t>(std::begin(slots), std::end(slots)),
+            (std::vector<uint8_t>{0, 1, 0, 0}));
+}
+
+TEST(NativeWindowsMcdmCompletionSlotTest, RotatesAfterReleasedSlots) {
+  uint8_t slots[] = {0, 0, 0};
+  uint32_t offset = 0;
+  size_t next_slot = 0;
+  ASSERT_TRUE(iree_hal_amdxdna_native_windows_reserve_completion_slots(
+      slots, std::size(slots), 1, next_slot, &offset, &next_slot));
+  EXPECT_EQ(offset, 8u);
+  EXPECT_EQ(next_slot, 1u);
+  ASSERT_TRUE(iree_hal_amdxdna_native_windows_release_completion_slots(
+      slots, std::size(slots), 1, &offset));
+
+  ASSERT_TRUE(iree_hal_amdxdna_native_windows_reserve_completion_slots(
+      slots, std::size(slots), 1, next_slot, &offset, &next_slot));
+  EXPECT_EQ(offset, 16u);
+  EXPECT_EQ(next_slot, 2u);
+}
+
+TEST(NativeWindowsMcdmCompletionSlotTest,
+     RejectsInvalidReleaseWithoutPartialMutation) {
+  uint8_t slots[] = {1, 1, 0};
+  const uint32_t duplicate_offsets[] = {8, 8};
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_release_completion_slots(
+      slots, std::size(slots), std::size(duplicate_offsets),
+      duplicate_offsets));
+  EXPECT_EQ(std::vector<uint8_t>(std::begin(slots), std::end(slots)),
+            (std::vector<uint8_t>{1, 1, 0}));
+
+  const uint32_t invalid_offsets[] = {8, 32};
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_release_completion_slots(
+      slots, std::size(slots), std::size(invalid_offsets), invalid_offsets));
+  EXPECT_EQ(std::vector<uint8_t>(std::begin(slots), std::end(slots)),
+            (std::vector<uint8_t>{1, 1, 0}));
+}
+
 }  // namespace

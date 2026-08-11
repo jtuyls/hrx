@@ -40,7 +40,7 @@ extern "C" {
 // limits bound distinct native resources until backends expose queryable
 // retention limits through native capabilities.
 enum { kAmdxdnaChainCommandCacheCapacity = 64 };
-enum { kAmdxdnaChainCommandCacheMaxChildCommands = 1024 };
+enum { kAmdxdnaChainCommandCacheMaxChildCommands = 896 };
 enum { kAmdxdnaChainCommandCacheMaxParentCommands = 96 };
 enum { kAmdxdnaChainCommandCacheMaxInstructionBytes = 32 * 1024 * 1024 };
 
@@ -260,6 +260,12 @@ void iree_hal_amdxdna_chain_command_cache_entry_acquire_in_flight(
     iree_hal_amdxdna_chain_command_cache_entry_t* entry);
 
 void iree_hal_amdxdna_chain_command_cache_entry_release_in_flight(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    iree_hal_amdxdna_chain_command_cache_entry_t* entry);
+
+// Discards a non-in-flight entry after a failed in-place rewrite. The caller
+// must hold cache->mutex.
+void iree_hal_amdxdna_chain_command_cache_entry_discard(
     iree_hal_amdxdna_device_chain_command_cache_t* cache,
     iree_hal_amdxdna_chain_command_cache_entry_t* entry);
 

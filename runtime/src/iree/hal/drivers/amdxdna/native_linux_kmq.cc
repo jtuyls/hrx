@@ -594,17 +594,6 @@ bool iree_hal_amdxdna_native_device_uses_npu_payload_dispatch(
           IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU) != 0;
 }
 
-bool iree_hal_amdxdna_native_device_syncs_bindings_on_submit(
-    iree_hal_amdxdna_native_device_t* device) {
-  iree_hal_amdxdna_native_c_device_caps_t caps;
-  if (!iree_status_is_ok(
-          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
-    return false;
-  }
-  return caps.buffer_sync_model ==
-         IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_SUBMIT_SYNCS_BINDINGS;
-}
-
 iree_hal_amdxdna_native_c_command_opcode_t
 iree_hal_amdxdna_native_device_dispatch_opcode(
     iree_hal_amdxdna_native_device_t* device) {
@@ -641,8 +630,6 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
     caps.dispatch_models |=
         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
   }
-  caps.buffer_sync_model =
-      IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
   caps.completion_models =
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_NATIVE_FENCE;

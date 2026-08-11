@@ -289,35 +289,6 @@ static bool iree_hal_amdxdna_completion_queue_pop_locked(
   return true;
 }
 
-// Claims |batch| for completion on the waiting thread when it is next in FIFO
-// order and the worker has not already claimed it. This preserves asynchronous
-// completion by default while avoiding a worker wakeup round trip when a caller
-// immediately performs an infinite wait on submitted native work.
-static bool iree_hal_amdxdna_completion_queue_try_claim_head(
-    iree_hal_amdxdna_completion_queue_t* queue,
-    iree_hal_amdxdna_completion_batch_t* batch) {
-  bool claimed = false;
-  iree_slim_mutex_lock(&queue->mutex);
-  if (queue->pending_head == batch) {
-    iree_hal_amdxdna_completion_batch_t* claimed_batch = NULL;
-    claimed =
-        iree_hal_amdxdna_completion_queue_pop_locked(queue, &claimed_batch);
-    IREE_ASSERT(claimed_batch == batch);
-  }
-  iree_slim_mutex_unlock(&queue->mutex);
-  return claimed;
-}
-
-static void iree_hal_amdxdna_completion_queue_finish_claimed(
-    iree_hal_amdxdna_completion_batch_t* batch) {
-  iree_hal_amdxdna_completion_queue_t* queue = batch->queue;
-  iree_hal_amdxdna_completion_batch_finish(batch);
-  iree_hal_amdxdna_completion_batch_mark_done(batch);
-  iree_hal_amdxdna_completion_queue_complete_inflight(queue);
-  // Release the reference transferred from the pending queue.
-  iree_hal_amdxdna_completion_batch_destroy(batch);
-}
-
 static int iree_hal_amdxdna_completion_queue_worker_main(void* arg) {
   iree_hal_amdxdna_completion_queue_t* queue =
       (iree_hal_amdxdna_completion_queue_t*)arg;
@@ -330,7 +301,10 @@ static int iree_hal_amdxdna_completion_queue_worker_main(void* arg) {
     iree_slim_mutex_unlock(&queue->mutex);
 
     if (batch) {
-      iree_hal_amdxdna_completion_queue_finish_claimed(batch);
+      iree_hal_amdxdna_completion_batch_finish(batch);
+      iree_hal_amdxdna_completion_batch_mark_done(batch);
+      iree_hal_amdxdna_completion_queue_complete_inflight(queue);
+      iree_hal_amdxdna_completion_batch_destroy(batch);
       continue;
     }
     if (shutdown) return 0;
@@ -589,13 +563,6 @@ iree_status_t iree_hal_amdxdna_completion_batch_wait(
     iree_async_wait_flags_t flags) {
   IREE_ASSERT_ARGUMENT(batch);
   (void)flags;
-
-  if (iree_timeout_is_infinite(timeout) &&
-      !iree_hal_amdxdna_completion_batch_is_done(batch) &&
-      iree_atomic_load(&batch->submitted, iree_memory_order_acquire) != 0 &&
-      iree_hal_amdxdna_completion_queue_try_claim_head(batch->queue, batch)) {
-    iree_hal_amdxdna_completion_queue_finish_claimed(batch);
-  }
 
   bool registered_waiter = false;
   if (iree_timeout_is_infinite(timeout) &&

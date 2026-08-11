@@ -119,6 +119,12 @@ void iree_hal_amdxdna_single_command_cache_entry_release_in_flight(
     iree_hal_amdxdna_device_single_command_cache_t* cache,
     iree_hal_amdxdna_single_command_cache_entry_t* entry);
 
+// Discards a non-in-flight entry after a failed in-place rewrite. The caller
+// must hold cache->mutex.
+void iree_hal_amdxdna_single_command_cache_entry_discard(
+    iree_hal_amdxdna_device_single_command_cache_t* cache,
+    iree_hal_amdxdna_single_command_cache_entry_t* entry);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

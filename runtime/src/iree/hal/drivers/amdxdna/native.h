@@ -68,11 +68,6 @@ typedef enum iree_hal_amdxdna_native_c_context_image_type_t {
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN = 1,
 } iree_hal_amdxdna_native_c_context_image_type_t;
 
-typedef enum iree_hal_amdxdna_native_c_buffer_sync_model_t {
-  IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS = 0,
-  IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_SUBMIT_SYNCS_BINDINGS = 1,
-} iree_hal_amdxdna_native_c_buffer_sync_model_t;
-
 enum iree_hal_amdxdna_native_c_context_image_model_bits_t {
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI = 1u << 0,
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_XCLBIN = 1u << 1,
@@ -140,7 +135,6 @@ typedef struct iree_hal_amdxdna_native_c_device_caps_t {
   uint32_t max_command_chain_slots;
   uint32_t context_image_models;
   uint32_t dispatch_models;
-  iree_hal_amdxdna_native_c_buffer_sync_model_t buffer_sync_model;
   uint32_t completion_models;
   bool supports_command_chain;
   bool supports_submit_many;

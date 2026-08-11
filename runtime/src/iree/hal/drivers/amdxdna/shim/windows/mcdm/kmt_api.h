@@ -330,6 +330,8 @@ struct PathBPendingSubmit {
 // by the context's completion ring after reserving the protocol-owned slot.
 size_t PathBCompletionCapacity(const Context& context);
 
+bool IsValidPathBCompletionSlot(uint64_t ring_size, uint32_t slot_offset);
+
 struct CpuWriteRange {
   uint64_t offset = 0;
   uint64_t length = 0;
@@ -505,17 +507,17 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       const Buffer& exec_buffer, const void* ert_packet,
                       uint32_t ert_bytes,
                       const PathBChainSubmitInfo& chain_info,
-                      uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                      Error* out_error);
+                      uint32_t completion_slot_offset, uint32_t* packet_header,
+                      PathBPendingSubmit* out_pending, Error* out_error);
 
 // Single-dispatch path-B issue (no wait); the async counterpart of
 // SubmitAndWaitPathB. Returns the in-flight fence token in `out_pending`; wait
 // for it with WaitForPathBSubmits.
 bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
-                 const Buffer& exec_buffer, const void* ert_packet,
-                 uint32_t ert_bytes, uint32_t command_state,
-                 uint32_t* packet_header, PathBPendingSubmit* out_pending,
-                 Error* out_error);
+                  const Buffer& exec_buffer, const void* ert_packet,
+                  uint32_t ert_bytes, uint32_t command_state,
+                  uint32_t completion_slot_offset, uint32_t* packet_header,
+                  PathBPendingSubmit* out_pending, Error* out_error);
 
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,

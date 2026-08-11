@@ -452,6 +452,8 @@ struct iree_hal_amdxdna_native_context_t {
   iree_device_size_t pathb_single_code_staged_size = 0;
   uint64_t pathb_single_code_staged_offset = 0;
   std::vector<PathBActiveCodeRange> pathb_active_single_code_ranges;
+  std::vector<uint8_t> pathb_completion_slots_in_use;
+  size_t pathb_next_completion_slot = 0;
   mcdm::ContextBlobInfo info;
   iree_hal_amdxdna_native_queue_t queue;
 };
@@ -2306,17 +2308,6 @@ bool iree_hal_amdxdna_native_device_uses_npu_payload_dispatch(
           IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU) != 0;
 }
 
-bool iree_hal_amdxdna_native_device_syncs_bindings_on_submit(
-    iree_hal_amdxdna_native_device_t* device) {
-  iree_hal_amdxdna_native_c_device_caps_t caps;
-  if (!iree_status_is_ok(
-          iree_hal_amdxdna_native_device_query_caps(device, &caps))) {
-    return false;
-  }
-  return caps.buffer_sync_model ==
-         IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_SUBMIT_SYNCS_BINDINGS;
-}
-
 iree_hal_amdxdna_native_c_command_opcode_t
 iree_hal_amdxdna_native_device_dispatch_opcode(
     iree_hal_amdxdna_native_device_t* device) {
@@ -2345,8 +2336,6 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
                          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU |
                          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF |
                          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
-  caps.buffer_sync_model =
-      IREE_HAL_AMDXDNA_NATIVE_C_BUFFER_SYNC_MODEL_CALLER_SYNCS_BINDINGS;
   caps.completion_models =
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_PROGRESS_FENCE |
@@ -2514,6 +2503,19 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   native_context->context = context;
   native_context->command_aperture = command_aperture;
   native_context->has_command_aperture = has_command_aperture;
+  native_context->pathb_completion_slots_in_use.resize(
+      mcdm::PathBCompletionCapacity(context), 0);
+  if (IREE_UNLIKELY(
+          native_context->pathb_completion_slots_in_use.empty())) {
+    native_context->~iree_hal_amdxdna_native_context_t();
+    iree_allocator_free(device->host_allocator, native_context);
+    mcdm::DestroyContextWithCommandAperture(device->api, device->device,
+                                            &context, &command_aperture);
+    mcdm::ContextBlobInfoDeinitialize(&info);
+    return iree_make_status(
+        IREE_STATUS_RESOURCE_EXHAUSTED,
+        "amdxdna Windows MCDM completion ring has no submission slots");
+  }
   native_context->info = info;
   info = mcdm::ContextBlobInfo();
   native_context->queue.context = native_context;
@@ -3208,6 +3210,9 @@ struct iree_hal_amdxdna_native_submission_t {
   size_t label_size = 0;
   mcdm::PathBPendingSubmit pending = {};
   mcdm::PathBPendingSubmit* pending_batch = nullptr;
+  uint32_t completion_slot_offset = 0;
+  uint32_t* completion_slot_offsets = nullptr;
+  iree_host_size_t completion_slot_count = 0;
   ert_packet* packet = nullptr;
   bool is_pathb_chain = false;
   bool is_pathb_chain_batch = false;
@@ -3218,18 +3223,105 @@ struct iree_hal_amdxdna_native_submission_t {
   iree_status_t status = iree_ok_status();
 };
 
+bool iree_hal_amdxdna_native_windows_reserve_completion_slots(
+    uint8_t* slots_in_use, size_t slot_capacity, size_t requested_count,
+    size_t start_slot, uint32_t* out_slot_offsets, size_t* out_next_slot) {
+  if (!slots_in_use || !out_slot_offsets || requested_count == 0 ||
+      requested_count > slot_capacity || start_slot >= slot_capacity ||
+      !out_next_slot) {
+    return false;
+  }
+  size_t free_count = 0;
+  for (size_t i = 0; i < slot_capacity; ++i) {
+    free_count += slots_in_use[i] == 0;
+  }
+  if (free_count < requested_count) return false;
+  size_t reserved_count = 0;
+  size_t slot = start_slot;
+  for (size_t visited = 0;
+       visited < slot_capacity && reserved_count < requested_count;
+       ++visited) {
+    if (!slots_in_use[slot]) {
+      slots_in_use[slot] = 1;
+      out_slot_offsets[reserved_count++] =
+          static_cast<uint32_t>((slot + 1) * 8);
+    }
+    slot = (slot + 1) % slot_capacity;
+  }
+  *out_next_slot = slot;
+  return true;
+}
+
+bool iree_hal_amdxdna_native_windows_release_completion_slots(
+    uint8_t* slots_in_use, size_t slot_capacity, size_t slot_count,
+    const uint32_t* slot_offsets) {
+  if (!slots_in_use || !slot_offsets || slot_count == 0) return false;
+  for (size_t i = 0; i < slot_count; ++i) {
+    const uint32_t offset = slot_offsets[i];
+    if (offset < 8 || offset % 8 != 0) return false;
+    const size_t slot_index = offset / 8 - 1;
+    if (slot_index >= slot_capacity || !slots_in_use[slot_index]) return false;
+    for (size_t j = 0; j < i; ++j) {
+      if (slot_offsets[j] == offset) return false;
+    }
+  }
+  for (size_t i = 0; i < slot_count; ++i) {
+    slots_in_use[slot_offsets[i] / 8 - 1] = 0;
+  }
+  return true;
+}
+
+size_t count_free_pathb_completion_slots(
+    const iree_hal_amdxdna_native_context_t* context) {
+  size_t free_count = 0;
+  for (uint8_t in_use : context->pathb_completion_slots_in_use) {
+    free_count += in_use == 0;
+  }
+  return free_count;
+}
+
 iree_status_t begin_pathb_submission(
-    iree_hal_amdxdna_native_submission_t* submission) {
+    iree_hal_amdxdna_native_submission_t* submission,
+    iree_host_size_t completion_slot_count) {
   iree_hal_amdxdna_native_device_t* device =
       submission->queue->context->device;
   std::unique_lock<std::mutex> lock(device->pathb_context_mutex);
   iree_hal_amdxdna_native_context_t* context = submission->queue->context;
+  if (IREE_UNLIKELY(completion_slot_count == 0 ||
+                    completion_slot_count >
+                        context->pathb_completion_slots_in_use.size())) {
+    return iree_make_status(
+        IREE_STATUS_RESOURCE_EXHAUSTED,
+        "amdxdna Windows MCDM submission requires %" PRIhsz
+        " completion slots but the context has %zu",
+        completion_slot_count, context->pathb_completion_slots_in_use.size());
+  }
   device->pathb_context_cv.wait(lock, [&]() {
-    return device->pathb_active_submission_count == 0 ||
-           device->pathb_active_context == context;
+    // Command objects and the shared command aperture are mutable staging
+    // resources. Keep one native submission in flight until they gain
+    // submission-owned snapshots; a batch still issues all of its parents
+    // asynchronously using distinct completion slots below.
+    return device->pathb_active_submission_count == 0 &&
+           count_free_pathb_completion_slots(context) >= completion_slot_count;
   });
   IREE_RETURN_IF_ERROR(
       activate_pathb_context_for_submit_locked(submission->queue));
+  uint32_t* slot_offsets = submission->is_pathb_chain_batch
+                               ? submission->completion_slot_offsets
+                               : &submission->completion_slot_offset;
+  const bool slots_reserved =
+      iree_hal_amdxdna_native_windows_reserve_completion_slots(
+          context->pathb_completion_slots_in_use.data(),
+          context->pathb_completion_slots_in_use.size(), completion_slot_count,
+          context->pathb_next_completion_slot, slot_offsets,
+          &context->pathb_next_completion_slot);
+  IREE_ASSERT(slots_reserved);
+  if (IREE_UNLIKELY(!slots_reserved)) {
+    return iree_make_status(
+        IREE_STATUS_INTERNAL,
+        "amdxdna Windows MCDM completion-slot reservation invariant failed");
+  }
+  submission->completion_slot_count = completion_slot_count;
   ++device->pathb_active_submission_count;
   submission->owns_pathb_submission = true;
   return iree_ok_status();
@@ -3243,6 +3335,17 @@ void end_pathb_submission(
   {
     std::lock_guard<std::mutex> lock(device->pathb_context_mutex);
     submission->owns_pathb_submission = false;
+    iree_hal_amdxdna_native_context_t* context = submission->queue->context;
+    const uint32_t* slot_offsets = submission->is_pathb_chain_batch
+                                       ? submission->completion_slot_offsets
+                                       : &submission->completion_slot_offset;
+    const bool slots_released =
+        iree_hal_amdxdna_native_windows_release_completion_slots(
+            context->pathb_completion_slots_in_use.data(),
+            context->pathb_completion_slots_in_use.size(),
+            submission->completion_slot_count, slot_offsets);
+    IREE_ASSERT(slots_released);
+    submission->completion_slot_count = 0;
     IREE_ASSERT(device->pathb_active_submission_count > 0);
     --device->pathb_active_submission_count;
   }
@@ -3317,7 +3420,8 @@ iree_status_t submit_pathb_command_to_kmt(
     if (!mcdm::SubmitPathBChain(
             command->device->api, command->device->device,
             &queue->context->context, command->exec_buffer->buffer, packet,
-            command_bytes, chain_info, &packet->header, &s->pending, error)) {
+            command_bytes, chain_info, s->completion_slot_offset,
+            &packet->header, &s->pending, error)) {
       mcdm::Error empty_error;
       return status_from_mcdm_error(
           "amdxdna Windows MCDM pathb chain submit failed",
@@ -3328,7 +3432,8 @@ iree_status_t submit_pathb_command_to_kmt(
   if (!mcdm::SubmitPathB(command->device->api, command->device->device,
                          &queue->context->context, command->exec_buffer->buffer,
                          packet, command_bytes, /*command_state=*/3,
-                         &packet->header, &s->pending, error)) {
+                         s->completion_slot_offset, &packet->header,
+                         &s->pending, error)) {
     mcdm::Error empty_error;
     return status_from_mcdm_error(
         "amdxdna Windows MCDM pathb command submit failed",
@@ -3343,7 +3448,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
   iree_hal_amdxdna_native_command_t* command = s->command;
   const WindowsMcdmOpcodeHandler& handler = command_opcode_handler(command);
   ert_packet* packet = command_packet(command);
-  IREE_RETURN_IF_ERROR(begin_pathb_submission(s));
+  IREE_RETURN_IF_ERROR(begin_pathb_submission(s, 1));
   PathBSubmissionIssueGuard issue_guard(s);
   if (!queue->context->has_command_aperture) {
     return iree_make_status(
@@ -3431,7 +3536,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_all_issue(
           "ERT_CMD_CHAIN parent commands");
     }
   }
-  IREE_RETURN_IF_ERROR(begin_pathb_submission(s));
+  IREE_RETURN_IF_ERROR(begin_pathb_submission(s, command_count));
   PathBSubmissionIssueGuard issue_guard(s);
   if (!queue->context->has_command_aperture) {
     return iree_make_status(
@@ -3725,8 +3830,8 @@ static iree_status_t iree_hal_amdxdna_native_submit_all_issue(
             command->device->api, command->device->device,
             &queue->context->context, command->exec_buffer->buffer, packet,
             static_cast<uint32_t>(parent_packet_sizes[command_index]),
-            chain_info, &packet->header, &s->pending_batch[command_index],
-            &error)) {
+            chain_info, s->completion_slot_offsets[command_index],
+            &packet->header, &s->pending_batch[command_index], &error)) {
       return status_from_mcdm_error(
           "amdxdna Windows MCDM pathb chain batch submit failed", error);
     }
@@ -3912,6 +4017,12 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all(
         reinterpret_cast<void**>(&submission->pending_batch));
   }
   if (iree_status_is_ok(status)) {
+    status = iree_allocator_malloc_array(
+        host_allocator, command_count,
+        sizeof(*submission->completion_slot_offsets),
+        reinterpret_cast<void**>(&submission->completion_slot_offsets));
+  }
+  if (iree_status_is_ok(status)) {
     std::memcpy(submission->commands, commands,
                 command_count * sizeof(*submission->commands));
     std::memset(submission->pending_batch, 0,
@@ -3984,6 +4095,8 @@ void iree_hal_amdxdna_native_submission_destroy(
   }
   iree_status_ignore(submission->status);
   iree_allocator_free(submission->host_allocator, submission->pending_batch);
+  iree_allocator_free(submission->host_allocator,
+                      submission->completion_slot_offsets);
   iree_allocator_free(submission->host_allocator, submission->commands);
   iree_allocator_free(submission->host_allocator, submission);
 }

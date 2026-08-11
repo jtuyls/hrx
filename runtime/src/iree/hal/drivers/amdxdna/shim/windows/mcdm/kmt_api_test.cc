@@ -1229,6 +1229,15 @@ TEST(KmtApiTest, PathBCompletionCapacityFollowsAllocatedRing) {
   EXPECT_EQ(PathBCompletionCapacity(context), 511u);
 }
 
+TEST(KmtApiTest, ValidatesCallerOwnedCompletionSlotOffsets) {
+  EXPECT_FALSE(IsValidPathBCompletionSlot(/*ring_size=*/4096, 0));
+  EXPECT_FALSE(IsValidPathBCompletionSlot(/*ring_size=*/4096, 4));
+  EXPECT_TRUE(IsValidPathBCompletionSlot(/*ring_size=*/4096, 8));
+  EXPECT_TRUE(IsValidPathBCompletionSlot(/*ring_size=*/4096, 4088));
+  EXPECT_FALSE(IsValidPathBCompletionSlot(/*ring_size=*/4096, 4096));
+  EXPECT_FALSE(IsValidPathBCompletionSlot(/*ring_size=*/4, 8));
+}
+
 TEST(KmtApiTest, CopyAndCommitPathBCodeWritesCopiesAlignedRangesAndTails) {
   alignas(64) std::array<uint8_t, 512> storage = {};
   std::fill(storage.begin(), storage.end(), 0xcc);

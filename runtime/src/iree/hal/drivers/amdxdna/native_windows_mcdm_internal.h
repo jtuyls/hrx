@@ -41,4 +41,16 @@ bool iree_hal_amdxdna_native_windows_calculate_ert_packet_bytes(
 bool iree_hal_amdxdna_native_windows_buffer_requires_context(
     iree_hal_amdxdna_native_buffer_c_type_t type);
 
+// Reserves completion records 1..slot_capacity and returns their byte offsets
+// in the 8-byte status ring. Reservation is all-or-nothing.
+bool iree_hal_amdxdna_native_windows_reserve_completion_slots(
+    uint8_t* slots_in_use, size_t slot_capacity, size_t requested_count,
+    size_t start_slot, uint32_t* out_slot_offsets, size_t* out_next_slot);
+
+// Releases a complete reservation. Invalid, duplicate, or already-free
+// offsets leave the reservation table unchanged.
+bool iree_hal_amdxdna_native_windows_release_completion_slots(
+    uint8_t* slots_in_use, size_t slot_capacity, size_t slot_count,
+    const uint32_t* slot_offsets);
+
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_NATIVE_WINDOWS_MCDM_INTERNAL_H_

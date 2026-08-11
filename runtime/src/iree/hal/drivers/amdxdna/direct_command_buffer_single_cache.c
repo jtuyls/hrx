@@ -52,6 +52,15 @@ static void iree_hal_amdxdna_single_command_cache_entry_deinitialize(
   memset(entry, 0, sizeof(*entry));
 }
 
+void iree_hal_amdxdna_single_command_cache_entry_discard(
+    iree_hal_amdxdna_device_single_command_cache_t* cache,
+    iree_hal_amdxdna_single_command_cache_entry_t* entry) {
+  IREE_ASSERT_ARGUMENT(cache);
+  IREE_ASSERT_ARGUMENT(entry);
+  IREE_ASSERT(entry->in_flight_count == 0);
+  iree_hal_amdxdna_single_command_cache_entry_deinitialize(cache, entry);
+}
+
 static iree_status_t iree_hal_amdxdna_single_command_cache_copy_signature(
     iree_hal_amdxdna_device_single_command_cache_t* cache,
     iree_hal_amdxdna_single_command_cache_entry_t* entry,

@@ -668,6 +668,17 @@ static void iree_hal_amdxdna_chain_command_cache_entry_deinitialize(
   memset(entry, 0, sizeof(*entry));
 }
 
+void iree_hal_amdxdna_chain_command_cache_entry_discard(
+    iree_hal_amdxdna_device_chain_command_cache_t* cache,
+    iree_hal_amdxdna_chain_command_cache_entry_t* entry) {
+  IREE_ASSERT_ARGUMENT(cache);
+  IREE_ASSERT_ARGUMENT(entry);
+  IREE_ASSERT(entry->in_flight_count == 0);
+  iree_hal_amdxdna_chain_command_cache_entry_deinitialize(
+      cache->host_allocator, entry);
+  iree_hal_amdxdna_chain_command_cache_entry_prepare_empty(entry);
+}
+
 void iree_hal_amdxdna_device_destroy_chain_command_cache(
     iree_hal_amdxdna_device* device) {
   iree_hal_amdxdna_device_chain_command_cache_t* cache =
