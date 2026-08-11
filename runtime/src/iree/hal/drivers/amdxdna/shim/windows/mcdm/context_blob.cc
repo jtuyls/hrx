@@ -14,7 +14,7 @@ namespace iree::hal::amdxdna::mcdm {
 namespace {
 
 constexpr size_t kAxlfBaseOffset = 0xE8;
-constexpr size_t kContextTailSize = 0x3C8;
+constexpr size_t kLegacyContextTailSize = 0x370;
 constexpr size_t kLegacyV0AxlfBaseOffset = 0xC0;
 constexpr size_t kLegacyV0ContextTailSize = 0x530;
 constexpr size_t kLegacyV0MlirAieContextTailSize = 0x370;
@@ -524,13 +524,14 @@ bool BuildContextPrivateDataFromXclbin(const uint8_t* xclbin,
     return false;
   }
 
-  if (xclbin_size >
-      std::numeric_limits<size_t>::max() - kAxlfBaseOffset - kContextTailSize) {
+  if (xclbin_size > std::numeric_limits<size_t>::max() - kAxlfBaseOffset -
+                        kLegacyContextTailSize) {
     Fail("context blob size overflows size_t", out_error);
     goto fail;
   }
   {
-    size_t total_size = kAxlfBaseOffset + xclbin_size + kContextTailSize;
+    size_t total_size =
+        kAxlfBaseOffset + xclbin_size + kLegacyContextTailSize;
     if (total_size > kMaxContextBlobSize || total_size > IREE_HOST_SIZE_MAX) {
       Fail("context blob size exceeds supported limit", out_error);
       goto fail;
