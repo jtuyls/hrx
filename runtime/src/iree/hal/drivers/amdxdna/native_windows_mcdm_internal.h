@@ -53,4 +53,8 @@ bool iree_hal_amdxdna_native_windows_release_completion_slots(
     uint8_t* slots_in_use, size_t slot_capacity, size_t slot_count,
     const uint32_t* slot_offsets);
 
+// Returns true when no completion record is owned by an active submission.
+bool iree_hal_amdxdna_native_windows_completion_slots_are_free(
+    const uint8_t* slots_in_use, size_t slot_capacity);
+
 #endif  // IREE_HAL_DRIVERS_AMDXDNA_NATIVE_WINDOWS_MCDM_INTERNAL_H_

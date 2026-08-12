@@ -3272,13 +3272,13 @@ bool iree_hal_amdxdna_native_windows_release_completion_slots(
   return true;
 }
 
-size_t count_free_pathb_completion_slots(
-    const iree_hal_amdxdna_native_context_t* context) {
-  size_t free_count = 0;
-  for (uint8_t in_use : context->pathb_completion_slots_in_use) {
-    free_count += in_use == 0;
+bool iree_hal_amdxdna_native_windows_completion_slots_are_free(
+    const uint8_t* slots_in_use, size_t slot_capacity) {
+  if (!slots_in_use && slot_capacity != 0) return false;
+  for (size_t i = 0; i < slot_capacity; ++i) {
+    if (slots_in_use[i] != 0) return false;
   }
-  return free_count;
+  return true;
 }
 
 iree_status_t begin_pathb_submission(
@@ -3302,9 +3302,21 @@ iree_status_t begin_pathb_submission(
     // resources. Keep one native submission in flight until they gain
     // submission-owned snapshots; a batch still issues all of its parents
     // asynchronously using distinct completion slots below.
-    return device->pathb_active_submission_count == 0 &&
-           count_free_pathb_completion_slots(context) >= completion_slot_count;
+    return device->pathb_active_submission_count == 0;
   });
+  // With a single native submission in flight, its retirement must release
+  // every completion slot before the active count reaches zero. Waiting for a
+  // leaked slot here would deadlock because no active owner remains to release
+  // it or notify this condition variable.
+  if (IREE_UNLIKELY(
+          !iree_hal_amdxdna_native_windows_completion_slots_are_free(
+              context->pathb_completion_slots_in_use.data(),
+              context->pathb_completion_slots_in_use.size()))) {
+    return iree_make_status(
+        IREE_STATUS_INTERNAL,
+        "amdxdna Windows MCDM completion slots remain reserved without an "
+        "active submission");
+  }
   IREE_RETURN_IF_ERROR(
       activate_pathb_context_for_submit_locked(submission->queue));
   uint32_t* slot_offsets = submission->is_pathb_chain_batch

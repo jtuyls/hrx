@@ -216,4 +216,18 @@ TEST(NativeWindowsMcdmCompletionSlotTest,
             (std::vector<uint8_t>{1, 1, 0}));
 }
 
+TEST(NativeWindowsMcdmCompletionSlotTest, DetectsUnownedReservedSlots) {
+  const uint8_t free_slots[] = {0, 0, 0};
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_completion_slots_are_free(
+      free_slots, std::size(free_slots)));
+
+  const uint8_t leaked_slot[] = {0, 1, 0};
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_completion_slots_are_free(
+      leaked_slot, std::size(leaked_slot)));
+  EXPECT_TRUE(iree_hal_amdxdna_native_windows_completion_slots_are_free(
+      nullptr, 0));
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_completion_slots_are_free(
+      nullptr, 1));
+}
+
 }  // namespace
