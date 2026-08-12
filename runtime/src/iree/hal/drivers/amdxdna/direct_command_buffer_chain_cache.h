@@ -40,7 +40,7 @@ extern "C" {
 // limits bound distinct native resources until backends expose queryable
 // retention limits through native capabilities.
 enum { kAmdxdnaChainCommandCacheCapacity = 64 };
-enum { kAmdxdnaChainCommandCacheMaxChildCommands = 896 };
+enum { kAmdxdnaChainCommandCacheDefaultMaxChildCommands = 896 };
 enum { kAmdxdnaChainCommandCacheMaxParentCommands = 96 };
 enum { kAmdxdnaChainCommandCacheMaxInstructionBytes = 32 * 1024 * 1024 };
 
@@ -137,6 +137,7 @@ typedef struct iree_hal_amdxdna_device_chain_command_cache_t {
   iree_slim_mutex_t mutex;
   iree_hal_amdxdna_chain_command_cache_entry_t
       entries[kAmdxdnaChainCommandCacheCapacity];
+  iree_host_size_t max_child_commands;
   iree_host_size_t entry_count;
   uint64_t use_clock;
 } iree_hal_amdxdna_device_chain_command_cache_t;

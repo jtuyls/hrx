@@ -618,6 +618,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
           ? std::min(chain_slot_capacity(kMaxExecBoSize),
                      kKmqDefaultChainSlots)
           : 0;
+  caps.max_cached_chain_child_commands = 896;
   caps.context_image_models = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI;
   // START_NPU is used for command-chain children and is correct on Linux KMQ.
   // Do not advertise PARTIAL_ELF here: its resident-instruction path currently

@@ -133,6 +133,9 @@ typedef struct iree_hal_amdxdna_native_c_device_caps_t {
   uint32_t ddi_version;
   uint32_t max_effective_queues;
   uint32_t max_command_chain_slots;
+  // Maximum number of native child commands that the device-level chain cache
+  // may retain. Zero selects the common conservative default.
+  uint32_t max_cached_chain_child_commands;
   uint32_t context_image_models;
   uint32_t dispatch_models;
   uint32_t completion_models;
