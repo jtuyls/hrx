@@ -2513,7 +2513,6 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   context.completion_ring.cpu_ptr = command_aperture.cpu_ptr;
   context.completion_ring_ready = true;
   context.completion_ring_owned = false;
-  context.completion_ring_offset = 8;
   if (!mcdm::SubmitAndWaitPathBSetup(device->api, device->device, &context,
                                      &command_aperture, pdi.data,
                                      pdi.data_length, &error)) {
@@ -3376,6 +3375,22 @@ iree_status_t begin_pathb_submission(
   return iree_ok_status();
 }
 
+iree_status_t initialize_pathb_completion_slots(
+    iree_hal_amdxdna_native_submission_t* submission) {
+  const uint32_t* slot_offsets = submission->is_pathb_chain_batch
+                                     ? submission->completion_slot_offsets
+                                     : &submission->completion_slot_offset;
+  iree_hal_amdxdna_native_context_t* context = submission->queue->context;
+  mcdm::Error error;
+  if (!mcdm::InitializePathBCompletionSlots(
+          &context->context, slot_offsets, submission->completion_slot_count,
+          &error)) {
+    return status_from_mcdm_error(
+        "amdxdna Windows MCDM completion-slot initialization failed", error);
+  }
+  return iree_ok_status();
+}
+
 void end_pathb_submission(
     iree_hal_amdxdna_native_submission_t* submission) {
   if (!submission || !submission->owns_pathb_submission) return;
@@ -3499,6 +3514,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_issue(
   ert_packet* packet = command_packet(command);
   IREE_RETURN_IF_ERROR(begin_pathb_submission(s, 1));
   PathBSubmissionIssueGuard issue_guard(s);
+  IREE_RETURN_IF_ERROR(initialize_pathb_completion_slots(s));
   if (!queue->context->has_command_aperture) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,
@@ -3587,6 +3603,7 @@ static iree_status_t iree_hal_amdxdna_native_submit_all_issue(
   }
   IREE_RETURN_IF_ERROR(begin_pathb_submission(s, command_count));
   PathBSubmissionIssueGuard issue_guard(s);
+  IREE_RETURN_IF_ERROR(initialize_pathb_completion_slots(s));
   if (!queue->context->has_command_aperture) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,

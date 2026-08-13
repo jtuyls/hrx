@@ -2026,10 +2026,9 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
             }
             if (iree_status_is_ok(status) &&
                 (binding_refs_changed || reconf_buffers_changed)) {
-              // Partial-ELF parents reference only stable child command BOs;
-              // each child owns and has already refreshed its data BO table.
-              // Other parent formats also bind group resources for residency
-              // and must be rebuilt when those resources change.
+              // Parent commands carry driver-visible residency state in
+              // addition to child command handles. Rebuild them whenever the
+              // referenced resources change, including for partial ELF.
               if (reconf_buffers_changed) {
                 status = iree_hal_amdxdna_chain_group_take_reconf_buffers(
                     command_buffer->host_allocator, &chain_cache->group, group);
@@ -2038,8 +2037,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_flush_chains(
                 status = iree_hal_amdxdna_chain_group_set_binding_refs(
                     command_buffer->host_allocator, &chain_cache->group, group);
               }
-              if (iree_status_is_ok(status) &&
-                  !chain_cache->group.native_partial_elf) {
+              if (iree_status_is_ok(status)) {
                 status = iree_hal_amdxdna_rebuild_cached_parent_chains(
                     command_buffer, chain_cache, max_slots);
               }

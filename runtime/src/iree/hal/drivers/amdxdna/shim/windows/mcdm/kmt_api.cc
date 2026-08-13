@@ -19,9 +19,6 @@
 #include <string>
 #include <vector>
 
-#ifndef IREE_HAL_AMDXDNA_MCDM_ENABLE_KMT_TRACE
-#define IREE_HAL_AMDXDNA_MCDM_ENABLE_KMT_TRACE 0
-#endif
 
 namespace iree::hal::amdxdna::mcdm {
 namespace {
@@ -84,19 +81,6 @@ bool UsesLegacyCpuBufferHandles(McdmAbi abi) {
          abi == McdmAbi::legacy_v2;
 }
 
-const char* McdmAbiName(McdmAbi abi) {
-  switch (abi) {
-    case McdmAbi::legacy_v0:
-      return "legacy_v0";
-    case McdmAbi::legacy_v2:
-      return "legacy_v2";
-    case McdmAbi::legacy:
-      return "legacy";
-    case McdmAbi::compact:
-      return "compact";
-  }
-  return "unknown";
-}
 
 size_t ContextCommandApertureCookieOffset(McdmAbi abi) {
   if (abi == McdmAbi::legacy_v0) return size_t{0x30};
@@ -109,114 +93,6 @@ size_t ContextCommandApertureCookieOffset(McdmAbi abi) {
   return kLegacyContextCommandApertureCookieOffset;
 }
 
-#if IREE_HAL_AMDXDNA_MCDM_ENABLE_KMT_TRACE
-void TraceImpl(const char* fmt, ...) {
-  std::fprintf(stderr, "[hrx][kmt] ");
-  va_list args;
-  va_start(args, fmt);
-  std::vfprintf(stderr, fmt, args);
-  va_end(args);
-  std::fprintf(stderr, "\n");
-  std::fflush(stderr);
-}
-
-uint64_t HashBytes(const void* data, size_t size) {
-  const auto* bytes = static_cast<const uint8_t*>(data);
-  uint64_t hash = 1469598103934665603ull;
-  for (size_t i = 0; i < size; ++i) {
-    hash ^= bytes[i];
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-uint32_t ReadTraceU32(const void* data, size_t size, size_t offset) {
-  if (!data || offset > size || sizeof(uint32_t) > size - offset) return 0;
-  uint32_t value = 0;
-  std::memcpy(&value, static_cast<const uint8_t*>(data) + offset,
-              sizeof(value));
-  return value;
-}
-
-void TraceBlobImpl(const char* label, const void* data, size_t size) {
-  if (!data || size == 0) return;
-  TraceImpl("%s size=%zu hash=0x%016llx u32[0..3]=%08x,%08x,%08x,%08x",
-            label, size, static_cast<unsigned long long>(HashBytes(data, size)),
-            ReadTraceU32(data, size, 0), ReadTraceU32(data, size, 4),
-            ReadTraceU32(data, size, 8), ReadTraceU32(data, size, 12));
-}
-
-std::atomic<uint64_t> g_live_kmt_bytes{0};
-std::atomic<uint64_t> g_peak_kmt_bytes{0};
-std::atomic<uint64_t> g_live_kmt_count{0};
-
-void UpdatePeakKmtBytes(uint64_t live_bytes) {
-  uint64_t peak = g_peak_kmt_bytes.load(std::memory_order_relaxed);
-  while (live_bytes > peak &&
-         !g_peak_kmt_bytes.compare_exchange_weak(
-             peak, live_bytes, std::memory_order_relaxed)) {
-  }
-}
-
-void StatsAllocImpl(const char* label, uint64_t bytes,
-                    D3DKMT_HANDLE allocation) {
-  const uint64_t live =
-      g_live_kmt_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
-  const uint64_t count =
-      g_live_kmt_count.fetch_add(1, std::memory_order_relaxed) + 1;
-  UpdatePeakKmtBytes(live);
-  std::fprintf(stderr,
-               "[hrx][kmt-stats] alloc %s bytes=%llu live=%llu peak=%llu "
-               "count=%llu alloc=0x%08x\n",
-               label ? label : "",
-               static_cast<unsigned long long>(bytes),
-               static_cast<unsigned long long>(live),
-               static_cast<unsigned long long>(
-                   g_peak_kmt_bytes.load(std::memory_order_relaxed)),
-               static_cast<unsigned long long>(count),
-               static_cast<unsigned>(allocation));
-  std::fflush(stderr);
-}
-
-void StatsFreeImpl(const char* label, uint64_t bytes,
-                   D3DKMT_HANDLE allocation) {
-  uint64_t before = g_live_kmt_bytes.load(std::memory_order_relaxed);
-  uint64_t live = 0;
-  while (true) {
-    live = before > bytes ? before - bytes : 0;
-    if (g_live_kmt_bytes.compare_exchange_weak(
-            before, live, std::memory_order_relaxed)) {
-      break;
-    }
-  }
-  uint64_t count = g_live_kmt_count.load(std::memory_order_relaxed);
-  while (count > 0 &&
-         !g_live_kmt_count.compare_exchange_weak(
-             count, count - 1, std::memory_order_relaxed)) {
-  }
-  std::fprintf(stderr,
-               "[hrx][kmt-stats] free %s bytes=%llu live=%llu peak=%llu "
-               "count=%llu alloc=0x%08x\n",
-               label ? label : "",
-               static_cast<unsigned long long>(bytes),
-               static_cast<unsigned long long>(live),
-               static_cast<unsigned long long>(
-                   g_peak_kmt_bytes.load(std::memory_order_relaxed)),
-               static_cast<unsigned long long>(
-                   g_live_kmt_count.load(std::memory_order_relaxed)),
-               static_cast<unsigned>(allocation));
-  std::fflush(stderr);
-}
-#define Trace(...) TraceImpl(__VA_ARGS__)
-#define TraceBlob(...) TraceBlobImpl(__VA_ARGS__)
-#define StatsAlloc(...) StatsAllocImpl(__VA_ARGS__)
-#define StatsFree(...) StatsFreeImpl(__VA_ARGS__)
-#else
-#define Trace(...) ((void)0)
-#define TraceBlob(...) ((void)0)
-#define StatsAlloc(...) ((void)0)
-#define StatsFree(...) ((void)0)
-#endif
 
 void ConfigureMakeResidentFlags(D3DDDI_MAKERESIDENT* resident) {
   if (!resident) return;
@@ -293,22 +169,14 @@ bool CheckMakeResidentStatusOrPending(const KmtApi& api, const Device& device,
                                       Error* out_error) {
   if (status == 0) return true;
   if (status == kStatusPending) {
-    Trace("%s -> 0x%08x%s", call_name, static_cast<uint32_t>(status),
-          NtStatusSuffix(status));
     return true;
   }
-  Trace("%s -> 0x%08x%s trim=%llu flags=0x%08x allocation_count=%u",
-        call_name, static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned long long>(resident.NumBytesToTrim),
-        resident.Flags.Value, resident.NumAllocations);
   SetMakeResidentError(api, device, call_name, status, resident, out_error);
   return false;
 }
 
 bool CheckStatus(const char* call_name, NTSTATUS status, Error* out_error) {
   if (status == 0) return true;
-  Trace("%s -> 0x%08x%s", call_name, static_cast<uint32_t>(status),
-        NtStatusSuffix(status));
   SetErrorFormat(out_error, "%s failed with 0x%08x%s", call_name,
                  static_cast<uint32_t>(status), NtStatusSuffix(status));
   return false;
@@ -318,8 +186,6 @@ bool CheckStatusOrPending(const char* call_name, NTSTATUS status,
                           Error* out_error) {
   if (status == 0) return true;
   if (status == kStatusPending) {
-    Trace("%s -> 0x%08x%s", call_name, static_cast<uint32_t>(status),
-          NtStatusSuffix(status));
     return true;
   }
   return CheckStatus(call_name, status, out_error);
@@ -333,21 +199,15 @@ enum class CpuCacheOperation {
 #if defined(__clang__)
 __attribute__((target("clflushopt")))
 #endif
-void FlushCpuCacheLinesOptimized(uintptr_t line, uintptr_t end) {
-  while (line < end) {
-    _mm_clflushopt(reinterpret_cast<void*>(line));
-    line += 64;
-  }
+void FlushCpuCacheLineOptimized(void* address) {
+  _mm_clflushopt(address);
 }
 
 #if defined(__clang__)
 __attribute__((target("clwb")))
 #endif
-void WriteBackCpuCacheLines(uintptr_t line, uintptr_t end) {
-  while (line < end) {
-    _mm_clwb(reinterpret_cast<void*>(line));
-    line += 64;
-  }
+void WriteBackCpuCacheLine(void* address) {
+  _mm_clwb(address);
 }
 
 bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
@@ -416,16 +276,19 @@ bool ApplyCpuCacheOperation(void* mapping, uint64_t mapping_size,
         (mapping_address + static_cast<uintptr_t>(begin_offset)) &
         ~(kCpuCacheLineSize - 1);
     const uintptr_t end = mapping_address + static_cast<uintptr_t>(end_offset);
-    if (operation == CpuCacheOperation::writeback &&
-        cache_capabilities.clwb) {
-      WriteBackCpuCacheLines(line, end);
-    } else if (cache_capabilities.clflushopt) {
-      FlushCpuCacheLinesOptimized(line, end);
-    } else {
-      while (line < end) {
+    // Keep iteration and the ordering fence in this function. The targeted
+    // helpers isolate optional instructions only; they do not define a
+    // publication boundary by themselves.
+    while (line < end) {
+      if (operation == CpuCacheOperation::writeback &&
+          cache_capabilities.clwb) {
+        WriteBackCpuCacheLine(reinterpret_cast<void*>(line));
+      } else if (cache_capabilities.clflushopt) {
+        FlushCpuCacheLineOptimized(reinterpret_cast<void*>(line));
+      } else {
         _mm_clflush(reinterpret_cast<void const*>(line));
-        line += kCpuCacheLineSize;
       }
+      line += kCpuCacheLineSize;
     }
   }
   const bool uses_weakly_ordered_cache_operation =
@@ -711,17 +574,6 @@ std::wstring DecodeInfText(const std::vector<uint8_t>& bytes) {
   return text;
 }
 
-std::string NarrowForTrace(const std::wstring& text) {
-  if (text.empty()) return std::string();
-  int size = WideCharToMultiByte(CP_UTF8, 0, text.data(),
-                                 static_cast<int>(text.size()), nullptr, 0,
-                                 nullptr, nullptr);
-  if (size <= 0) return std::string("<unprintable>");
-  std::string result(static_cast<size_t>(size), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                      result.data(), size, nullptr, nullptr);
-  return result;
-}
 
 void NormalizeSystemRootPath(std::wstring* path) {
   if (!path) return;
@@ -780,33 +632,21 @@ bool QueryDriverVersion(const KmtApi& api, D3DKMT_HANDLE adapter,
   std::wstring driver_store_path;
   if (!QueryDriverStorePath(api, adapter, &driver_store_path) ||
       driver_store_path.empty()) {
-    Trace("driver-version query failed: no DriverStore path");
     return false;
   }
   NormalizeSystemRootPath(&driver_store_path);
-  const std::string original_driver_store_path =
-      NarrowForTrace(driver_store_path);
   if (driver_store_path.back() != L'\\' && driver_store_path.back() != L'/') {
     driver_store_path.push_back(L'\\');
   }
   driver_store_path.append(L"kipudrv.inf");
-  const std::string inf_path = NarrowForTrace(driver_store_path);
 
   std::vector<uint8_t> bytes;
   if (!ReadFileToBytes(driver_store_path.c_str(), &bytes)) {
-    Trace("driver-version query failed: cannot read INF store_path='%s' "
-          "inf_path='%s'",
-          original_driver_store_path.c_str(), inf_path.c_str());
     return false;
   }
   if (!ParseDriverVersionText(DecodeInfText(bytes), out_version)) {
-    Trace("driver-version query failed: cannot parse INF path='%s'",
-          inf_path.c_str());
     return false;
   }
-  Trace("driver-version query path='%s' version=%u.%u.%u.%u",
-        inf_path.c_str(), out_version->major, out_version->minor,
-        out_version->build, out_version->revision);
   return true;
 }
 
@@ -1305,9 +1145,6 @@ bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
   D3DKMT_CREATEDEVICE create_device = {};
   create_device.hAdapter = adapter.handle;
   NTSTATUS status = api.create_device(&create_device);
-  Trace("D3DKMTCreateDevice adapter=0x%08x status=0x%08x%s device=0x%08x",
-        static_cast<unsigned>(adapter.handle), static_cast<uint32_t>(status),
-        NtStatusSuffix(status), static_cast<unsigned>(create_device.hDevice));
   if (!CheckStatus("D3DKMTCreateDevice", status, out_error)) {
     for (size_t i = 0; i < device.retained_adapter_handle_count; ++i) {
       D3DKMT_CLOSEADAPTER close = {};
@@ -1356,12 +1193,6 @@ bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
   device.mcdm_abi_diagnostics.driver_version_disambiguation_available =
       device.mcdm_abi_diagnostics.driver_version_disambiguation_required &&
       device.has_driver_version;
-  Trace("selected MCDM ABI probed=%s selected=%s driver_version=%u.%u.%u.%u "
-        "has_driver_version=%u",
-        McdmAbiName(probed_mcdm_abi), McdmAbiName(device.mcdm_abi),
-        device.driver_version.major, device.driver_version.minor,
-        device.driver_version.build, device.driver_version.revision,
-        device.has_driver_version ? 1u : 0u);
   *out_device = device;
   return true;
 }
@@ -1405,8 +1236,6 @@ void DestroyDevice(const KmtApi& api, Device* device) {
 bool WaitForPagingFenceCpu(const KmtApi& api, const Device& device,
                            UINT64 fence_value) {
   if (fence_value == 0) return true;
-  Trace("wait-paging-cpu fence=0x%llx",
-        static_cast<unsigned long long>(fence_value));
   D3DKMT_HANDLE objects[1] = {device.paging_sync_object};
   UINT64 values[1] = {fence_value};
   D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait = {};
@@ -1416,9 +1245,6 @@ bool WaitForPagingFenceCpu(const KmtApi& api, const Device& device,
   wait.FenceValueArray = values;
   wait.hAsyncEvent = nullptr;
   NTSTATUS status = api.wait_from_cpu(&wait);
-  Trace("wait-paging-cpu-ret fence=0x%llx status=0x%08x%s",
-        static_cast<unsigned long long>(fence_value),
-        static_cast<uint32_t>(status), NtStatusSuffix(status));
   return status == 0;
 }
 
@@ -1441,8 +1267,6 @@ bool WaitForPendingPagingBeforeSubmit(const KmtApi& api,
   const UINT64 fence_value = static_cast<UINT64>(InterlockedCompareExchange64(
       &device.pending_paging_fence_value, 0, 0));
   if (fence_value == 0) return true;
-  Trace("pending-paging-before-submit fence=0x%llx",
-        static_cast<unsigned long long>(fence_value));
 
   // Match XRT's submit wrapper: read the paging queue's shared completion
   // value first and enter KMT only while the device-wide watermark is pending.
@@ -1450,14 +1274,8 @@ bool WaitForPendingPagingBeforeSubmit(const KmtApi& api,
     const auto* const completed =
         static_cast<const volatile UINT64*>(device.paging_fence_cpu);
     if (*completed >= fence_value) {
-      Trace("pending-paging-complete fence=0x%llx completed=0x%llx",
-            static_cast<unsigned long long>(fence_value),
-            static_cast<unsigned long long>(*completed));
       return true;
     }
-    Trace("pending-paging-wait fence=0x%llx completed=0x%llx",
-          static_cast<unsigned long long>(fence_value),
-          static_cast<unsigned long long>(*completed));
   }
   if (WaitForPagingFenceCpu(api, device, fence_value)) return true;
   SetErrorFormat(
@@ -1473,16 +1291,7 @@ bool SubmitCommandToHwQueueAfterPaging(
     D3DKMT_SUBMITCOMMANDTOHWQUEUE* submit, const char* label,
     Error* out_error) {
   if (!WaitForPendingPagingBeforeSubmit(api, device, out_error)) return false;
-  Trace("submit %s hwq=0x%08x fence=0x%llx cmd=0x%llx len=%u priv=%u",
-        label, static_cast<unsigned>(submit->hHwQueue),
-        static_cast<unsigned long long>(submit->HwQueueProgressFenceId),
-        static_cast<unsigned long long>(submit->CommandBuffer),
-        submit->CommandLength, submit->PrivateDriverDataSize);
-  TraceBlob("submit-private", submit->pPrivateDriverData,
-            submit->PrivateDriverDataSize);
   const NTSTATUS status = api.submit_command_to_hw_queue(submit);
-  Trace("submit-ret %s status=0x%08x%s", label,
-        static_cast<uint32_t>(status), NtStatusSuffix(status));
   return CheckStatus(label, status, out_error);
 }
 
@@ -1524,16 +1333,6 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
   create.pAllocationInfo2 = &alloc_info;
 
   NTSTATUS status = api.create_allocation2(&create);
-  Trace("create-buffer kind=%s size=%llu requested=%llu aligned=%llu pages=%llu "
-        "private=0x%08x flags=0x%08x status=0x%08x%s alloc=0x%08x "
-        "resource=0x%08x",
-        kind_info.name, static_cast<unsigned long long>(size),
-        static_cast<unsigned long long>(requested_size),
-        static_cast<unsigned long long>(aligned_size),
-        static_cast<unsigned long long>(size_pages), kind_info.private_type,
-        kind_info.xcl_flags, static_cast<uint32_t>(status),
-        NtStatusSuffix(status), static_cast<unsigned>(alloc_info.hAllocation),
-        static_cast<unsigned>(create.hResource));
   if (!CheckStatus("D3DKMTCreateAllocation2", status, out_error)) {
     return false;
   }
@@ -1552,13 +1351,6 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
   map.SizeInPages = size_pages;
   map.Protection.Write = 1;
   status = api.map_gpu_virtual_address(&map);
-  Trace("map-buffer kind=%s alloc=0x%08x pages=%llu status=0x%08x%s "
-        "gpu_va=0x%llx fence=0x%llx",
-        kind_info.name, static_cast<unsigned>(buffer.allocation),
-        static_cast<unsigned long long>(map.SizeInPages),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned long long>(map.VirtualAddress),
-        static_cast<unsigned long long>(map.PagingFenceValue));
   if (!CheckStatusOrPending("D3DKMTMapGpuVirtualAddress", status, out_error)) {
     DestroyBuffer(api, device, &buffer);
     return false;
@@ -1573,10 +1365,6 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
   resident.AllocationList = resident_allocs;
   ConfigureMakeResidentFlags(&resident);
   status = api.make_resident(&resident);
-  Trace("resident-buffer kind=%s alloc=0x%08x status=0x%08x%s fence=0x%llx",
-        kind_info.name, static_cast<unsigned>(buffer.allocation),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned long long>(resident.PagingFenceValue));
   if (!CheckMakeResidentStatusOrPending(api, device, "D3DKMTMakeResident",
                                         status, resident, out_error)) {
     DestroyBuffer(api, device, &buffer);
@@ -1592,16 +1380,12 @@ bool CreateBuffer(const KmtApi& api, const Device& device, BufferKind kind,
   lock.hDevice = device.device;
   lock.hAllocation = buffer.allocation;
   status = api.lock2(&lock);
-  Trace("lock-buffer kind=%s alloc=0x%08x status=0x%08x%s cpu=%p",
-        kind_info.name, static_cast<unsigned>(buffer.allocation),
-        static_cast<uint32_t>(status), NtStatusSuffix(status), lock.pData);
   if (!CheckStatus("D3DKMTLock2", status, out_error)) {
     DestroyBuffer(api, device, &buffer);
     return false;
   }
   buffer.cpu_ptr = lock.pData;
 
-  StatsAlloc(kind_info.name, buffer.mapped_size, buffer.allocation);
   *out_buffer = buffer;
   return true;
 }
@@ -1760,9 +1544,6 @@ bool WaitForBufferResidency(const KmtApi& api, const Device& device,
     // Compact XRT tracks all Map/MakeResident fences in one device-wide
     // watermark and drains it in the HW-queue submit wrapper. Adding per-BO
     // GPU waits changes the first-submit lifecycle and is not part of that ABI.
-    Trace("wait-buffer-residency-skip label=%s alloc=0x%08x fence=0x%llx",
-          label ? label : "", static_cast<unsigned>(buffer.allocation),
-          static_cast<unsigned long long>(buffer.paging_fence_value));
     return true;
   }
   if (buffer.paging_fence_value <= context.ordered_paging_fence_value) {
@@ -1782,11 +1563,6 @@ bool WaitForBufferResidency(const KmtApi& api, const Device& device,
     std::snprintf(call_name, sizeof(call_name),
                   "D3DKMTWaitForSynchronizationObjectFromGpu(%s)", label);
   }
-  Trace("wait-buffer-residency label=%s alloc=0x%08x fence=0x%llx "
-        "status=0x%08x%s",
-        label ? label : "", static_cast<unsigned>(buffer.allocation),
-        static_cast<unsigned long long>(buffer.paging_fence_value),
-        static_cast<uint32_t>(status), NtStatusSuffix(status));
   if (!CheckStatus(call_name, status, out_error)) return false;
   context.ordered_paging_fence_value = buffer.paging_fence_value;
   return true;
@@ -1795,9 +1571,6 @@ bool WaitForBufferResidency(const KmtApi& api, const Device& device,
 void DestroyBuffer(const KmtApi& api, const Device& device, Buffer* buffer) {
   if (!buffer || !buffer->allocation) return;
   const BufferKindInfo kind_info = GetBufferKindInfo(buffer->kind);
-  StatsFree(kind_info.name,
-            buffer->mapped_size ? buffer->mapped_size : buffer->size,
-            buffer->allocation);
   if (buffer->cpu_ptr) {
     D3DKMT_UNLOCK2 unlock = {};
     unlock.hDevice = device.device;
@@ -1847,7 +1620,6 @@ void DestroyStatusRing(const KmtApi& api, const Device& device,
   context->completion_ring_resource = 0;
   context->completion_ring_ready = false;
   context->completion_ring_owned = false;
-  context->completion_ring_offset = 0;
 }
 
 bool CreateContext(const KmtApi& api, const Device& device,
@@ -1872,13 +1644,6 @@ bool CreateContext(const KmtApi& api, const Device& device,
   create_context.PrivateDriverDataSize = static_cast<UINT>(private_data_size);
   create_context.ClientHint = kClientHintVitis;
   NTSTATUS status = api.create_context_virtual(&create_context);
-  Trace("D3DKMTCreateContextVirtual device=0x%08x status=0x%08x%s "
-        "context=0x%08x private_size=%u",
-        static_cast<unsigned>(device.device), static_cast<uint32_t>(status),
-        NtStatusSuffix(status), static_cast<unsigned>(create_context.hContext),
-        create_context.PrivateDriverDataSize);
-  TraceBlob("create-context-private", create_context.pPrivateDriverData,
-            create_context.PrivateDriverDataSize);
   if (!CheckStatus("D3DKMTCreateContextVirtual", status, out_error)) {
     return false;
   }
@@ -1895,11 +1660,6 @@ bool CreateContext(const KmtApi& api, const Device& device,
   D3DKMT_CREATEHWQUEUE create_queue = {};
   create_queue.hHwContext = context.context;
   status = api.create_hw_queue(&create_queue);
-  Trace("D3DKMTCreateHwQueue context=0x%08x status=0x%08x%s hwq=0x%08x "
-        "progress_fence=0x%08x",
-        static_cast<unsigned>(context.context), static_cast<uint32_t>(status),
-        NtStatusSuffix(status), static_cast<unsigned>(create_queue.hHwQueue),
-        static_cast<unsigned>(create_queue.hHwQueueProgressFence));
   if (!CheckStatus("D3DKMTCreateHwQueue", status, out_error)) {
     DestroyContext(api, device, &context);
     return false;
@@ -1977,15 +1737,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
   create_command.pAllocationInfo2 = &command_info;
 
   NTSTATUS status = api.create_allocation2(&create_command);
-  Trace("create-command-aperture status-object requested=%llu aligned=%llu "
-        "private=0x%x flags=0x%x status=0x%08x%s alloc=0x%08x resource=0x%08x",
-        static_cast<unsigned long long>(command_private.requested_size),
-        static_cast<unsigned long long>(command_private.aligned_size),
-        static_cast<unsigned>(command_private.private_type),
-        static_cast<unsigned>(command_private.xcl_flags),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned>(command_info.hAllocation),
-        static_cast<unsigned>(create_command.hResource));
   if (!CheckStatus("D3DKMTCreateAllocation2(command aperture)", status,
                    out_error)) {
     return false;
@@ -2002,10 +1753,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
   lock.hDevice = device.device;
   lock.hAllocation = aperture.allocation;
   status = api.lock2(&lock);
-  Trace("lock-command-aperture status-object alloc=0x%08x status=0x%08x%s "
-        "cpu=%p",
-        static_cast<unsigned>(aperture.allocation),
-        static_cast<uint32_t>(status), NtStatusSuffix(status), lock.pData);
   if (status != 0) {
     SetErrorFormat(out_error,
                    "D3DKMTLock2(command aperture) failed with 0x%08x%s "
@@ -2028,13 +1775,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
     status_map.SizeInPages = kCommandApertureAllocationSize / kPageSize;
     status_map.Protection.Write = 1;
     status = api.map_gpu_virtual_address(&status_map);
-    Trace("map-command-aperture status-object alloc=0x%08x pages=%llu "
-          "status=0x%08x%s gpu_va=0x%llx fence=0x%llx",
-          static_cast<unsigned>(aperture.allocation),
-          static_cast<unsigned long long>(status_map.SizeInPages),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(status_map.VirtualAddress),
-          static_cast<unsigned long long>(status_map.PagingFenceValue));
     if (!CheckStatusOrPending("D3DKMTMapGpuVirtualAddress(status object)",
                               status, out_error)) {
       DestroyCommandAperture(api, device, &aperture);
@@ -2050,11 +1790,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
     status_resident.AllocationList = status_allocations;
     ConfigureMakeResidentFlags(&status_resident);
     status = api.make_resident(&status_resident);
-    Trace("resident-command-aperture status-object alloc=0x%08x "
-          "status=0x%08x%s fence=0x%llx",
-          static_cast<unsigned>(aperture.allocation),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(status_resident.PagingFenceValue));
     if (!CheckMakeResidentStatusOrPending(
             api, device, "D3DKMTMakeResident(status object)", status,
             status_resident, out_error)) {
@@ -2087,25 +1822,12 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
   create_gpu.NumAllocations = 1;
   create_gpu.pAllocationInfo2 = &gpu_info;
   status = api.create_allocation2(&create_gpu);
-  Trace("create-command-aperture gpu requested=%llu aligned=%llu private=0x%x "
-        "policy=0x%x flags=0x%x status=0x%08x%s alloc=0x%08x",
-        static_cast<unsigned long long>(gpu_private.requested_size),
-        static_cast<unsigned long long>(gpu_private.aligned_size),
-        static_cast<unsigned>(gpu_private.private_type),
-        static_cast<unsigned>(gpu_private.policy),
-        static_cast<unsigned>(gpu_private.xcl_flags),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned>(gpu_info.hAllocation));
   if (!CheckStatus("D3DKMTCreateAllocation2(command aperture gpu)", status,
                    out_error)) {
     DestroyCommandAperture(api, device, &aperture);
     return false;
   }
   aperture.gpu_allocation = gpu_info.hAllocation;
-  StatsAlloc("command-aperture-status", kCommandApertureAllocationSize,
-             aperture.allocation);
-  StatsAlloc("command-aperture-gpu", kCommandApertureGpuVaSize,
-             aperture.gpu_allocation);
 
   D3DDDI_MAPGPUVIRTUALADDRESS map = {};
   map.hPagingQueue = device.paging_queue;
@@ -2113,13 +1835,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
   map.SizeInPages = kCommandApertureGpuVaSize / kPageSize;
   map.Protection.Write = 1;
   status = api.map_gpu_virtual_address(&map);
-  Trace("map-command-aperture gpu alloc=0x%08x pages=%llu status=0x%08x%s "
-        "gpu_va=0x%llx fence=0x%llx",
-        static_cast<unsigned>(aperture.gpu_allocation),
-        static_cast<unsigned long long>(map.SizeInPages),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned long long>(map.VirtualAddress),
-        static_cast<unsigned long long>(map.PagingFenceValue));
   if (status != 0 && status != kStatusPending) {
     SetErrorFormat(out_error,
                    "D3DKMTMapGpuVirtualAddress(command aperture) failed with "
@@ -2145,11 +1860,6 @@ bool CreateCommandAperture(const KmtApi& api, const Device& device,
     resident.AllocationList = resident_allocs;
     ConfigureMakeResidentFlags(&resident);
     status = api.make_resident(&resident);
-    Trace("resident-command-aperture gpu alloc=0x%08x status=0x%08x%s "
-          "fence=0x%llx",
-          static_cast<unsigned>(aperture.gpu_allocation),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(resident.PagingFenceValue));
     if (!CheckMakeResidentStatusOrPending(
             api, device, "D3DKMTMakeResident(command aperture)", status,
             resident, out_error)) {
@@ -2262,13 +1972,6 @@ bool EnsureCommandApertureGpuMapping(const KmtApi& api, const Device& device,
   map.SizeInPages = kCommandApertureGpuVaSize / kPageSize;
   map.Protection.Write = 1;
   NTSTATUS status = api.map_gpu_virtual_address(&map);
-  Trace("map-command-aperture remap alloc=0x%08x pages=%llu status=0x%08x%s "
-        "gpu_va=0x%llx fence=0x%llx",
-        static_cast<unsigned>(aperture->gpu_allocation),
-        static_cast<unsigned long long>(map.SizeInPages),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned long long>(map.VirtualAddress),
-        static_cast<unsigned long long>(map.PagingFenceValue));
   if (status != 0 && status != kStatusPending) {
     SetErrorFormat(out_error,
                    "D3DKMTMapGpuVirtualAddress(command aperture remap) failed with 0x%08x%s allocation=0x%08x pages=0x%llx",
@@ -2302,10 +2005,6 @@ bool LockCommandApertureGpuAfterBootstrap(const KmtApi& api,
   gpu_lock.hDevice = device.device;
   gpu_lock.hAllocation = aperture->gpu_allocation;
   NTSTATUS status = api.lock2(&gpu_lock);
-  Trace("lock-command-aperture gpu alloc=0x%08x status=0x%08x%s cpu=%p",
-        static_cast<unsigned>(aperture->gpu_allocation),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        gpu_lock.pData);
   if (!CheckStatus("D3DKMTLock2(command aperture gpu)", status, out_error)) {
     return false;
   }
@@ -2322,11 +2021,6 @@ bool LockCommandApertureGpuAfterBootstrap(const KmtApi& api,
   invalidate.Offset = 0;
   invalidate.Length = aperture->gpu_va_size;
   status = api.invalidate_cache(&invalidate);
-  Trace("invalidate-command-aperture gpu alloc=0x%08x bytes=%llu "
-        "status=0x%08x%s",
-        static_cast<unsigned>(aperture->gpu_allocation),
-        static_cast<unsigned long long>(aperture->gpu_va_size),
-        static_cast<uint32_t>(status), NtStatusSuffix(status));
   return CheckStatus("D3DKMTInvalidateCache(command aperture)", status,
                      out_error);
 }
@@ -2382,14 +2076,7 @@ bool WaitForHwQueueFenceCpu(const KmtApi& api, const Device& device,
   // completion-batch notification above this DDI; this worker wait owns the
   // native submission until KMT reports that hardware is done with its memory.
   wait.hAsyncEvent = nullptr;
-  Trace("wait-hwq-cpu %s fence=0x%llx",
-        label ? label : "",
-        static_cast<unsigned long long>(fence_id));
   NTSTATUS status = api.wait_from_cpu(&wait);
-  Trace("wait-hwq-cpu-ret %s fence=0x%llx status=0x%08x%s",
-        label ? label : "",
-        static_cast<unsigned long long>(fence_id),
-        static_cast<uint32_t>(status), NtStatusSuffix(status));
   return CheckStatus(label, status, out_error);
 }
 
@@ -2433,11 +2120,6 @@ bool SubmitAndWaitPathBSetup(const KmtApi& api, const Device& device,
     resident.AllocationList = resident_allocs;
     ConfigureMakeResidentFlags(&resident);
     status = api.make_resident(&resident);
-    Trace("resident-command-aperture after-bootstrap alloc=0x%08x "
-          "status=0x%08x%s fence=0x%llx",
-          static_cast<unsigned>(aperture->gpu_allocation),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(resident.PagingFenceValue));
     if (!CheckMakeResidentStatusOrPending(
             api, device, "D3DKMTMakeResident(command aperture after bootstrap)",
             status, resident, out_error)) {
@@ -2535,14 +2217,6 @@ bool SubmitPathBApertureSync(const KmtApi& api, const Device& device,
   submit.CommandLength = 0;
   submit.PrivateDriverDataSize = sync_private.size;
   submit.pPrivateDriverData = sync_private.data;
-  Trace("pathb-sync9 offset=0x%llx wait=%u alloc=0x%08x aperture_va=0x%llx "
-        "code_offset=0x%llx code_size=0x%llx private_size=%u",
-        static_cast<unsigned long long>(offset), wait_for_cpu ? 1u : 0u,
-        static_cast<unsigned>(aperture.gpu_allocation),
-        static_cast<unsigned long long>(aperture.gpu_va),
-        static_cast<unsigned long long>(aperture.code_offset),
-        static_cast<unsigned long long>(aperture.code_size),
-        static_cast<unsigned>(sync_private.size));
   Error submit_error = {};
   if (!SubmitCommandToHwQueueAfterPaging(
           api, device, &submit,
@@ -2714,9 +2388,7 @@ bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
       std::memcpy(dst + streamed_length, src + streamed_length,
                   length - streamed_length);
       if (has_clflushopt) {
-        const uintptr_t line =
-            reinterpret_cast<uintptr_t>(dst + streamed_length);
-        FlushCpuCacheLinesOptimized(line, line + 64);
+        FlushCpuCacheLineOptimized(dst + streamed_length);
       } else {
         _mm_clflush(dst + streamed_length);
       }
@@ -2810,15 +2482,6 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   create_ring.NumAllocations = 1;
   create_ring.pAllocationInfo2 = &ring_info;
   NTSTATUS status = api.create_allocation2(&create_ring);
-  Trace("create-status-ring requested=%llu aligned=%llu private=0x%x flags=0x%x "
-        "status=0x%08x%s alloc=0x%08x resource=0x%08x",
-        static_cast<unsigned long long>(ring_private.requested_size),
-        static_cast<unsigned long long>(ring_private.aligned_size),
-        static_cast<unsigned>(ring_private.private_type),
-        static_cast<unsigned>(ring_private.xcl_flags),
-        static_cast<uint32_t>(status), NtStatusSuffix(status),
-        static_cast<unsigned>(ring_info.hAllocation),
-        static_cast<unsigned>(create_ring.hResource));
   if (!CheckStatus("D3DKMTCreateAllocation2(status ring)", status, out_error)) {
     return false;
   }
@@ -2834,9 +2497,6 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   lock.hDevice = device.device;
   lock.hAllocation = ring.allocation;
   status = api.lock2(&lock);
-  Trace("lock-status-ring alloc=0x%08x status=0x%08x%s cpu=%p",
-        static_cast<unsigned>(ring.allocation), static_cast<uint32_t>(status),
-        NtStatusSuffix(status), lock.pData);
   if (!CheckStatus("D3DKMTLock2(status ring)", status, out_error)) {
     DestroyBuffer(api, device, &ring);
     return false;
@@ -2851,13 +2511,6 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
     map.SizeInPages = kRingSize / 4096;
     map.Protection.Write = 1;
     status = api.map_gpu_virtual_address(&map);
-    Trace("map-status-ring alloc=0x%08x pages=%llu status=0x%08x%s "
-          "gpu_va=0x%llx fence=0x%llx",
-          static_cast<unsigned>(ring.allocation),
-          static_cast<unsigned long long>(map.SizeInPages),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(map.VirtualAddress),
-          static_cast<unsigned long long>(map.PagingFenceValue));
     if (!CheckStatusOrPending("D3DKMTMapGpuVirtualAddress(status ring)",
                               status, out_error)) {
       DestroyBuffer(api, device, &ring);
@@ -2873,10 +2526,6 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
     resident.AllocationList = resident_allocs;
     ConfigureMakeResidentFlags(&resident);
     status = api.make_resident(&resident);
-    Trace("resident-status-ring alloc=0x%08x status=0x%08x%s fence=0x%llx",
-          static_cast<unsigned>(ring.allocation),
-          static_cast<uint32_t>(status), NtStatusSuffix(status),
-          static_cast<unsigned long long>(resident.PagingFenceValue));
     if (!CheckMakeResidentStatusOrPending(
             api, device, "D3DKMTMakeResident(status ring)", status, resident,
             out_error)) {
@@ -2892,9 +2541,6 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
     wait.ObjectHandleArray = wait_objects;
     wait.MonitoredFenceValueArray = wait_values;
     status = api.wait_from_gpu(&wait);
-    Trace("wait-gpu-status-ring fence=0x%llx status=0x%08x%s",
-          static_cast<unsigned long long>(resident.PagingFenceValue),
-          static_cast<uint32_t>(status), NtStatusSuffix(status));
     if (!CheckStatus(
             "D3DKMTWaitForSynchronizationObjectFromGpu(status ring)", status,
             out_error)) {
@@ -2907,142 +2553,9 @@ bool EnsureStatusRing(const KmtApi& api, const Device& device, Context* context,
   context->completion_ring_resource = ring.resource;
   context->completion_ring_ready = true;
   context->completion_ring_owned = true;
-  context->completion_ring_offset = kQhdlCompletionSlotSize;
   return true;
 }
 
-bool SubmitAndWaitPathBImpl(const KmtApi& api, const Device& device,
-                            Context* context, const Buffer& exec_buffer,
-                            const void* ert_packet, uint32_t ert_bytes,
-                            uint32_t command_state,
-                            const PathBChainSubmitInfo* chain_info,
-                            uint32_t* packet_header, Error* out_error) {
-  constexpr uint32_t kCompletionRingSize = 4096;
-  if (!context || !context->hw_queue) {
-    SetError(out_error, "SubmitAndWaitPathB called without an HW queue");
-    return false;
-  }
-  if (!exec_buffer.allocation || !exec_buffer.gpu_va || exec_buffer.size == 0) {
-    SetError(out_error,
-             "SubmitAndWaitPathB called with an invalid exec buffer");
-    return false;
-  }
-  const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
-  if (ert_bytes == 0 ||
-      ert_bytes > abi.pathb_private_size - abi.pathb_packet_offset) {
-    SetErrorFormat(out_error, "SubmitAndWaitPathB invalid ert_bytes=%u",
-                   ert_bytes);
-    return false;
-  }
-  if (chain_info) {
-    if (!chain_info->descriptor_gpu_va || !chain_info->descriptor_bytes ||
-        !chain_info->command_count) {
-      SetError(out_error,
-               "SubmitAndWaitPathBChain called with incomplete chain metadata");
-      return false;
-    }
-  }
-
-  // Lazily allocate the completion ring (device-visible, 8-byte slots). The
-  // firmware writes per-command completion state here; slot 0 is reserved.
-  if (!EnsureStatusRing(api, device, context, out_error)) {
-    return false;
-  }
-  Buffer& ring = context->completion_ring;
-
-  // Reserve an 8-byte completion slot (mirrors hwqueue_aie4 reserve).
-  uint32_t slot_offset = context->completion_ring_offset;
-  if (slot_offset + kQhdlCompletionSlotSize > ring.size) {
-    slot_offset = kQhdlCompletionSlotSize;
-  }
-  context->completion_ring_offset =
-      (slot_offset + 2u * kQhdlCompletionSlotSize > ring.size)
-          ? kQhdlCompletionSlotSize
-          : slot_offset + kQhdlCompletionSlotSize;
-  uint8_t* slot_cpu = static_cast<uint8_t*>(ring.cpu_ptr) + slot_offset;
-  // XRT leaves the 8-byte firmware completion slot zeroed before submit.
-  // Match that exactly: the driver treats this buffer as part of the private
-  // queue protocol, not just host-side scratch space.
-  InitializeCompletionSlot(slot_cpu);
-
-  McdmPrivateData private_data = BuildPathBSubmitPrivateData(
-      device.mcdm_abi, exec_buffer, ring, slot_offset, slot_cpu, ert_packet,
-      ert_bytes, command_state, chain_info);
-
-  if (!WaitForBufferResidency(api, device, *context, exec_buffer, "pathb-exec",
-                              out_error)) {
-    return false;
-  }
-  if (!WaitForBufferResidency(api, device, *context, ring, "pathb-ring",
-                              out_error)) {
-    return false;
-  }
-
-  uint64_t fence_id = context->next_fence_id++;
-  D3DKMT_SUBMITCOMMANDTOHWQUEUE submit = {};
-  submit.hHwQueue = context->hw_queue;
-  submit.HwQueueProgressFenceId = fence_id;
-  submit.CommandBuffer = exec_buffer.gpu_va;
-  submit.CommandLength =
-      static_cast<UINT>(exec_buffer.size + abi.pathb_packet_offset);
-  submit.PrivateDriverDataSize = private_data.size;
-  submit.pPrivateDriverData = private_data.data;
-  if (!SubmitCommandToHwQueueAfterPaging(
-          api, device, &submit, "D3DKMTSubmitCommandToHwQueue(pathb)",
-          out_error)) {
-    return false;
-  }
-  if (!WaitForHwQueueFenceCpu(
-          api, device, *context, fence_id,
-          "D3DKMTWaitForSynchronizationObjectFromCpu(pathb)", out_error)) {
-    return false;
-  }
-
-  // XRT's qhdl wait path blocks in KMT and then mirrors the low ERT state
-  // nibble from the completion slot into the packet header. Do one
-  // cache-visible read from the explicit protocol locations here.
-  volatile uint32_t* const volatile_packet_header = packet_header;
-  uint32_t slot_state = 0;
-  uint32_t packet_state = volatile_packet_header ? *volatile_packet_header : 0;
-  auto read_completion_once = [&]() -> bool {
-    Error command_sync_err;
-    if (!SyncBuffer(api, device, exec_buffer, 0, exec_buffer.size,
-                    &command_sync_err)) {
-      SetErrorFormat(out_error, "pathb command buffer invalidate failed: %s",
-                     ErrorMessage(&command_sync_err));
-      return false;
-    }
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    packet_state = volatile_packet_header ? *volatile_packet_header : 0;
-
-    Error ring_sync_err;
-    if (!SyncBuffer(api, device, ring, 0, ring.size, &ring_sync_err)) {
-      SetErrorFormat(out_error, "pathb completion ring invalidate failed: %s",
-                     ErrorMessage(&ring_sync_err));
-      return false;
-    }
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    std::memcpy(&slot_state, slot_cpu, sizeof(slot_state));
-    return true;
-  };
-  if (!read_completion_once()) return false;
-  if (volatile_packet_header) {
-    const uint32_t completion_state =
-        ((packet_state & 0xFu) >= 4) ? packet_state : slot_state;
-    uint32_t delta = (*volatile_packet_header ^ completion_state) & 0xFu;
-    *volatile_packet_header ^= delta;
-  }
-  const uint32_t final_state =
-      volatile_packet_header ? *volatile_packet_header : slot_state;
-  if ((final_state & 0xFu) < 4) {
-    SetErrorFormat(out_error,
-                   "pathb command did not complete after fence wait: "
-                   "packet_state=0x%08x slot_state=0x%08x slot_offset=0x%x",
-                   packet_state, slot_state, slot_offset);
-    return false;
-  }
-  return true;
-}
 
 bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
                            Context* context, const Buffer& exec_buffer,
@@ -3093,7 +2606,6 @@ bool SubmitPathBImplNoWait(const KmtApi& api, const Device& device,
   }
   const uint32_t slot_offset = completion_slot_offset;
   uint8_t* slot_cpu = static_cast<uint8_t*>(ring.cpu_ptr) + slot_offset;
-  InitializeCompletionSlot(slot_cpu);
 
   McdmPrivateData private_data = BuildPathBSubmitPrivateData(
       device.mcdm_abi, exec_buffer, ring, slot_offset, slot_cpu, ert_packet,
@@ -3155,6 +2667,56 @@ bool IsValidPathBCompletionSlot(uint64_t ring_size, uint32_t slot_offset) {
          slot_offset % kQhdlCompletionSlotSize == 0 &&
          slot_offset <= ring_size &&
          kQhdlCompletionSlotSize <= ring_size - slot_offset;
+}
+
+bool InitializePathBCompletionSlots(Context* context,
+                                    const uint32_t* completion_slot_offsets,
+                                    size_t completion_slot_count,
+                                    Error* out_error) {
+  if (!context || !context->completion_ring_ready ||
+      !context->completion_ring.cpu_ptr) {
+    SetError(out_error,
+             "InitializePathBCompletionSlots called without a completion ring");
+    return false;
+  }
+  if (!completion_slot_offsets || completion_slot_count == 0) {
+    SetError(out_error,
+             "InitializePathBCompletionSlots called without completion slots");
+    return false;
+  }
+
+  Buffer& ring = context->completion_ring;
+  for (size_t i = 0; i < completion_slot_count; ++i) {
+    const uint32_t offset = completion_slot_offsets[i];
+    if (!IsValidPathBCompletionSlot(ring.size, offset)) {
+      SetErrorFormat(out_error,
+                     "InitializePathBCompletionSlots invalid slot offset=0x%x "
+                     "ring_size=0x%llx",
+                     offset, static_cast<unsigned long long>(ring.size));
+      return false;
+    }
+    for (size_t j = 0; j < i; ++j) {
+      if (completion_slot_offsets[j] == offset) {
+        SetErrorFormat(
+            out_error,
+            "InitializePathBCompletionSlots duplicate slot offset=0x%x",
+            offset);
+        return false;
+      }
+    }
+  }
+
+  // The status allocation is the miniport's coherent qhdl record mapping.
+  // Clear every slot before issuing the first command so no later CPU store can
+  // share a cache line with a completion that the device is concurrently
+  // writing. Do not apply command/data BO cache policy to this driver-owned
+  // mapping.
+  uint8_t* ring_cpu = static_cast<uint8_t*>(ring.cpu_ptr);
+  for (size_t i = 0; i < completion_slot_count; ++i) {
+    InitializeCompletionSlot(ring_cpu + completion_slot_offsets[i]);
+  }
+  std::atomic_thread_fence(std::memory_order_release);
+  return true;
 }
 
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
@@ -3226,25 +2788,7 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
   return true;
 }
 
-bool SubmitAndWaitPathB(const KmtApi& api, const Device& device,
-                        Context* context, const Buffer& exec_buffer,
-                        const void* ert_packet, uint32_t ert_bytes,
-                        uint32_t command_state, uint32_t* packet_header,
-                        Error* out_error) {
-  return SubmitAndWaitPathBImpl(api, device, context, exec_buffer, ert_packet,
-                                ert_bytes, command_state, nullptr,
-                                packet_header, out_error);
-}
 
-bool SubmitAndWaitPathBChain(const KmtApi& api, const Device& device,
-                             Context* context, const Buffer& exec_buffer,
-                             const void* ert_packet, uint32_t ert_bytes,
-                             const PathBChainSubmitInfo& chain_info,
-                             uint32_t* packet_header, Error* out_error) {
-  return SubmitAndWaitPathBImpl(api, device, context, exec_buffer, ert_packet,
-                                ert_bytes, 6, &chain_info, packet_header,
-                                out_error);
-}
 
 bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       const Buffer& exec_buffer, const void* ert_packet,
@@ -3300,8 +2844,6 @@ static void BeginDestroyCommandAperture(const KmtApi& api,
     api.unlock2(&unlock);
   }
 
-  StatsFree("command-aperture-gpu", aperture->gpu_va_size,
-            aperture->gpu_allocation);
   D3DKMT_DESTROYALLOCATION2 destroy_gpu = {};
   D3DKMT_HANDLE gpu_allocs[1] = {aperture->gpu_allocation};
   destroy_gpu.hDevice = device.device;
@@ -3393,8 +2935,6 @@ void DestroyCommandAperture(const KmtApi& api, const Device& device,
       aperture->gpu_allocation &&
       aperture->gpu_allocation != aperture->allocation;
   if (owns_separate_gpu_allocation) {
-    StatsFree("command-aperture-gpu", aperture->gpu_va_size,
-              aperture->gpu_allocation);
     D3DKMT_DESTROYALLOCATION2 destroy_gpu = {};
     D3DKMT_HANDLE gpu_allocs[1] = {aperture->gpu_allocation};
     destroy_gpu.hDevice = device.device;
@@ -3415,9 +2955,6 @@ void DestroyCommandAperture(const KmtApi& api, const Device& device,
 
   if (aperture->resource || aperture->cleanup_allocation ||
       aperture->allocation) {
-    StatsFree("command-aperture-status", kCommandApertureAllocationSize,
-              aperture->cleanup_allocation ? aperture->cleanup_allocation
-                                           : aperture->allocation);
     D3DKMT_DESTROYALLOCATION2 destroy_command = {};
     D3DKMT_HANDLE command_allocs[1] = {aperture->cleanup_allocation
                                            ? aperture->cleanup_allocation

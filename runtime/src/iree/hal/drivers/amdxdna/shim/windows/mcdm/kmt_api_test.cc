@@ -1352,6 +1352,51 @@ TEST(KmtApiTest, ValidatesCallerOwnedCompletionSlotOffsets) {
   EXPECT_FALSE(IsValidPathBCompletionSlot(/*ring_size=*/4, 8));
 }
 
+TEST(KmtApiTest, InitializesReservedCompletionSlotsAsOneBatch) {
+  alignas(64) std::array<uint8_t, 4096> storage = {};
+  std::fill(storage.begin(), storage.end(), 0x5a);
+  Context context = {};
+  context.completion_ring.cpu_ptr = storage.data();
+  context.completion_ring.size = storage.size();
+  context.completion_ring_ready = true;
+  const uint32_t offsets[] = {4088, 8, 16};
+  Error error = {};
+
+  ASSERT_TRUE(InitializePathBCompletionSlots(
+      &context, offsets, std::size(offsets), &error))
+      << ErrorMessage(&error);
+  for (uint32_t offset : offsets) {
+    EXPECT_TRUE(std::all_of(storage.begin() + offset,
+                            storage.begin() + offset + 8,
+                            [](uint8_t value) { return value == 0; }));
+  }
+  EXPECT_EQ(storage[0], 0x5a);
+  EXPECT_EQ(storage[24], 0x5a);
+  EXPECT_EQ(storage[4087], 0x5a);
+}
+
+TEST(KmtApiTest, RejectsInvalidCompletionSlotSetsBeforeModification) {
+  alignas(64) std::array<uint8_t, 128> storage = {};
+  std::fill(storage.begin(), storage.end(), 0x5a);
+  Context context = {};
+  context.completion_ring.cpu_ptr = storage.data();
+  context.completion_ring.size = storage.size();
+  context.completion_ring_ready = true;
+  Error error = {};
+
+  const uint32_t duplicate_offsets[] = {8, 8};
+  EXPECT_FALSE(InitializePathBCompletionSlots(
+      &context, duplicate_offsets, std::size(duplicate_offsets), &error));
+  EXPECT_TRUE(std::all_of(storage.begin(), storage.end(),
+                          [](uint8_t value) { return value == 0x5a; }));
+
+  const uint32_t invalid_offsets[] = {8, 128};
+  EXPECT_FALSE(InitializePathBCompletionSlots(
+      &context, invalid_offsets, std::size(invalid_offsets), &error));
+  EXPECT_TRUE(std::all_of(storage.begin(), storage.end(),
+                          [](uint8_t value) { return value == 0x5a; }));
+}
+
 TEST(KmtApiTest, CopyAndCommitPathBCodeWritesCopiesAlignedRangesAndTails) {
   alignas(64) std::array<uint8_t, 512> storage = {};
   std::fill(storage.begin(), storage.end(), 0xcc);

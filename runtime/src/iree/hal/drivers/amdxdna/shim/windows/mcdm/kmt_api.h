@@ -266,7 +266,6 @@ struct Context {
   D3DKMT_HANDLE completion_ring_resource = 0;
   bool completion_ring_ready = false;
   bool completion_ring_owned = false;
-  uint32_t completion_ring_offset = 0;
   uint64_t next_command_id = 1;
 };
 
@@ -340,6 +339,14 @@ struct PathBPendingSubmit {
 size_t PathBCompletionCapacity(const Context& context);
 
 bool IsValidPathBCompletionSlot(uint64_t ring_size, uint32_t slot_offset);
+
+// Clears all completion records reserved for one native submission before any
+// command is issued. The completion ring is a driver-owned coherent mapping;
+// callers must not apply ordinary BO cache maintenance to it.
+bool InitializePathBCompletionSlots(Context* context,
+                                    const uint32_t* completion_slot_offsets,
+                                    size_t completion_slot_count,
+                                    Error* out_error);
 
 struct CpuWriteRange {
   uint64_t offset = 0;
@@ -497,21 +504,6 @@ bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
 // and submit the exec BO via SubmitCommandToHwQueue. `ert_packet`/`ert_bytes`
 // are the command BO's ERT packet; `packet_header` is updated with the firmware
 // completion state read back from the ring slot.
-bool SubmitAndWaitPathB(const KmtApi& api, const Device& device,
-                        Context* context, const Buffer& exec_buffer,
-                        const void* ert_packet, uint32_t ert_bytes,
-                        uint32_t command_state, uint32_t* packet_header,
-                        Error* out_error);
-
-// Path B parent ERT_CMD_CHAIN submit. This is the same completion protocol as
-// SubmitAndWaitPathB, but uses the recovered xrt_core opcode-6 private
-// envelope. The negotiated ABI selects the descriptor metadata offsets.
-bool SubmitAndWaitPathBChain(const KmtApi& api, const Device& device,
-                             Context* context, const Buffer& exec_buffer,
-                             const void* ert_packet, uint32_t ert_bytes,
-                             const PathBChainSubmitInfo& chain_info,
-                             uint32_t* packet_header, Error* out_error);
-
 bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       const Buffer& exec_buffer, const void* ert_packet,
                       uint32_t ert_bytes,
@@ -519,9 +511,8 @@ bool SubmitPathBChain(const KmtApi& api, const Device& device, Context* context,
                       uint32_t completion_slot_offset, uint32_t* packet_header,
                       PathBPendingSubmit* out_pending, Error* out_error);
 
-// Single-dispatch path-B issue (no wait); the async counterpart of
-// SubmitAndWaitPathB. Returns the in-flight fence token in `out_pending`; wait
-// for it with WaitForPathBSubmits.
+// Single-dispatch path-B issue. Returns the in-flight fence token in
+// `out_pending`; wait for it with WaitForPathBSubmits.
 bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
                   const Buffer& exec_buffer, const void* ert_packet,
                   uint32_t ert_bytes, uint32_t command_state,
