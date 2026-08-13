@@ -817,14 +817,36 @@ bool UsesLegacyV2ContextLayout(const DriverVersion& version) {
 
 }  // namespace
 
-McdmAbi SelectMcdmAbiForDriverVersion(McdmAbi probed_abi,
-                                       bool has_driver_version,
-                                       const DriverVersion& driver_version) {
-  if (probed_abi == McdmAbi::legacy_v2 &&
-      (!has_driver_version || !UsesLegacyV2ContextLayout(driver_version))) {
-    return McdmAbi::legacy;
+bool SelectMcdmAbiForDriverVersion(McdmAbi probed_abi,
+                                   bool has_driver_version,
+                                   const DriverVersion& driver_version,
+                                   McdmAbi* out_abi, Error* out_error) {
+  if (!out_abi) {
+    SetError(out_error, "missing selected MCDM ABI output");
+    return false;
   }
-  return probed_abi;
+  if (probed_abi != McdmAbi::legacy_v2) {
+    *out_abi = probed_abi;
+    return true;
+  }
+  if (!has_driver_version) {
+    SetError(out_error,
+             "ambiguous two-dword MCDM identity {0, 2}: driver package "
+             "version is unavailable");
+    return false;
+  }
+  if (driver_version.major != 32 || driver_version.minor != 0 ||
+      driver_version.build != 203) {
+    SetErrorFormat(out_error,
+                   "ambiguous two-dword MCDM identity {0, 2}: unsupported "
+                   "driver package version %u.%u.%u.%u",
+                   driver_version.major, driver_version.minor,
+                   driver_version.build, driver_version.revision);
+    return false;
+  }
+  *out_abi = UsesLegacyV2ContextLayout(driver_version) ? McdmAbi::legacy_v2
+                                                       : McdmAbi::legacy;
+  return true;
 }
 
 McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi) {
@@ -1324,9 +1346,12 @@ bool CreateDevice(const KmtApi& api, const Adapter& adapter, Device* out_device,
   device.has_driver_version =
       QueryDriverVersion(api, device.adapter, &device.driver_version);
   const McdmAbi probed_mcdm_abi = device.mcdm_abi_diagnostics.probed_abi;
-  device.mcdm_abi = SelectMcdmAbiForDriverVersion(
-      probed_mcdm_abi, device.has_driver_version,
-      device.driver_version);
+  if (!SelectMcdmAbiForDriverVersion(
+          probed_mcdm_abi, device.has_driver_version, device.driver_version,
+          &device.mcdm_abi, out_error)) {
+    DestroyDevice(api, &device);
+    return false;
+  }
   device.mcdm_abi_diagnostics.selected_abi = device.mcdm_abi;
   device.mcdm_abi_diagnostics.driver_version_disambiguation_available =
       device.mcdm_abi_diagnostics.driver_version_disambiguation_required &&
@@ -2353,9 +2378,9 @@ bool WaitForHwQueueFenceCpu(const KmtApi& api, const Device& device,
   wait.ObjectCount = 1;
   wait.ObjectHandleArray = wait_objects;
   wait.FenceValueArray = wait_values;
-  // XRT's qhdl wait path calls D3DKMTWaitForSynchronizationObjectFromCpu with
-  // hAsyncEvent=0 and blocks in KMT. Match that call shape instead of using an
-  // asynchronous event plus a host-side wait wrapper.
+  // Match XRT's qhdl wait path. User-visible deadlines are enforced by the
+  // completion-batch notification above this DDI; this worker wait owns the
+  // native submission until KMT reports that hardware is done with its memory.
   wait.hAsyncEvent = nullptr;
   Trace("wait-hwq-cpu %s fence=0x%llx",
         label ? label : "",

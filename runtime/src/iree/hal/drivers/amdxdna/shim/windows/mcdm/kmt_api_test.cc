@@ -47,6 +47,9 @@ size_t g_gpu_wait_count = 0;
 size_t g_setup_call_count = 0;
 size_t g_submit_count = 0;
 size_t g_wait_count = 0;
+size_t g_submit_failure_index = SIZE_MAX;
+NTSTATUS g_submit_failure_status = static_cast<NTSTATUS>(0xC0000001u);
+NTSTATUS g_wait_status = 0;
 uint8_t g_invalidate_first_bytes[4] = {};
 size_t g_invalidate_count = 0;
 uint32_t* g_complete_on_wait = nullptr;
@@ -86,6 +89,9 @@ void ResetFakes() {
   g_setup_call_count = 0;
   g_submit_count = 0;
   g_wait_count = 0;
+  g_submit_failure_index = SIZE_MAX;
+  g_submit_failure_status = static_cast<NTSTATUS>(0xC0000001u);
+  g_wait_status = 0;
   std::memset(g_invalidate_first_bytes, 0,
               sizeof(g_invalidate_first_bytes));
   g_invalidate_count = 0;
@@ -261,6 +267,7 @@ NTSTATUS APIENTRY FakeCloseAdapter(CONST D3DKMT_CLOSEADAPTER* args) {
 
 NTSTATUS APIENTRY FakeSubmitCommandToHwQueue(
     CONST D3DKMT_SUBMITCOMMANDTOHWQUEUE* args) {
+  const size_t call_index = g_submit_count;
   g_setup_calls[g_setup_call_count++] = SetupCall::submit;
   std::memcpy(&g_submit_opcodes[g_submit_count], args->pPrivateDriverData,
               sizeof(uint32_t));
@@ -268,6 +275,7 @@ NTSTATUS APIENTRY FakeSubmitCommandToHwQueue(
               static_cast<const uint8_t*>(args->pPrivateDriverData) + 0x10,
               sizeof(uint64_t));
   g_submit_fences[g_submit_count++] = args->HwQueueProgressFenceId;
+  if (call_index == g_submit_failure_index) return g_submit_failure_status;
   return 0;
 }
 
@@ -355,8 +363,8 @@ NTSTATUS APIENTRY FakeWaitFromCpu(
     CONST D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU* args) {
   g_setup_calls[g_setup_call_count++] = SetupCall::wait;
   g_wait_fences[g_wait_count++] = args->FenceValueArray[0];
-  if (g_complete_on_wait) *g_complete_on_wait = 1;
-  return 0;
+  if (g_wait_status == 0 && g_complete_on_wait) *g_complete_on_wait = 1;
+  return g_wait_status;
 }
 
 NTSTATUS APIENTRY FakeWaitFromGpu(
@@ -841,15 +849,14 @@ TEST(KmtApiTest, ProbesLegacyV0AbiFromZeroTwoDwordIdentity) {
 }
 
 TEST(KmtApiTest, SelectsLegacyV2LayoutForPre314DriverVersions) {
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
-                                          DriverVersion{32, 0, 203, 240}),
-            McdmAbi::legacy_v2);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
-                                          DriverVersion{32, 0, 203, 280}),
-            McdmAbi::legacy_v2);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
-                                          DriverVersion{32, 0, 203, 313}),
-            McdmAbi::legacy_v2);
+  for (uint32_t revision : {240u, 280u, 313u}) {
+    McdmAbi selected = McdmAbi::compact;
+    Error error;
+    ASSERT_TRUE(SelectMcdmAbiForDriverVersion(
+        McdmAbi::legacy_v2, true, DriverVersion{32, 0, 203, revision},
+        &selected, &error));
+    EXPECT_EQ(selected, McdmAbi::legacy_v2);
+  }
 }
 
 TEST(KmtApiTest, SubmissionPolicyFollowsNegotiatedAbiContract) {
@@ -868,35 +875,49 @@ TEST(KmtApiTest, SubmissionPolicyFollowsNegotiatedAbiContract) {
 }
 
 TEST(KmtApiTest, SelectsLegacyLayoutForPost280TwoDwordIdentityDrivers) {
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
-                                          DriverVersion{32, 0, 203, 314}),
-            McdmAbi::legacy);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
-                                          DriverVersion{32, 0, 203, 329}),
-            McdmAbi::legacy);
+  for (uint32_t revision : {314u, 329u}) {
+    McdmAbi selected = McdmAbi::compact;
+    Error error;
+    ASSERT_TRUE(SelectMcdmAbiForDriverVersion(
+        McdmAbi::legacy_v2, true, DriverVersion{32, 0, 203, revision},
+        &selected, &error));
+    EXPECT_EQ(selected, McdmAbi::legacy);
+  }
 }
 
-TEST(KmtApiTest, SelectsLegacyLayoutWhenLegacyV2DriverVersionIsUnavailable) {
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, false,
-                                          DriverVersion{}),
-            McdmAbi::legacy);
+TEST(KmtApiTest, RejectsAmbiguousLegacyV2WhenDriverVersionIsUnavailable) {
+  McdmAbi selected = McdmAbi::compact;
+  Error error;
+  EXPECT_FALSE(SelectMcdmAbiForDriverVersion(
+      McdmAbi::legacy_v2, false, DriverVersion{}, &selected, &error));
+  EXPECT_NE(std::string(ErrorMessage(&error)).find("ambiguous"),
+            std::string::npos);
+}
+
+TEST(KmtApiTest, RejectsAmbiguousLegacyV2ForUnknownDriverVersionFamily) {
+  McdmAbi selected = McdmAbi::compact;
+  Error error;
+  EXPECT_FALSE(SelectMcdmAbiForDriverVersion(
+      McdmAbi::legacy_v2, true, DriverVersion{32, 0, 204, 1}, &selected,
+      &error));
+  EXPECT_NE(std::string(ErrorMessage(&error)).find("unsupported"),
+            std::string::npos);
 }
 
 TEST(KmtApiTest, DriverVersionSelectionLeavesOtherAbisUnchanged) {
   const DriverVersion legacy_v2_version{32, 0, 203, 280};
   const DriverVersion unknown_version{};
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v0, true,
-                                          legacy_v2_version),
-            McdmAbi::legacy_v0);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy, true,
-                                          legacy_v2_version),
-            McdmAbi::legacy);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::compact, true,
-                                          legacy_v2_version),
-            McdmAbi::compact);
-  EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::compact, false,
-                                          unknown_version),
-            McdmAbi::compact);
+  for (McdmAbi abi :
+       {McdmAbi::legacy_v0, McdmAbi::legacy, McdmAbi::compact}) {
+    McdmAbi selected = McdmAbi::legacy_v2;
+    Error error;
+    ASSERT_TRUE(SelectMcdmAbiForDriverVersion(
+        abi, true, legacy_v2_version, &selected, &error));
+    EXPECT_EQ(selected, abi);
+    ASSERT_TRUE(SelectMcdmAbiForDriverVersion(
+        abi, false, unknown_version, &selected, &error));
+    EXPECT_EQ(selected, abi);
+  }
 }
 
 TEST(KmtApiTest, RejectsCompactZeroIdentityAfterLegacyShapeIsRejected) {
@@ -1197,6 +1218,84 @@ TEST(KmtApiTest, CompletedPathBSubmitSkipsRedundantCpuFenceWait) {
 
   EXPECT_EQ(run(/*completed_fence=*/7), 0u);
   EXPECT_EQ(run(/*completed_fence=*/6), 1u);
+}
+
+TEST(KmtApiTest, PathBWaitFailureDoesNotPublishCompletion) {
+  ResetFakes();
+  KmtApi api = {};
+  api.wait_from_cpu = FakeWaitFromCpu;
+  api.invalidate_cache = FakeInvalidateCache;
+  Device device = {};
+  device.device = 0x10;
+  uint64_t progress_fence = 6;
+  Context context = {};
+  context.hw_queue = 0x20;
+  context.progress_fence = 0x21;
+  context.progress_fence_cpu = &progress_fence;
+  uint32_t slot_state = 4;
+  uint32_t packet_header = 0;
+  PathBPendingSubmit pending = {};
+  pending.fence_id = 7;
+  pending.slot_cpu = reinterpret_cast<uint8_t*>(&slot_state);
+  pending.packet_header = &packet_header;
+  pending.ring.allocation = 0x30;
+  pending.ring.size = sizeof(slot_state);
+  g_wait_status = static_cast<NTSTATUS>(0xC0000001u);
+  Error error = {};
+
+  EXPECT_FALSE(
+      WaitForPathBSubmits(api, device, &context, &pending, 1, &error));
+  EXPECT_NE(std::strstr(ErrorMessage(&error), "pathb batch"), nullptr);
+  EXPECT_EQ(g_wait_count, 1u);
+  EXPECT_EQ(g_invalidate_count, 0u);
+  EXPECT_EQ(packet_header, 0u);
+}
+
+TEST(KmtApiTest, FailedPathBSubmitDoesNotCreatePendingCommand) {
+  ResetFakes();
+  KmtApi api = {};
+  api.submit_command_to_hw_queue = FakeSubmitCommandToHwQueue;
+  Device device = {};
+  device.device = 0x10;
+  device.mcdm_abi = McdmAbi::legacy;
+  alignas(64) std::array<uint8_t, 4096> ring_storage = {};
+  Context context = {};
+  context.hw_queue = 0x20;
+  context.next_fence_id = 7;
+  context.completion_ring_ready = true;
+  context.completion_ring.allocation = 0x30;
+  context.completion_ring.gpu_va = 0x100000;
+  context.completion_ring.cpu_ptr = ring_storage.data();
+  context.completion_ring.size = ring_storage.size();
+  Buffer exec_buffer = {};
+  exec_buffer.allocation = 0x40;
+  exec_buffer.gpu_va = 0x200000;
+  exec_buffer.size = 224;
+  std::array<uint8_t, 16> ert_packet = {};
+  uint32_t first_header = 0;
+  uint32_t second_header = 0;
+  PathBPendingSubmit first = {};
+  PathBPendingSubmit second = {};
+  Error error = {};
+
+  ASSERT_TRUE(SubmitPathB(api, device, &context, exec_buffer,
+                          ert_packet.data(), ert_packet.size(), 3,
+                          /*completion_slot_offset=*/8, &first_header, &first,
+                          &error))
+      << ErrorMessage(&error);
+  g_submit_failure_index = 1;
+  EXPECT_FALSE(SubmitPathB(api, device, &context, exec_buffer,
+                           ert_packet.data(), ert_packet.size(), 3,
+                           /*completion_slot_offset=*/16, &second_header,
+                           &second, &error));
+
+  EXPECT_EQ(first.fence_id, 7u);
+  EXPECT_NE(first.slot_cpu, nullptr);
+  EXPECT_EQ(second.fence_id, 0u);
+  EXPECT_EQ(second.slot_cpu, nullptr);
+  EXPECT_EQ(g_submit_count, 2u);
+  EXPECT_EQ(g_submit_fences[0], 7u);
+  EXPECT_EQ(g_submit_fences[1], 8u);
 }
 
 TEST(KmtApiTest, PublishBufferCpuWritesValidatesRangeAndPreservesData) {

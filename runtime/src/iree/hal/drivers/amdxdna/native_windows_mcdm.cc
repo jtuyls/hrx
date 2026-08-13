@@ -166,9 +166,9 @@ void apply_command_chain_override(
 }
 
 iree_status_t status_from_mcdm_error(const char* label,
-                                     const mcdm::Error& error) {
+                                      const mcdm::Error& error) {
   return iree_make_status(IREE_STATUS_INTERNAL, "%s: %s", label,
-                          mcdm::ErrorMessage(&error));
+                           mcdm::ErrorMessage(&error));
 }
 
 iree_status_t validate_device_size_fits_u64(iree_device_size_t size) {
@@ -1165,6 +1165,16 @@ bool find_partial_elf_bd_ops(const uint8_t* bytes, size_t total,
 }
 
 uint64_t partial_elf_dma_span_words(const uint8_t* dma) {
+  auto saturating_add = [](uint64_t lhs, uint64_t rhs) {
+    return rhs > std::numeric_limits<uint64_t>::max() - lhs
+               ? std::numeric_limits<uint64_t>::max()
+               : lhs + rhs;
+  };
+  auto saturating_mul = [](uint64_t lhs, uint64_t rhs) {
+    return lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs
+               ? std::numeric_limits<uint64_t>::max()
+               : lhs * rhs;
+  };
   const uint64_t buffer_length = read_txn_u32(dma + 16);
   uint64_t span = buffer_length;
   const uint32_t dim0 = read_txn_u32(dma + 28);
@@ -1179,15 +1189,27 @@ uint64_t partial_elf_dma_span_words(const uint8_t* dma) {
         dim0_size && dim1_size ? buffer_length / (dim0_size * dim1_size) : 0;
     const uint64_t dim2_stride = (dim2 & 0xfffff) + 1;
     uint64_t strided_span = 1;
-    if (dim0_size > 1) strided_span += (dim0_size - 1) * dim0_stride;
-    if (dim1_size > 1) strided_span += (dim1_size - 1) * dim1_stride;
-    if (dim2_size > 1) strided_span += (dim2_size - 1) * dim2_stride;
+    if (dim0_size > 1) {
+      strided_span = saturating_add(
+          strided_span, saturating_mul(dim0_size - 1, dim0_stride));
+    }
+    if (dim1_size > 1) {
+      strided_span = saturating_add(
+          strided_span, saturating_mul(dim1_size - 1, dim1_stride));
+    }
+    if (dim2_size > 1) {
+      strided_span = saturating_add(
+          strided_span, saturating_mul(dim2_size - 1, dim2_stride));
+    }
     span = std::max(span, strided_span);
   }
   const uint32_t iter = read_txn_u32(dma + 40);
   const uint64_t iter_size = ((iter >> 20) & 0x3ff) + 1;
   const uint64_t iter_stride = (iter & 0xfffff) + 1;
-  if (iter_size > 1) span += (iter_size - 1) * iter_stride;
+  if (iter_size > 1) {
+    span = saturating_add(span,
+                          saturating_mul(iter_size - 1, iter_stride));
+  }
   return span;
 }
 
@@ -2168,6 +2190,11 @@ bool iree_hal_amdxdna_native_windows_find_partial_elf_bd_ops(
     uint32_t key, const uint8_t** out_dma, const uint8_t** out_ddr) {
   return find_partial_elf_bd_ops(bytes, total, op_count, queue_offset, key,
                                  out_dma, out_ddr);
+}
+
+uint64_t iree_hal_amdxdna_native_windows_partial_elf_dma_span_words(
+    const uint8_t* dma) {
+  return partial_elf_dma_span_words(dma);
 }
 
 iree_status_t materialize_deferred_buffer(
@@ -3875,8 +3902,8 @@ static iree_status_t iree_hal_amdxdna_native_submit_all_wait(
   iree_hal_amdxdna_native_device_t* device = queue->context->device;
   mcdm::Error error;
   if (!mcdm::WaitForPathBSubmits(device->api, device->device,
-                                 &queue->context->context, s->pending_batch,
-                                 s->issued_count, &error)) {
+                                  &queue->context->context, s->pending_batch,
+                                  s->issued_count, &error)) {
     return status_from_mcdm_error(
         "amdxdna Windows MCDM pathb chain batch wait failed", error);
   }
@@ -3922,8 +3949,8 @@ static iree_status_t iree_hal_amdxdna_native_submit_wait(
   ert_packet* packet = s->packet;
   mcdm::Error error;
   if (!mcdm::WaitForPathBSubmits(command->device->api, command->device->device,
-                                 &queue->context->context, &s->pending,
-                                 /*pending_count=*/1, &error)) {
+                                  &queue->context->context, &s->pending,
+                                  /*pending_count=*/1, &error)) {
     return status_from_mcdm_error("amdxdna Windows MCDM pathb wait failed",
                                   error);
   }
@@ -4063,8 +4090,9 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all(
 iree_status_t iree_hal_amdxdna_native_submission_wait(
     iree_hal_amdxdna_native_submission_t* submission, uint64_t timeout_ns) {
   IREE_ASSERT_ARGUMENT(submission);
-  // The path-B fence wait is currently blocking; timeout_ns is not yet threaded
-  // into WaitForPathBSubmits (the HAL semaphore layer enforces deadlines).
+  // The completion queue owns native retirement and always waits indefinitely;
+  // API deadlines are handled by its notification wait without releasing
+  // command storage that hardware may still reference.
   (void)timeout_ns;
   if (!submission->waited) {
     submission->status =

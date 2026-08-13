@@ -89,6 +89,80 @@ TEST(NativeWindowsMcdmTxnTest, ResolvesReusedBdBeforeEachQueuePush) {
   EXPECT_EQ(ddr, bytes.data() + second_ddr);
 }
 
+TEST(NativeWindowsMcdmTxnTest, RejectsMalformedOperationSizes) {
+  std::vector<uint8_t> bytes(kHeaderSize);
+  const size_t malformed = bytes.size();
+  bytes.resize(malformed + 4 * sizeof(uint32_t));
+  bytes[malformed] = 1;
+  WriteU32(bytes, malformed + 12, 0);
+
+  const uint8_t* dma = reinterpret_cast<const uint8_t*>(1);
+  const uint8_t* ddr = reinterpret_cast<const uint8_t*>(1);
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_find_partial_elf_bd_ops(
+      bytes.data(), bytes.size(), /*op_count=*/1, bytes.size(), /*key=*/0,
+      &dma, &ddr));
+  EXPECT_EQ(dma, nullptr);
+  EXPECT_EQ(ddr, nullptr);
+
+  WriteU32(bytes, malformed + 12, 64);
+  EXPECT_FALSE(iree_hal_amdxdna_native_windows_find_partial_elf_bd_ops(
+      bytes.data(), bytes.size(), /*op_count=*/1, bytes.size(), /*key=*/0,
+      &dma, &ddr));
+}
+
+TEST(NativeWindowsMcdmTxnTest, IgnoresDescriptorsAfterQueuePush) {
+  constexpr uint32_t kColumn = 1;
+  constexpr uint32_t kRow = 2;
+  constexpr uint32_t kBdId = 3;
+  constexpr uint32_t kTile = (kColumn << 25) | (kRow << 20);
+  constexpr uint32_t kDmaLocation = kTile | (kBdId << 5);
+  constexpr uint32_t kDdrLocation = kDmaLocation | 4;
+  constexpr uint32_t kQueueLocation = kTile | 0x1D200;
+  constexpr uint32_t kKey = (kColumn << 16) | (kRow << 8) | kBdId;
+
+  std::vector<uint8_t> bytes(kHeaderSize);
+  const size_t first_dma = AppendBlockWrite(bytes, kDmaLocation);
+  const size_t first_ddr = AppendDdrPatch(bytes, kDdrLocation);
+  const size_t queue = AppendQueuePush(bytes, kQueueLocation, kBdId);
+  AppendBlockWrite(bytes, kDmaLocation);
+  AppendDdrPatch(bytes, kDdrLocation);
+
+  const uint8_t* dma = nullptr;
+  const uint8_t* ddr = nullptr;
+  ASSERT_TRUE(iree_hal_amdxdna_native_windows_find_partial_elf_bd_ops(
+      bytes.data(), bytes.size(), /*op_count=*/5, queue, kKey, &dma, &ddr));
+  EXPECT_EQ(dma, bytes.data() + first_dma);
+  EXPECT_EQ(ddr, bytes.data() + first_ddr);
+}
+
+TEST(NativeWindowsMcdmTxnTest, ComputesMultidimensionalDmaSpan) {
+  std::vector<uint8_t> dma(kBlockWriteSize);
+  WriteU32(dma, 16, 24);
+  WriteU32(dma, 28, (2u << 20) | 3u);
+  WriteU32(dma, 32, (3u << 20) | 7u);
+  WriteU32(dma, 36, 15u);
+  WriteU32(dma, 40, (2u << 20) | 31u);
+
+  // dim2_size=24/(2*3)=4. Strided span is
+  // 1 + 1*4 + 2*8 + 3*16 = 69, then two iterator strides of 32.
+  EXPECT_EQ(iree_hal_amdxdna_native_windows_partial_elf_dma_span_words(
+                dma.data()),
+            133u);
+}
+
+TEST(NativeWindowsMcdmTxnTest, HandlesMaximumEncodedDmaSpan) {
+  std::vector<uint8_t> dma(kBlockWriteSize);
+  WriteU32(dma, 16, UINT32_MAX);
+  WriteU32(dma, 28, (1023u << 20) | 0xFFFFFu);
+  WriteU32(dma, 32, (1023u << 20) | 0xFFFFFu);
+  WriteU32(dma, 36, 0xFFFFFu);
+  WriteU32(dma, 40, (1023u << 20) | 0xFFFFFu);
+
+  EXPECT_EQ(iree_hal_amdxdna_native_windows_partial_elf_dma_span_words(
+                dma.data()),
+            7518289921ull);
+}
+
 TEST(NativeWindowsMcdmBufferRangeTest,
      CoalescesPerBufferAndPreservesDisjointRanges) {
   void* buffer_a = reinterpret_cast<void*>(0x1000);

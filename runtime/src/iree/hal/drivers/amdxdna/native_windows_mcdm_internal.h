@@ -18,6 +18,11 @@ bool iree_hal_amdxdna_native_windows_find_partial_elf_bd_ops(
     size_t queue_offset, uint32_t key, const uint8_t** out_dma,
     const uint8_t** out_ddr);
 
+// Computes the touched word span for a transaction DMA descriptor. Arithmetic
+// saturates at UINT64_MAX so malformed dimensions cannot wrap to a small range.
+uint64_t iree_hal_amdxdna_native_windows_partial_elf_dma_span_words(
+    const uint8_t* dma);
+
 typedef struct iree_hal_amdxdna_native_windows_buffer_range_t {
   void* buffer;
   uint64_t offset;

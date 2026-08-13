@@ -151,9 +151,10 @@ struct McdmAbiInfo {
 
 McdmAbiInfo GetMcdmAbiInfo(McdmAbi abi);
 
-McdmAbi SelectMcdmAbiForDriverVersion(McdmAbi probed_abi,
-                                       bool has_driver_version,
-                                       const DriverVersion& driver_version);
+bool SelectMcdmAbiForDriverVersion(McdmAbi probed_abi,
+                                   bool has_driver_version,
+                                   const DriverVersion& driver_version,
+                                   McdmAbi* out_abi, Error* out_error);
 
 struct BufferKindInfo {
   const char* name;
