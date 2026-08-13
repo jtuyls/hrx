@@ -827,6 +827,22 @@ McdmAbi SelectMcdmAbiForDriverVersion(McdmAbi probed_abi,
   return probed_abi;
 }
 
+McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi) {
+  switch (abi) {
+    case McdmAbi::legacy_v0:
+    case McdmAbi::legacy_v2:
+      return {/*supports_command_chaining=*/false,
+              /*uses_shared_command_code_view=*/true,
+              /*supports_async_submit=*/false};
+    case McdmAbi::legacy:
+    case McdmAbi::compact:
+      return {/*supports_command_chaining=*/true,
+              /*uses_shared_command_code_view=*/false,
+              /*supports_async_submit=*/true};
+  }
+  return {};
+}
+
 bool QueryMcdmAbiDiagnostics(const KmtApi& api, D3DKMT_HANDLE adapter,
                              McdmAbiDiagnostics* out_diagnostics,
                              Error* out_error) {

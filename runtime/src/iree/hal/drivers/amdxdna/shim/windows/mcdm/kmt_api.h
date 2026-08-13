@@ -83,6 +83,14 @@ enum class McdmAbi {
   compact,
 };
 
+struct McdmSubmissionPolicy {
+  bool supports_command_chaining = false;
+  bool uses_shared_command_code_view = false;
+  bool supports_async_submit = false;
+};
+
+McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi);
+
 enum class McdmAbiSource {
   unknown,
   identity_query,

@@ -852,6 +852,21 @@ TEST(KmtApiTest, SelectsLegacyV2LayoutForPre314DriverVersions) {
             McdmAbi::legacy_v2);
 }
 
+TEST(KmtApiTest, SubmissionPolicyFollowsNegotiatedAbiContract) {
+  for (McdmAbi abi : {McdmAbi::legacy_v0, McdmAbi::legacy_v2}) {
+    const McdmSubmissionPolicy policy = GetMcdmSubmissionPolicy(abi);
+    EXPECT_FALSE(policy.supports_command_chaining);
+    EXPECT_TRUE(policy.uses_shared_command_code_view);
+    EXPECT_FALSE(policy.supports_async_submit);
+  }
+  for (McdmAbi abi : {McdmAbi::legacy, McdmAbi::compact}) {
+    const McdmSubmissionPolicy policy = GetMcdmSubmissionPolicy(abi);
+    EXPECT_TRUE(policy.supports_command_chaining);
+    EXPECT_FALSE(policy.uses_shared_command_code_view);
+    EXPECT_TRUE(policy.supports_async_submit);
+  }
+}
+
 TEST(KmtApiTest, SelectsLegacyLayoutForPost280TwoDwordIdentityDrivers) {
   EXPECT_EQ(SelectMcdmAbiForDriverVersion(McdmAbi::legacy_v2, true,
                                           DriverVersion{32, 0, 203, 314}),

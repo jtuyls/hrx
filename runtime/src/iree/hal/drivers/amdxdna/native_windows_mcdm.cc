@@ -132,11 +132,6 @@ uint32_t chain_slot_capacity(size_t exec_bo_size) {
              : 1;
 }
 
-bool disables_command_chaining(mcdm::McdmAbi abi) {
-  return abi == mcdm::McdmAbi::legacy_v0 ||
-         abi == mcdm::McdmAbi::legacy_v2;
-}
-
 void apply_command_chain_override(
     iree_hal_amdxdna_native_c_device_caps_t* caps) {
   switch (IREE_HAL_AMDXDNA_COMMAND_CHAIN_OVERRIDE) {
@@ -871,8 +866,14 @@ iree_status_t stage_windows_dpu_code_buffer(
         IREE_STATUS_FAILED_PRECONDITION,
         "amdxdna Windows MCDM command aperture code mapping is unavailable");
   }
-  if (command->pathb_single_code_aperture_capacity <
-      command->control_buffer_size) {
+  const bool uses_shared_command_code_view =
+      mcdm::GetMcdmSubmissionPolicy(command->device->device.mcdm_abi)
+          .uses_shared_command_code_view;
+  if (uses_shared_command_code_view) {
+    command->pathb_single_code_aperture_offset = aperture.code_offset;
+    command->pathb_single_code_aperture_capacity = aperture.code_size;
+  } else if (command->pathb_single_code_aperture_capacity <
+             command->control_buffer_size) {
     const uint64_t slot_offset =
         align_up_size(queue->context->pathb_persistent_code_bytes, slot_size);
     const uint64_t slot_capacity =
@@ -923,7 +924,13 @@ iree_status_t stage_windows_dpu_code_buffer(
   };
   const bool same_staged_code =
       command->pathb_code_staged &&
-      command->pathb_code_staged_size == command->control_buffer_size;
+      command->pathb_code_staged_size == command->control_buffer_size &&
+      (!uses_shared_command_code_view ||
+       (queue->context->pathb_single_code_staged_size ==
+            command->control_buffer_size &&
+        queue->context->pathb_single_code_staged_offset == code_offset &&
+        std::memcmp(code_cpu_ptr, command->control_buffer->buffer.cpu_ptr,
+                    static_cast<size_t>(command->control_buffer_size)) == 0));
   if (same_staged_code) {
     if (is_partial_elf) {
       IREE_RETURN_IF_ERROR(ensure_pathb_single_code_range_active(
@@ -2347,7 +2354,9 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   // Issue may return before the native completion wait finishes. The HAL
   // retains native resources and keeps cache entries in flight until the
   // completion batch publishes its signal semaphores.
-  caps.supports_async_submit = true;
+  const mcdm::McdmSubmissionPolicy submission_policy =
+      mcdm::GetMcdmSubmissionPolicy(device->device.mcdm_abi);
+  caps.supports_async_submit = submission_policy.supports_async_submit;
   caps.supports_external_buffer_import = false;
   caps.supports_external_buffer_export = false;
   caps.supports_real_multi_queue = false;
@@ -2356,7 +2365,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.command_chain_status =
       IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
   *out_caps = caps;
-  if (disables_command_chaining(device->device.mcdm_abi)) {
+  if (!submission_policy.supports_command_chaining) {
     out_caps->max_command_chain_slots = 0;
     out_caps->dispatch_models &=
         ~IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
