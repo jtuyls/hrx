@@ -1467,7 +1467,8 @@ bool SyncBuffer(const KmtApi& api, const Device& device, const Buffer& buffer,
   // This avoids a fixed KMT transition for command metadata while bounding
   // the linear cost of flushing large buffers such as model weights.
   const uint64_t last_level_cache_size = LastLevelCacheSize();
-  if (last_level_cache_size && length < last_level_cache_size) {
+  if (buffer.cpu_ptr && last_level_cache_size &&
+      length < last_level_cache_size) {
     return SyncSmallBufferCpuCache(buffer, offset, length, out_error);
   }
   D3DKMT_INVALIDATECACHE invalidate = {};
