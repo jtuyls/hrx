@@ -40,6 +40,11 @@ typedef struct iree_hal_amdxdna_completion_cleanup_t {
   struct iree_hal_amdxdna_completion_cleanup_t* next;
 } iree_hal_amdxdna_completion_cleanup_t;
 
+typedef struct iree_hal_amdxdna_ordering_signal_t {
+  iree_hal_amdxdna_native_queue_t* queue;
+  uint64_t value;
+} iree_hal_amdxdna_ordering_signal_t;
+
 struct iree_hal_amdxdna_completion_batch_t {
   iree_atomic_ref_count_t ref_count;
   iree_hal_amdxdna_completion_queue_t* queue;
@@ -52,6 +57,10 @@ struct iree_hal_amdxdna_completion_batch_t {
   iree_atomic_int32_t submitted;
   bool cleanups_ran;
   bool native_signals_published;
+  bool native_issue_enabled;
+  iree_slim_mutex_t ordering_mutex;
+  iree_host_size_t ordering_signal_count;
+  iree_hal_amdxdna_ordering_signal_t* ordering_signals;
   iree_hal_command_buffer_t* retained_command_buffer;
   iree_hal_amdxdna_completion_item_t* item_head;
   iree_hal_amdxdna_completion_item_t** item_tail_link;
@@ -193,6 +202,8 @@ static void iree_hal_amdxdna_completion_batch_deallocate(
     cleanup = next;
   }
   iree_hal_command_buffer_release(batch->retained_command_buffer);
+  iree_slim_mutex_deinitialize(&batch->ordering_mutex);
+  iree_allocator_free(host_allocator, batch->ordering_signals);
   iree_hal_semaphore_list_free(batch->signal_list, host_allocator);
   iree_status_ignore(batch->status);
   iree_notification_deinitialize(&batch->done_notification);
@@ -221,6 +232,13 @@ void iree_hal_amdxdna_completion_batch_publish_signals(
   if (!batch || batch->native_signals_published) return;
   iree_hal_amdxdna_completion_batch_publish_native_signals(batch);
   batch->native_signals_published = true;
+}
+
+void iree_hal_amdxdna_completion_batch_enable_native_issue(
+    iree_hal_amdxdna_completion_batch_t* batch) {
+  if (!batch) return;
+  IREE_ASSERT(!batch->native_signals_published);
+  batch->native_issue_enabled = true;
 }
 
 static void iree_hal_amdxdna_completion_batch_clear_native_signals(
@@ -409,6 +427,7 @@ iree_status_t iree_hal_amdxdna_completion_batch_create(
   batch->signal_list = iree_hal_semaphore_list_empty();
   batch->status = iree_ok_status();
   iree_notification_initialize(&batch->done_notification);
+  iree_slim_mutex_initialize(&batch->ordering_mutex);
   iree_atomic_store(&batch->done, 0, iree_memory_order_relaxed);
   iree_atomic_store(&batch->done_waiter_count, 0, iree_memory_order_relaxed);
   iree_atomic_store(&batch->submitted, 0, iree_memory_order_relaxed);
@@ -418,6 +437,7 @@ iree_status_t iree_hal_amdxdna_completion_batch_create(
   iree_status_t status = iree_hal_semaphore_list_clone(
       &signal_list, queue->host_allocator, &batch->signal_list);
   if (!iree_status_is_ok(status)) {
+    iree_slim_mutex_deinitialize(&batch->ordering_mutex);
     iree_notification_deinitialize(&batch->done_notification);
     iree_allocator_free(queue->host_allocator, batch);
     return status;
@@ -503,6 +523,103 @@ bool iree_hal_amdxdna_completion_batch_has_work(
   return batch && batch->item_head != NULL;
 }
 
+static bool iree_hal_amdxdna_completion_batch_has_only_native_submissions(
+    const iree_hal_amdxdna_completion_batch_t* batch) {
+  const iree_hal_amdxdna_completion_item_t* item =
+      batch ? batch->item_head : NULL;
+  if (!item) return false;
+  while (item) {
+    if (item->kind != IREE_HAL_AMDXDNA_COMPLETION_ITEM_SUBMISSION) return false;
+    item = item->next;
+  }
+  return true;
+}
+
+static iree_status_t
+iree_hal_amdxdna_completion_batch_collect_ordering_sources(
+    iree_hal_amdxdna_completion_batch_t* batch) {
+  iree_host_size_t submission_count = 0;
+  for (const iree_hal_amdxdna_completion_item_t* item = batch->item_head; item;
+       item = item->next) {
+    if (item->kind == IREE_HAL_AMDXDNA_COMPLETION_ITEM_SUBMISSION) {
+      ++submission_count;
+    }
+  }
+  if (submission_count == 0) return iree_ok_status();
+
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc_array(
+      batch->host_allocator, submission_count, sizeof(*batch->ordering_signals),
+      (void**)&batch->ordering_signals));
+  for (const iree_hal_amdxdna_completion_item_t* item = batch->item_head; item;
+       item = item->next) {
+    iree_hal_amdxdna_native_queue_t* queue =
+        iree_hal_amdxdna_native_submission_c_queue(item->payload.submission);
+    bool already_recorded = false;
+    for (iree_host_size_t i = 0; i < batch->ordering_signal_count; ++i) {
+      if (batch->ordering_signals[i].queue == queue) {
+        already_recorded = true;
+        break;
+      }
+    }
+    if (already_recorded) continue;
+
+    iree_hal_amdxdna_ordering_signal_t* signal =
+        &batch->ordering_signals[batch->ordering_signal_count];
+    signal->queue = queue;
+    signal->value = 0;
+    ++batch->ordering_signal_count;
+  }
+  return iree_ok_status();
+}
+
+bool iree_hal_amdxdna_completion_batch_is_native_orderable(
+    const iree_hal_amdxdna_completion_batch_t* batch) {
+  if (!batch ||
+      iree_atomic_load(&batch->submitted, iree_memory_order_acquire) == 0) {
+    return false;
+  }
+  return batch->ordering_signal_count != 0 &&
+         iree_hal_amdxdna_completion_batch_has_only_native_submissions(batch);
+}
+
+bool iree_hal_amdxdna_completion_batch_has_native_issue(
+    const iree_hal_amdxdna_completion_batch_t* batch) {
+  return batch && batch->native_issue_enabled;
+}
+
+iree_status_t iree_hal_amdxdna_completion_batch_order_on_queue(
+    iree_hal_amdxdna_completion_batch_t* batch,
+    iree_hal_amdxdna_native_queue_t* queue) {
+  IREE_ASSERT_ARGUMENT(batch);
+  IREE_ASSERT_ARGUMENT(queue);
+  if (IREE_UNLIKELY(
+          iree_atomic_load(&batch->submitted, iree_memory_order_acquire) == 0 ||
+          !iree_hal_amdxdna_completion_batch_has_only_native_submissions(
+              batch))) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "native dependency batch has not completed native issue");
+  }
+  iree_status_t status = iree_ok_status();
+  iree_slim_mutex_lock(&batch->ordering_mutex);
+  for (iree_host_size_t i = 0;
+       i < batch->ordering_signal_count && iree_status_is_ok(status); ++i) {
+    iree_hal_amdxdna_ordering_signal_t* signal =
+        &batch->ordering_signals[i];
+    if (signal->queue == queue) continue;
+    if (signal->value == 0) {
+      status = iree_hal_amdxdna_native_queue_c_signal_ordering_fence(
+          signal->queue, &signal->value);
+    }
+    if (iree_status_is_ok(status)) {
+      status = iree_hal_amdxdna_native_queue_c_wait_ordering_fence(
+          queue, signal->queue, signal->value);
+    }
+  }
+  iree_slim_mutex_unlock(&batch->ordering_mutex);
+  return status;
+}
+
 iree_status_t iree_hal_amdxdna_completion_batch_submit(
     iree_hal_amdxdna_completion_batch_t* batch) {
   IREE_ASSERT_ARGUMENT(batch);
@@ -531,7 +648,30 @@ iree_status_t iree_hal_amdxdna_completion_batch_submit(
     iree_hal_amdxdna_completion_batch_destroy(batch);
     return iree_status_from_code(IREE_STATUS_DEFERRED);
   }
+  if (batch->native_issue_enabled && iree_status_is_ok(batch->status) &&
+      iree_hal_amdxdna_completion_batch_has_only_native_submissions(batch)) {
+    iree_status_t ordering_status =
+        iree_hal_amdxdna_completion_batch_collect_ordering_sources(batch);
+    if (!iree_status_is_ok(ordering_status)) {
+      iree_hal_amdxdna_completion_batch_record_error(batch, ordering_status);
+    }
+  }
   iree_atomic_store(&batch->submitted, 1, iree_memory_order_release);
+  if (batch->native_issue_enabled) {
+    if (iree_status_is_ok(batch->status) &&
+        iree_hal_amdxdna_completion_batch_has_only_native_submissions(batch)) {
+      iree_hal_amdxdna_semaphore_list_signal_native_issue(batch->signal_list);
+    } else {
+      iree_status_t issue_status =
+          iree_status_is_ok(batch->status)
+              ? iree_make_status(
+                    IREE_STATUS_FAILED_PRECONDITION,
+                    "native issue batch did not contain only submissions")
+              : iree_status_clone(batch->status);
+      iree_hal_amdxdna_semaphore_list_fail_native_issue(batch->signal_list,
+                                                        issue_status);
+    }
+  }
   iree_atomic_fetch_add(&queue->inflight_count, 1, iree_memory_order_acq_rel);
   iree_slim_mutex_lock(&queue->mutex);
   const bool shutdown = iree_atomic_load(&queue->shutdown_requested,

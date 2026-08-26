@@ -12,6 +12,7 @@
 #include "iree/async/proactor_platform.h"
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
+#include "iree/hal/drivers/amdxdna/completion_queue.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 
@@ -89,6 +90,56 @@ TEST_F(SemaphoreTest, NativeTimepointImportExportUnimplemented) {
   iree_status_free(status);
   EXPECT_EQ(exported_timepoint.type, IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_NONE);
 
+  iree_hal_semaphore_release(semaphore);
+}
+
+TEST_F(SemaphoreTest, RetainedNativeProducerSurvivesLaterSignalPublication) {
+  iree_hal_semaphore_t* semaphore = CreateSemaphore(0);
+  iree_hal_amdxdna_completion_queue_t* queue = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_completion_queue_create(
+      iree_allocator_system(), &queue));
+
+  uint64_t producer_value = 1;
+  iree_hal_semaphore_list_t producer_signal_list = {};
+  producer_signal_list.count = 1;
+  producer_signal_list.semaphores = &semaphore;
+  producer_signal_list.payload_values = &producer_value;
+  iree_hal_amdxdna_completion_batch_t* producer = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, producer_signal_list, &producer));
+  iree_hal_amdxdna_completion_batch_publish_signals(producer);
+
+  iree_host_size_t retained_count = 0;
+  iree_hal_amdxdna_completion_batch_t** retained_batches = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_semaphore_list_retain_native_wait_batches(
+      producer_signal_list, iree_allocator_system(), &retained_count,
+      &retained_batches));
+  ASSERT_EQ(retained_count, 1u);
+  EXPECT_EQ(retained_batches[0], producer);
+
+  uint64_t consumer_value = 2;
+  iree_hal_semaphore_list_t consumer_signal_list = {};
+  consumer_signal_list.count = 1;
+  consumer_signal_list.semaphores = &semaphore;
+  consumer_signal_list.payload_values = &consumer_value;
+  iree_hal_amdxdna_completion_batch_t* consumer = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_completion_batch_create(
+      queue, consumer_signal_list, &consumer));
+  iree_hal_amdxdna_completion_batch_publish_signals(consumer);
+
+  iree_host_size_t replaced_count = 0;
+  iree_hal_amdxdna_completion_batch_t** replaced_batches = nullptr;
+  IREE_ASSERT_OK(iree_hal_amdxdna_semaphore_list_retain_native_wait_batches(
+      producer_signal_list, iree_allocator_system(), &replaced_count,
+      &replaced_batches));
+  EXPECT_EQ(replaced_count, 0u);
+  EXPECT_EQ(replaced_batches, nullptr);
+
+  iree_hal_amdxdna_completion_batch_destroy(retained_batches[0]);
+  iree_allocator_free(iree_allocator_system(), retained_batches);
+  iree_hal_amdxdna_completion_batch_destroy(consumer);
+  iree_hal_amdxdna_completion_batch_destroy(producer);
+  iree_hal_amdxdna_completion_queue_destroy(queue);
   iree_hal_semaphore_release(semaphore);
 }
 

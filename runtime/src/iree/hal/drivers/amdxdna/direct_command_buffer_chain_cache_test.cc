@@ -322,7 +322,40 @@ TEST(ChainCommandCacheTest,
 }
 
 TEST(ChainCommandCacheTest,
-     DescriptorMatchesRejectDifferentExecutableOrRunWithSameShape) {
+     DescriptorMatchesAcceptEquivalentRecreatedExecutable) {
+  uint32_t cached_control_data[] = {0xA, 0xB, 0xC};
+  uint32_t fresh_control_data[] = {0xA, 0xB, 0xC};
+  iree_hal_amdxdna_u32_list_t cached_control = {
+      cached_control_data,
+      IREE_ARRAYSIZE(cached_control_data),
+  };
+  iree_hal_amdxdna_u32_list_t fresh_control = {
+      fresh_control_data,
+      IREE_ARRAYSIZE(fresh_control_data),
+  };
+  auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  auto fresh_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  cached_cmd.src_executable_identity = 7;
+  fresh_cmd.src_executable_identity = 8;
+  cached_cmd.src_entry_point = 2;
+  fresh_cmd.src_entry_point = 2;
+  cached_cmd.src_run_ordinal = 3;
+  fresh_cmd.src_run_ordinal = 3;
+  cached_cmd.src_asm_inst = &cached_control;
+  fresh_cmd.src_asm_inst = &fresh_control;
+  auto cached_group = MakeGroup1(&cached_cmd);
+  auto fresh_group = MakeGroup1(&fresh_cmd);
+  auto entry = MakeCacheEntry(&cached_group);
+
+  EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
+      &entry, &fresh_group, /*max_slots=*/24));
+  EXPECT_TRUE(
+      iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
+          &entry, &fresh_group, /*max_slots=*/24));
+}
+
+TEST(ChainCommandCacheTest,
+     DescriptorMatchRejectsButTemplateAcceptsDifferentSourceWithSameShape) {
   auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
   cached_cmd.src_executable_identity = 7;
   cached_cmd.src_entry_point = 2;
@@ -330,17 +363,23 @@ TEST(ChainCommandCacheTest,
   auto cached_group = MakeGroup1(&cached_cmd);
   auto entry = MakeCacheEntry(&cached_group);
 
-  auto different_executable_cmd =
+  uint32_t different_control_data[] = {0x100, 0x101, 0x102, 0x104};
+  iree_hal_amdxdna_u32_list_t different_control = {
+      different_control_data,
+      IREE_ARRAYSIZE(different_control_data),
+  };
+  auto different_source_cmd =
       MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
-  different_executable_cmd.src_executable_identity = 8;
-  different_executable_cmd.src_entry_point = 2;
-  different_executable_cmd.src_run_ordinal = 3;
-  auto different_executable_group = MakeGroup1(&different_executable_cmd);
+  different_source_cmd.src_executable_identity = 8;
+  different_source_cmd.src_entry_point = 2;
+  different_source_cmd.src_run_ordinal = 3;
+  different_source_cmd.src_asm_inst = &different_control;
+  auto different_source_group = MakeGroup1(&different_source_cmd);
   EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
-      &entry, &different_executable_group, /*max_slots=*/24));
-  EXPECT_FALSE(
+      &entry, &different_source_group, /*max_slots=*/24));
+  EXPECT_TRUE(
       iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
-          &entry, &different_executable_group, /*max_slots=*/24));
+          &entry, &different_source_group, /*max_slots=*/24));
 
   auto different_run_cmd =
       MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
@@ -350,7 +389,7 @@ TEST(ChainCommandCacheTest,
   auto different_run_group = MakeGroup1(&different_run_cmd);
   EXPECT_FALSE(iree_hal_amdxdna_chain_command_cache_descriptor_matches(
       &entry, &different_run_group, /*max_slots=*/24));
-  EXPECT_FALSE(
+  EXPECT_TRUE(
       iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
           &entry, &different_run_group, /*max_slots=*/24));
 }
@@ -419,6 +458,8 @@ TEST(ChainCommandCacheTest,
   };
   auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
   auto fresh_cmd = MakeCmd(FakeBuffer(0x20), /*device_addr=*/0x90000000);
+  cached_cmd.src_executable_identity = 7;
+  fresh_cmd.src_executable_identity = 7;
   cached_cmd.src_asm_inst = &cached_control;
   fresh_cmd.src_asm_inst = &fresh_control;
   auto cached_group = MakeGroup1(&cached_cmd);
@@ -445,6 +486,8 @@ TEST(ChainCommandCacheTest,
   };
   auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
   auto fresh_cmd = MakeCmd(FakeBuffer(0x20), /*device_addr=*/0x90000000);
+  cached_cmd.src_executable_identity = 7;
+  fresh_cmd.src_executable_identity = 7;
   cached_cmd.src_patches = &cached_patches;
   fresh_cmd.src_patches = &fresh_patches;
   auto cached_group = MakeGroup1(&cached_cmd);
@@ -475,18 +518,21 @@ TEST(ChainCommandCacheTest,
       IREE_ARRAYSIZE(arg_changed_patch_data),
   };
   auto cached_cmd = MakeCmd(FakeBuffer(0x10), /*device_addr=*/0x80000000);
+  cached_cmd.src_executable_identity = 7;
   cached_cmd.src_patches = &cached_patches;
   auto cached_group = MakeGroup1(&cached_cmd);
   auto entry = MakeCacheEntry(&cached_group);
 
   auto offset_changed_cmd =
       MakeCmd(FakeBuffer(0x20), /*device_addr=*/0x90000000);
+  offset_changed_cmd.src_executable_identity = 7;
   offset_changed_cmd.src_patches = &offset_changed_patches;
   auto offset_changed_group = MakeGroup1(&offset_changed_cmd);
   EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(
       &entry, &offset_changed_group, /*max_slots=*/24));
 
   auto arg_changed_cmd = MakeCmd(FakeBuffer(0x30), /*device_addr=*/0xA0000000);
+  arg_changed_cmd.src_executable_identity = 7;
   arg_changed_cmd.src_patches = &arg_changed_patches;
   auto arg_changed_group = MakeGroup1(&arg_changed_cmd);
   EXPECT_TRUE(iree_hal_amdxdna_chain_command_cache_descriptor_template_matches(

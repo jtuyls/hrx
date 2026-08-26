@@ -41,6 +41,7 @@ constexpr size_t kLegacyContextCommandApertureCookieOffset = 0x40;
 constexpr size_t kLegacyV2ContextCommandApertureCookieOffset = 0x3c;
 constexpr size_t kCompactContextCommandApertureCookieOffset = 0x44;
 constexpr UINT kMaxDriverStorePathWarmupBytes = 4096;
+
 // The {0, 2} identity spans two incompatible context layouts. Captured .240
 // and .280 packages use the older layout; .314 and .329 use the modern one.
 constexpr uint32_t kFirstModernLegacyContextLayoutRevision = 314;
@@ -1112,8 +1113,18 @@ bool KmtApi::Load(Error* out_error) {
       ResolveKmtProc<PFND3DKMT_CREATEHWQUEUE>("D3DKMTCreateHwQueue");
   destroy_hw_queue =
       ResolveKmtProc<PFND3DKMT_DESTROYHWQUEUE>("D3DKMTDestroyHwQueue");
+  create_sync_object = ResolveKmtProc<PFND3DKMT_CREATESYNCHRONIZATIONOBJECT2>(
+      "D3DKMTCreateSynchronizationObject2");
+  destroy_sync_object = ResolveKmtProc<PFND3DKMT_DESTROYSYNCHRONIZATIONOBJECT>(
+      "D3DKMTDestroySynchronizationObject");
   wait_from_gpu = ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU>(
       "D3DKMTWaitForSynchronizationObjectFromGpu");
+  submit_wait_to_hw_queue =
+      ResolveKmtProc<PFND3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE>(
+          "D3DKMTSubmitWaitForSyncObjectsToHwQueue");
+  submit_signal_to_hw_queue =
+      ResolveKmtProc<PFND3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE>(
+          "D3DKMTSubmitSignalSyncObjectsToHwQueue");
   wait_from_cpu = ResolveKmtProc<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU>(
       "D3DKMTWaitForSynchronizationObjectFromCpu");
   submit_command_to_hw_queue = ResolveKmtProc<PFND3DKMT_SUBMITCOMMANDTOHWQUEUE>(
@@ -1124,8 +1135,10 @@ bool KmtApi::Load(Error* out_error) {
       destroy_paging_queue && create_allocation2 && destroy_allocation2 &&
       map_gpu_virtual_address && free_gpu_virtual_address && make_resident &&
       lock2 && unlock2 && invalidate_cache && create_context_virtual &&
-      destroy_context && create_hw_queue && destroy_hw_queue && wait_from_gpu &&
-      wait_from_cpu && submit_command_to_hw_queue) {
+      destroy_context && create_hw_queue && destroy_hw_queue &&
+      create_sync_object && destroy_sync_object && wait_from_gpu &&
+      submit_wait_to_hw_queue && submit_signal_to_hw_queue && wait_from_cpu &&
+      submit_command_to_hw_queue) {
     return true;
   }
 
@@ -1462,10 +1475,6 @@ bool InvalidateBufferCpuReads(const Buffer& buffer, uint64_t offset,
 
 bool SyncBuffer(const KmtApi& api, const Device& device, const Buffer& buffer,
                 uint64_t offset, uint64_t length, Error* out_error) {
-  // XRT uses cache-line synchronization for ranges smaller than the LLC and
-  // falls back to allocation-level KMT synchronization for larger ranges.
-  // This avoids a fixed KMT transition for command metadata while bounding
-  // the linear cost of flushing large buffers such as model weights.
   const uint64_t last_level_cache_size = LastLevelCacheSize();
   if (buffer.cpu_ptr && last_level_cache_size &&
       length < last_level_cache_size) {
@@ -1744,6 +1753,18 @@ bool CreateContext(const KmtApi& api, const Device& device,
   context.progress_fence_gpu =
       create_queue.HwQueueProgressFenceGPUVirtualAddress;
 
+  D3DKMT_CREATESYNCHRONIZATIONOBJECT2 create_fence = {};
+  create_fence.hDevice = device.device;
+  create_fence.Info.Type = D3DDDI_MONITORED_FENCE;
+  create_fence.Info.MonitoredFence.InitialFenceValue = 0;
+  status = api.create_sync_object(&create_fence);
+  if (!CheckStatus("D3DKMTCreateSynchronizationObject2(ordering fence)", status,
+                   out_error)) {
+    DestroyContext(api, device, &context);
+    return false;
+  }
+  context.ordering_fence = create_fence.hSyncObject;
+
   *out_context = context;
   return true;
 }
@@ -1764,6 +1785,12 @@ static void DestroyContextAfterHwQueue(const KmtApi& api,
   // completed. Release a context-owned ring only after its final queue user.
   DestroyStatusRing(api, device, context);
   DestroyBuffer(api, device, &context->context_private_buffer);
+  if (context->ordering_fence) {
+    D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy_fence = {};
+    destroy_fence.hSyncObject = context->ordering_fence;
+    api.destroy_sync_object(&destroy_fence);
+    context->ordering_fence = 0;
+  }
   if (context->context) {
     D3DKMT_DESTROYCONTEXT destroy_context = {};
     destroy_context.hContext = context->context;
@@ -1774,6 +1801,7 @@ static void DestroyContextAfterHwQueue(const KmtApi& api,
   context->progress_fence_cpu = nullptr;
   context->progress_fence_gpu = 0;
   context->next_fence_id = 1;
+  context->ordering_fence_value = 0;
 }
 
 void DestroyContext(const KmtApi& api, const Device& device, Context* context) {
@@ -2498,17 +2526,69 @@ bool PublishPathBCodeWrite(const KmtApi& api, const Device& device,
                                         length, out_error);
 }
 
-bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
-                           Context* context,
-                           const CommandAperture& aperture, uint64_t offset,
-                           uint64_t length, Error* out_error) {
+bool PublishPathBCodeEndMarker(const KmtApi& api, const Device& device,
+                               Context* context,
+                               const CommandAperture& aperture, uint64_t offset,
+                               uint64_t length, Error* out_error) {
+  const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
+  if (!ValidatePathBCodeRange(abi, aperture, offset, length, out_error)) {
+    return false;
+  }
+  const uint64_t slot_size = abi.command_aperture_code_slot_size;
+  const uint64_t range_end = offset + length;
+  const uint64_t final_boundary =
+      (range_end + slot_size - 1) & ~(slot_size - 1);
+  return SubmitPathBApertureSync(api, device, context, aperture,
+                                 final_boundary,
+                                 /*wait_for_cpu=*/false, out_error);
+}
+
+bool ReleasePathBCodeStreamImpl(const KmtApi& api, const Device& device,
+                                Context* context,
+                                const CommandAperture& aperture,
+                                uint64_t offset, uint64_t length,
+                                bool wait_for_cpu, Error* out_error) {
+  const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
+  if (!ValidatePathBCodeRange(abi, aperture, offset, length, out_error)) {
+    return false;
+  }
+  const uint64_t slot_size = abi.command_aperture_code_slot_size;
+  const uint64_t relative_begin = offset - aperture.code_offset;
+  const uint64_t first_boundary =
+      aperture.code_offset + (relative_begin & ~(slot_size - 1));
+  return SubmitPathBApertureSync(api, device, context, aperture,
+                                 first_boundary, wait_for_cpu, out_error);
+}
+
+bool ReleasePathBCodeStream(const KmtApi& api, const Device& device,
+                            Context* context,
+                            const CommandAperture& aperture, uint64_t offset,
+                            uint64_t length, Error* out_error) {
+  return ReleasePathBCodeStreamImpl(api, device, context, aperture, offset,
+                                    length, /*wait_for_cpu=*/true, out_error);
+}
+
+bool QueuePathBCodeStreamRelease(const KmtApi& api, const Device& device,
+                                 Context* context,
+                                 const CommandAperture& aperture,
+                                 uint64_t offset, uint64_t length,
+                                 Error* out_error) {
+  return ReleasePathBCodeStreamImpl(api, device, context, aperture, offset,
+                                    length, /*wait_for_cpu=*/false, out_error);
+}
+
+bool ReleasePathBCodeRangeImpl(const KmtApi& api, const Device& device,
+                               Context* context,
+                               const CommandAperture& aperture, uint64_t offset,
+                               uint64_t length, bool wait_for_cpu,
+                               Error* out_error) {
   const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
   if (!ValidatePathBCodeRange(abi, aperture, offset, length, out_error)) {
     return false;
   }
   if (UsesLegacyCpuBufferHandles(device.mcdm_abi)) {
     return SubmitPathBApertureSync(api, device, context, aperture, offset,
-                                   /*wait_for_cpu=*/true, out_error);
+                                   wait_for_cpu, out_error);
   }
 
   const uint64_t slot_size = abi.command_aperture_code_slot_size;
@@ -2519,7 +2599,7 @@ bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
                         ((relative_begin + length - 1) & ~(slot_size - 1));
   for (;;) {
     if (!SubmitPathBApertureSync(api, device, context, aperture, slot_start,
-                                 /*wait_for_cpu=*/slot_start <= first_slot,
+                                 wait_for_cpu && slot_start <= first_slot,
                                  out_error)) {
       return false;
     }
@@ -2527,6 +2607,23 @@ bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
     slot_start -= slot_size;
   }
   return true;
+}
+
+bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
+                           Context* context,
+                           const CommandAperture& aperture, uint64_t offset,
+                           uint64_t length, Error* out_error) {
+  return ReleasePathBCodeRangeImpl(api, device, context, aperture, offset,
+                                   length, /*wait_for_cpu=*/true, out_error);
+}
+
+bool QueuePathBCodeRangeRelease(const KmtApi& api, const Device& device,
+                                Context* context,
+                                const CommandAperture& aperture,
+                                uint64_t offset, uint64_t length,
+                                Error* out_error) {
+  return ReleasePathBCodeRangeImpl(api, device, context, aperture, offset,
+                                   length, /*wait_for_cpu=*/false, out_error);
 }
 
 // Allocate the firmware completion ring using the status object selected by
@@ -2728,6 +2825,54 @@ bool IsPathBSubmitComplete(const Context& context,
   return current >= pending.fence_id;
 }
 
+bool SignalContextOrderingFence(const KmtApi& api, Context* context,
+                                uint64_t* out_fence_value, Error* out_error) {
+  if (!context || !context->hw_queue || !context->ordering_fence ||
+      !out_fence_value) {
+    SetError(out_error, "invalid HW-queue ordering fence signal");
+    return false;
+  }
+  const uint64_t fence_value = static_cast<uint64_t>(InterlockedIncrement64(
+      reinterpret_cast<volatile LONG64*>(&context->ordering_fence_value)));
+  D3DKMT_HANDLE queue = context->hw_queue;
+  D3DKMT_HANDLE fence = context->ordering_fence;
+  D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE signal = {};
+  signal.BroadcastHwQueueCount = 1;
+  signal.BroadcastHwQueueArray = &queue;
+  signal.ObjectCount = 1;
+  signal.ObjectHandleArray = &fence;
+  signal.FenceValueArray = &fence_value;
+  if (!CheckStatus("D3DKMTSubmitSignalSyncObjectsToHwQueue(dispatch)",
+                   api.submit_signal_to_hw_queue(&signal), out_error)) {
+    return false;
+  }
+  *out_fence_value = fence_value;
+  return true;
+}
+
+bool SubmitContextFenceWait(const KmtApi& api,
+                            const Context& waiting_context,
+                            const Context& source_context,
+                            uint64_t source_fence_value, Error* out_error) {
+  if (source_fence_value == 0 ||
+      waiting_context.hw_queue == source_context.hw_queue) {
+    return true;
+  }
+  if (!waiting_context.hw_queue || !source_context.ordering_fence) {
+    SetError(out_error, "invalid HW-queue context fence wait");
+    return false;
+  }
+  D3DKMT_HANDLE wait_object = source_context.ordering_fence;
+  UINT64 wait_value = source_fence_value;
+  D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE wait = {};
+  wait.hHwQueue = waiting_context.hw_queue;
+  wait.ObjectCount = 1;
+  wait.ObjectHandleArray = &wait_object;
+  wait.FenceValueArray = &wait_value;
+  return CheckStatus("D3DKMTSubmitWaitForSyncObjectsToHwQueue(dispatch)",
+                     api.submit_wait_to_hw_queue(&wait), out_error);
+}
+
 size_t PathBCompletionCapacity(const Context& context) {
   const size_t slot_count =
       static_cast<size_t>(context.completion_ring.size) /
@@ -2804,31 +2949,16 @@ bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
     SetError(out_error, "WaitForPathBSubmits called without commands");
     return false;
   }
-  // Match XRT runlist semantics: wait for the final parent chunk. In-order HWQ
-  // execution means earlier parent chunks have retired when the last fence is
-  // reached. Completion state for each parent is still checked below.
+  // Retire the final parent through KMT even when the CPU-visible progress
+  // fence already reports completion. The HW queue is in order, so reaching
+  // the final timeline value also retires every earlier parent in the batch.
+  // Completion state for every parent is still checked below.
   PathBPendingSubmit& last = pending[pending_count - 1];
-  if (!IsPathBSubmitComplete(*context, last)) {
-    if (!WaitForHwQueueFenceCpu(
-            api, device, *context, last.fence_id,
-            "D3DKMTWaitForSynchronizationObjectFromCpu(pathb batch)",
-            out_error)) {
-      return false;
-    }
-  }
-  // Retire each parent through the queue fence interface before consuming its
-  // completion slot. The final fence establishes in-order device completion;
-  // the per-parent waits mirror the command-specific retirement performed by
-  // XRT's runlist wait path and keep miniport completion ownership explicit.
-  // These waits observe already-reached fence values and do not serialize
-  // parent submission.
-  for (size_t i = 0; i < pending_count; ++i) {
-    if (!WaitForHwQueueFenceCpu(
-            api, device, *context, pending[i].fence_id,
-            "D3DKMTWaitForSynchronizationObjectFromCpu(pathb parent retire)",
-            out_error)) {
-      return false;
-    }
+  if (!WaitForHwQueueFenceCpu(
+          api, device, *context, last.fence_id,
+          "D3DKMTWaitForSynchronizationObjectFromCpu(pathb batch retire)",
+          out_error)) {
+    return false;
   }
   // Every pending parent in a context reports through the same completion
   // ring. The final HWQ fence makes all preceding slots complete; invalidate

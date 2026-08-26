@@ -44,6 +44,14 @@ D3DKMT_HANDLE g_gpu_wait_context = 0;
 D3DKMT_HANDLE g_gpu_wait_object = 0;
 uint64_t g_gpu_wait_fence = 0;
 size_t g_gpu_wait_count = 0;
+D3DKMT_HANDLE g_hw_queue_wait_queue = 0;
+D3DKMT_HANDLE g_hw_queue_wait_object = 0;
+uint64_t g_hw_queue_wait_fence = 0;
+size_t g_hw_queue_wait_count = 0;
+D3DKMT_HANDLE g_hw_queue_signal_queue = 0;
+D3DKMT_HANDLE g_hw_queue_signal_object = 0;
+uint64_t g_hw_queue_signal_fence = 0;
+size_t g_hw_queue_signal_count = 0;
 size_t g_setup_call_count = 0;
 size_t g_submit_count = 0;
 size_t g_wait_count = 0;
@@ -87,6 +95,14 @@ void ResetFakes() {
   g_gpu_wait_object = 0;
   g_gpu_wait_fence = 0;
   g_gpu_wait_count = 0;
+  g_hw_queue_wait_queue = 0;
+  g_hw_queue_wait_object = 0;
+  g_hw_queue_wait_fence = 0;
+  g_hw_queue_wait_count = 0;
+  g_hw_queue_signal_queue = 0;
+  g_hw_queue_signal_object = 0;
+  g_hw_queue_signal_fence = 0;
+  g_hw_queue_signal_count = 0;
   g_setup_call_count = 0;
   g_submit_count = 0;
   g_wait_count = 0;
@@ -381,6 +397,24 @@ NTSTATUS APIENTRY FakeWaitFromGpu(
   g_gpu_wait_object = args->ObjectHandleArray[0];
   g_gpu_wait_fence = args->MonitoredFenceValueArray[0];
   ++g_gpu_wait_count;
+  return 0;
+}
+
+NTSTATUS APIENTRY FakeSubmitWaitToHwQueue(
+    CONST D3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE* args) {
+  g_hw_queue_wait_queue = args->hHwQueue;
+  g_hw_queue_wait_object = args->ObjectHandleArray[0];
+  g_hw_queue_wait_fence = args->FenceValueArray[0];
+  ++g_hw_queue_wait_count;
+  return 0;
+}
+
+NTSTATUS APIENTRY FakeSubmitSignalToHwQueue(
+    CONST D3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE* args) {
+  g_hw_queue_signal_queue = args->BroadcastHwQueueArray[0];
+  g_hw_queue_signal_object = args->ObjectHandleArray[0];
+  g_hw_queue_signal_fence = args->FenceValueArray[0];
+  ++g_hw_queue_signal_count;
   return 0;
 }
 
@@ -1297,7 +1331,7 @@ TEST(KmtApiTest, CompletedPathBSubmitStillRetiresParentFence) {
   };
 
   EXPECT_EQ(run(/*completed_fence=*/7), 1u);
-  EXPECT_EQ(run(/*completed_fence=*/6), 2u);
+  EXPECT_EQ(run(/*completed_fence=*/6), 1u);
 }
 
 TEST(KmtApiTest, PathBBatchRetirementMatchesXrtRunlistWaitOrder) {
@@ -1330,10 +1364,8 @@ TEST(KmtApiTest, PathBBatchRetirementMatchesXrtRunlistWaitOrder) {
   ASSERT_TRUE(WaitForPathBSubmits(api, device, &context, pending.data(),
                                   pending.size(), &error))
       << ErrorMessage(&error);
-  ASSERT_EQ(g_wait_count, 3u);
+  ASSERT_EQ(g_wait_count, 1u);
   EXPECT_EQ(g_wait_fences[0], 12u);
-  EXPECT_EQ(g_wait_fences[1], 11u);
-  EXPECT_EQ(g_wait_fences[2], 12u);
   EXPECT_EQ(packet_headers[0] & 0xFu, 4u);
   EXPECT_EQ(packet_headers[1] & 0xFu, 4u);
 }
@@ -1621,6 +1653,45 @@ TEST(KmtApiTest, BufferResidencyUsesNegotiatedPagingModel) {
   EXPECT_EQ(g_gpu_wait_count, 1u);
 }
 
+TEST(KmtApiTest, ContextFenceDependencyIsGpuOrdered) {
+  ResetFakes();
+  KmtApi api = {};
+  api.submit_wait_to_hw_queue = FakeSubmitWaitToHwQueue;
+  api.submit_signal_to_hw_queue = FakeSubmitSignalToHwQueue;
+  Context producer = {};
+  producer.context = 0x30;
+  producer.hw_queue = 0x31;
+  producer.ordering_fence = 0x32;
+  Context consumer = {};
+  consumer.context = 0x40;
+  consumer.hw_queue = 0x41;
+  Error error = {};
+
+  uint64_t fence_value = 0;
+  ASSERT_TRUE(
+      SignalContextOrderingFence(api, &producer, &fence_value, &error))
+      << ErrorMessage(&error);
+  EXPECT_EQ(fence_value, 1u);
+  EXPECT_EQ(g_hw_queue_signal_count, 1u);
+  EXPECT_EQ(g_hw_queue_signal_queue, producer.hw_queue);
+  EXPECT_EQ(g_hw_queue_signal_object, producer.ordering_fence);
+  EXPECT_EQ(g_hw_queue_signal_fence, fence_value);
+
+  ASSERT_TRUE(
+      SubmitContextFenceWait(api, consumer, producer, fence_value, &error))
+      << ErrorMessage(&error);
+  EXPECT_EQ(g_hw_queue_wait_count, 1u);
+  EXPECT_EQ(g_hw_queue_wait_queue, consumer.hw_queue);
+  EXPECT_EQ(g_hw_queue_wait_object, producer.ordering_fence);
+  EXPECT_EQ(g_hw_queue_wait_fence, fence_value);
+
+  consumer.hw_queue = producer.hw_queue;
+  ASSERT_TRUE(
+      SubmitContextFenceWait(api, consumer, producer, fence_value, &error))
+      << ErrorMessage(&error);
+  EXPECT_EQ(g_hw_queue_wait_count, 1u);
+}
+
 TEST(KmtApiTest, CodeRangeLifecycleMatchesNegotiatedAbi) {
   auto run = [](McdmAbi mcdm_abi, size_t setup_payload_size) {
     ResetFakes();
@@ -1781,6 +1852,63 @@ TEST(KmtApiTest, PublishPathBCodeWriteRepeatsOpcode9WithoutRewrite) {
 
   run(McdmAbi::compact);
   run(McdmAbi::legacy);
+}
+
+TEST(KmtApiTest, PublishPathBCodeEndMarkerSkipsInternalSlotBoundaries) {
+  ResetFakes();
+  KmtApi api = {};
+  api.submit_command_to_hw_queue = FakeSubmitCommandToHwQueue;
+  Device device = {};
+  device.device = 0x10;
+  device.mcdm_abi = McdmAbi::compact;
+  Context context = {};
+  context.hw_queue = 0x20;
+  context.progress_fence = 0x21;
+  context.next_fence_id = 7;
+  CommandAperture aperture = {};
+  aperture.gpu_allocation = 0x30;
+  alignas(64) static std::array<uint8_t, 0x100000> aperture_storage = {};
+  aperture.gpu_cpu_ptr = aperture_storage.data();
+  aperture.gpu_va_size = aperture_storage.size();
+  Error error = {};
+  ASSERT_TRUE(ConfigurePathBCodeRangeForSetupPayload(
+      device.mcdm_abi, 9952, &aperture, &error));
+
+  ASSERT_TRUE(PublishPathBCodeEndMarker(
+      api, device, &context, aperture, aperture.code_offset, 0x10000, &error));
+  ASSERT_EQ(g_submit_count, 1u);
+  EXPECT_EQ(g_submit_opcodes[0], 9u);
+  EXPECT_EQ(g_submit_offsets[0], aperture.code_offset + 0x10000);
+}
+
+TEST(KmtApiTest, ReleasePathBCodeStreamSkipsInternalSlotBoundaries) {
+  ResetFakes();
+  KmtApi api = {};
+  api.submit_command_to_hw_queue = FakeSubmitCommandToHwQueue;
+  api.wait_from_cpu = FakeWaitFromCpu;
+  Device device = {};
+  device.device = 0x10;
+  device.mcdm_abi = McdmAbi::compact;
+  Context context = {};
+  context.hw_queue = 0x20;
+  context.progress_fence = 0x21;
+  context.next_fence_id = 7;
+  CommandAperture aperture = {};
+  aperture.gpu_allocation = 0x30;
+  alignas(64) static std::array<uint8_t, 0x100000> aperture_storage = {};
+  aperture.gpu_cpu_ptr = aperture_storage.data();
+  aperture.gpu_va_size = aperture_storage.size();
+  Error error = {};
+  ASSERT_TRUE(ConfigurePathBCodeRangeForSetupPayload(
+      device.mcdm_abi, 9952, &aperture, &error));
+
+  ASSERT_TRUE(ReleasePathBCodeStream(
+      api, device, &context, aperture, aperture.code_offset, 0x10000, &error));
+  ASSERT_EQ(g_submit_count, 1u);
+  EXPECT_EQ(g_submit_opcodes[0], 9u);
+  EXPECT_EQ(g_submit_offsets[0], aperture.code_offset);
+  ASSERT_EQ(g_wait_count, 1u);
+  EXPECT_EQ(g_wait_fences[0], 7u);
 }
 
 TEST(KmtApiTest, CodeWriteRemapMatchesNegotiatedAbi) {

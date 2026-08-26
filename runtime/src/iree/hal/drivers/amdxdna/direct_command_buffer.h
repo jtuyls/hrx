@@ -72,6 +72,11 @@ void iree_hal_amdxdna_direct_command_buffer_set_completion_batch(
     iree_hal_command_buffer_t* base_command_buffer,
     iree_hal_amdxdna_completion_batch_t* completion_batch);
 
+void iree_hal_amdxdna_direct_command_buffer_set_native_wait_batches(
+    iree_hal_command_buffer_t* base_command_buffer,
+    iree_host_size_t batch_count,
+    iree_hal_amdxdna_completion_batch_t* const* batches);
+
 void iree_hal_amdxdna_device_destroy_single_command_cache(
     iree_hal_amdxdna_device* device);
 

@@ -313,6 +313,19 @@ iree_status_t iree_hal_amdxdna_native_submission_c_wait(
 iree_status_t iree_hal_amdxdna_native_submission_c_query(
     iree_hal_amdxdna_native_submission_t* submission, bool* out_ready);
 
+iree_hal_amdxdna_native_queue_t* iree_hal_amdxdna_native_submission_c_queue(
+    iree_hal_amdxdna_native_submission_t* submission);
+
+// Appends a monitored-fence signal after all work currently issued to |queue|.
+iree_status_t iree_hal_amdxdna_native_queue_c_signal_ordering_fence(
+    iree_hal_amdxdna_native_queue_t* queue, uint64_t* out_fence_value);
+
+// Appends a wait making |queue| depend on |source_queue|'s ordering fence.
+iree_status_t iree_hal_amdxdna_native_queue_c_wait_ordering_fence(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_queue_t* source_queue,
+    uint64_t source_fence_value);
+
 void iree_hal_amdxdna_native_submission_c_destroy(
     iree_hal_amdxdna_native_submission_t* submission);
 

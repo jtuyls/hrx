@@ -63,6 +63,12 @@ iree_status_t iree_hal_amdxdna_completion_batch_create(
 void iree_hal_amdxdna_completion_batch_publish_signals(
     iree_hal_amdxdna_completion_batch_t* batch);
 
+// Declares that this batch will contain only native submissions before
+// publishing its signals. Dependent native work may wait on the batch's issue
+// timeline and enter the same hardware queue before completion.
+void iree_hal_amdxdna_completion_batch_enable_native_issue(
+    iree_hal_amdxdna_completion_batch_t* batch);
+
 // Retains |command_buffer| until the batch completes. Used by direct command
 // buffers whose native commands/buffers live in command-buffer-owned storage.
 void iree_hal_amdxdna_completion_batch_retain_command_buffer(
@@ -94,6 +100,22 @@ void iree_hal_amdxdna_completion_batch_record_error(
 
 bool iree_hal_amdxdna_completion_batch_has_work(
     const iree_hal_amdxdna_completion_batch_t* batch);
+
+// Returns true when |batch| has already issued and contains only native
+// submissions. A later submission to the same native queue may rely on queue
+// ordering instead of waiting for the software timeline signal.
+bool iree_hal_amdxdna_completion_batch_is_native_orderable(
+    const iree_hal_amdxdna_completion_batch_t* batch);
+
+// Returns true when the producer promised a native-only issue timeline.
+bool iree_hal_amdxdna_completion_batch_has_native_issue(
+    const iree_hal_amdxdna_completion_batch_t* batch);
+
+// Inserts device-side waits on |queue| for every native submission in |batch|.
+// The batch must have completed native issue but need not have completed.
+iree_status_t iree_hal_amdxdna_completion_batch_order_on_queue(
+    iree_hal_amdxdna_completion_batch_t* batch,
+    iree_hal_amdxdna_native_queue_t* queue);
 
 // Submits the batch to the completion worker. Returns IREE_STATUS_DEFERRED when
 // the batch took ownership of signaling. Returns OK when the batch had no

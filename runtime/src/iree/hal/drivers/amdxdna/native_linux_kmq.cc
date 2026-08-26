@@ -1630,6 +1630,33 @@ extern "C" iree_status_t iree_hal_amdxdna_native_submission_c_query(
   return iree_hal_amdxdna_native_submission_query(submission, out_ready);
 }
 
+extern "C" iree_hal_amdxdna_native_queue_t*
+iree_hal_amdxdna_native_submission_c_queue(
+    iree_hal_amdxdna_native_submission_t* submission) {
+  return submission ? submission->queue : nullptr;
+}
+
+extern "C" iree_status_t
+iree_hal_amdxdna_native_queue_c_signal_ordering_fence(
+    iree_hal_amdxdna_native_queue_t* queue, uint64_t* out_fence_value) {
+  (void)queue;
+  (void)out_fence_value;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "native queue ordering fences are unavailable");
+}
+
+extern "C" iree_status_t
+iree_hal_amdxdna_native_queue_c_wait_ordering_fence(
+    iree_hal_amdxdna_native_queue_t* queue,
+    iree_hal_amdxdna_native_queue_t* source_queue,
+    uint64_t source_fence_value) {
+  (void)queue;
+  (void)source_queue;
+  (void)source_fence_value;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "native queue ordering fences are unavailable");
+}
+
 extern "C" void iree_hal_amdxdna_native_submission_c_destroy(
     iree_hal_amdxdna_native_submission_t* submission) {
   iree_hal_amdxdna_native_submission_destroy(submission);

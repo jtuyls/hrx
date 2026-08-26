@@ -492,7 +492,6 @@ hrx_status_t hrx_graph_exec_launch(hrx_graph_exec_t exec, hrx_stream_t stream) {
   IREE_ASSERT_ARGUMENT(exec);
   IREE_ASSERT_ARGUMENT(stream);
   IREE_TRACE_ZONE_BEGIN(z0);
-
   if (exec->block_count == 0) {
     IREE_TRACE_ZONE_END(z0);
     return hrx_ok_status();
@@ -523,13 +522,11 @@ hrx_status_t hrx_graph_exec_launch(hrx_graph_exec_t exec, hrx_stream_t stream) {
     stream->has_pending_work = false;
     stream->pending_cb = NULL;
   }
-
   for (uint32_t i = 0; i < exec->semaphore_count; i++) {
     HRX_RETURN_AND_END_ZONE_IF_IREE_ERROR(
         z0, iree_hal_semaphore_query(exec->semaphores[i],
                                      &exec->semaphore_base_values[i]));
   }
-
   iree_slim_mutex_lock(&exec->mutex);
 
   uint64_t stream_wait_value = stream->timepoint;
@@ -668,7 +665,6 @@ hrx_status_t hrx_graph_exec_launch(hrx_graph_exec_t exec, hrx_stream_t stream) {
         break;
     }
   }
-
   if (iree_status_is_ok(status) && exec->semaphore_count > 0) {
     memcpy(exec->semaphore_base_values, new_base_values,
            exec->semaphore_count * sizeof(uint64_t));

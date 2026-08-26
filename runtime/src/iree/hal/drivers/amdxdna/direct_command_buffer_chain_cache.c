@@ -416,6 +416,39 @@ static iree_status_t iree_hal_amdxdna_clone_constant_patch_list(
 
 iree_status_t iree_hal_amdxdna_chain_cmd_make_deferred_lists_owned(
     iree_allocator_t host_allocator, iree_hal_amdxdna_chain_cmd_t* cmd) {
+  const iree_host_size_t asm_inst_count =
+      cmd->src_asm_inst ? cmd->src_asm_inst->count : 0;
+  const iree_host_size_t patch_count =
+      cmd->src_patches ? cmd->src_patches->count : 0;
+  const iree_host_size_t constant_patch_count =
+      cmd->src_constant_patches ? cmd->src_constant_patches->count : 0;
+  if (cmd->owned_src_asm_inst.count == asm_inst_count &&
+      cmd->owned_src_patches.count == patch_count &&
+      cmd->owned_src_constant_patches.count == constant_patch_count) {
+    if (asm_inst_count) {
+      memmove(cmd->owned_src_asm_inst.data, cmd->src_asm_inst->data,
+              asm_inst_count * sizeof(*cmd->owned_src_asm_inst.data));
+    }
+    if (patch_count) {
+      memmove(cmd->owned_src_patches.data, cmd->src_patches->data,
+              patch_count * sizeof(*cmd->owned_src_patches.data));
+    }
+    if (constant_patch_count) {
+      memmove(cmd->owned_src_constant_patches.data,
+              cmd->src_constant_patches->data,
+              constant_patch_count *
+                  sizeof(*cmd->owned_src_constant_patches.data));
+    }
+    cmd->src_asm_inst =
+        cmd->owned_src_asm_inst.data ? &cmd->owned_src_asm_inst : NULL;
+    cmd->src_patches =
+        cmd->owned_src_patches.data ? &cmd->owned_src_patches : NULL;
+    cmd->src_constant_patches = cmd->owned_src_constant_patches.data
+                                    ? &cmd->owned_src_constant_patches
+                                    : NULL;
+    return iree_ok_status();
+  }
+
   iree_hal_amdxdna_u32_list_t new_asm_inst;
   iree_hal_amdxdna_u32_list_t new_patches;
   iree_hal_amdxdna_write32_constant_patch_list_t new_constant_patches;
@@ -434,7 +467,6 @@ iree_status_t iree_hal_amdxdna_chain_cmd_make_deferred_lists_owned(
     iree_allocator_free(host_allocator, new_asm_inst.data);
     return status;
   }
-
   iree_allocator_free(host_allocator, cmd->owned_src_asm_inst.data);
   iree_allocator_free(host_allocator, cmd->owned_src_patches.data);
   iree_hal_amdxdna_write32_constant_patch_list_deinitialize(
@@ -786,20 +818,20 @@ bool iree_hal_amdxdna_chain_command_cache_shape_matches(
 bool iree_hal_amdxdna_chain_cmd_descriptor_matches(
     const iree_hal_amdxdna_chain_cmd_t* lhs,
     const iree_hal_amdxdna_chain_cmd_t* rhs) {
-  const bool same_immutable_source =
-      lhs->src_executable_identity != 0 &&
-      lhs->src_executable_identity == rhs->src_executable_identity &&
+  const bool same_source_coordinates =
       lhs->src_entry_point == rhs->src_entry_point &&
       lhs->src_run_ordinal == rhs->src_run_ordinal;
-  const bool has_immutable_source =
-      lhs->src_executable_identity != 0 ||
-      rhs->src_executable_identity != 0;
-  return ((has_immutable_source && same_immutable_source) ||
-          (!has_immutable_source &&
-           iree_hal_amdxdna_u32_list_equal(lhs->src_asm_inst,
-                                           rhs->src_asm_inst) &&
-           iree_hal_amdxdna_u32_list_equal(lhs->src_patches,
-                                           rhs->src_patches))) &&
+  const bool same_immutable_source =
+      lhs->src_executable_identity != 0 &&
+      lhs->src_executable_identity == rhs->src_executable_identity;
+  // Executable identities are instance-local shortcuts. Graph wrappers may
+  // recreate an equivalent executable for each run, so permit cross-instance
+  // reuse only when both immutable source lists match byte-for-byte.
+  const bool same_immutable_source_contents =
+      iree_hal_amdxdna_u32_list_equal(lhs->src_asm_inst, rhs->src_asm_inst) &&
+      iree_hal_amdxdna_u32_list_equal(lhs->src_patches, rhs->src_patches);
+  return same_source_coordinates &&
+         (same_immutable_source || same_immutable_source_contents) &&
          lhs->src_use_native_partial_elf == rhs->src_use_native_partial_elf &&
          lhs->src_cu_idx.index == rhs->src_cu_idx.index &&
          iree_hal_amdxdna_u8_span_equal(
@@ -841,17 +873,11 @@ bool iree_hal_amdxdna_chain_command_cache_descriptor_matches(
 bool iree_hal_amdxdna_chain_cmd_descriptor_template_matches(
     const iree_hal_amdxdna_chain_cmd_t* lhs,
     const iree_hal_amdxdna_chain_cmd_t* rhs) {
-  const bool same_immutable_source =
-      lhs->src_executable_identity != 0 &&
-      lhs->src_executable_identity == rhs->src_executable_identity &&
-      lhs->src_entry_point == rhs->src_entry_point &&
-      lhs->src_run_ordinal == rhs->src_run_ordinal;
-  const bool has_immutable_source =
-      lhs->src_executable_identity != 0 ||
-      rhs->src_executable_identity != 0;
-  return ((has_immutable_source && same_immutable_source) ||
-          (!has_immutable_source && lhs->src_asm_inst && rhs->src_asm_inst &&
-           lhs->src_asm_inst->count == rhs->src_asm_inst->count)) &&
+  // Template reuse retains allocations and native command handles, not code
+  // contents. The rewrite path fully materializes a fresh source template
+  // whenever executable identity changes.
+  return lhs->src_asm_inst && rhs->src_asm_inst &&
+         lhs->src_asm_inst->count == rhs->src_asm_inst->count &&
          lhs->src_use_native_partial_elf == rhs->src_use_native_partial_elf &&
          lhs->src_cu_idx.index == rhs->src_cu_idx.index &&
          lhs->src_constant_count == rhs->src_constant_count &&

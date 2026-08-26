@@ -12,7 +12,6 @@
 // Create a fresh one-shot command buffer for recording.
 static hrx_status_t hrx_stream_begin_cb(hrx_stream_t stream) {
   if (stream->pending_cb) return hrx_ok_status();
-
   iree_status_t status = iree_hal_command_buffer_create(
       stream->device->hal_device, IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT,
       IREE_HAL_COMMAND_CATEGORY_TRANSFER | IREE_HAL_COMMAND_CATEGORY_DISPATCH,
@@ -117,7 +116,6 @@ hrx_status_t hrx_stream_flush(hrx_stream_t stream) {
   if (!iree_status_is_ok(status)) {
     HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(status));
   }
-
   // Build wait/signal semaphore lists.
   // Wait on current timepoint, signal next.
   uint64_t wait_value = stream->timepoint;
@@ -144,7 +142,6 @@ hrx_status_t hrx_stream_flush(hrx_stream_t stream) {
   if (!iree_status_is_ok(status)) {
     HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(status));
   }
-
   stream->timepoint = signal_value;
   iree_hal_command_buffer_release(stream->pending_cb);
   stream->pending_cb = NULL;
@@ -408,7 +405,6 @@ hrx_status_t hrx_stream_dispatch(hrx_stream_t stream,
 
   status = hrx_stream_begin_cb(stream);
   if (!hrx_status_is_ok(status)) HRX_RETURN_AND_END_ZONE(z0, status);
-
   iree_hal_buffer_ref_t* hal_bindings = NULL;
   if (binding_count > 0) {
     hal_bindings = (iree_hal_buffer_ref_t*)calloc(
@@ -460,7 +456,6 @@ hrx_status_t hrx_stream_dispatch(hrx_stream_t stream,
   if (!iree_status_is_ok(iree_status)) {
     HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(iree_status));
   }
-
   iree_status = hrx_stream_record_ordering_barrier(stream);
   if (!iree_status_is_ok(iree_status)) {
     HRX_RETURN_AND_END_ZONE(z0, hrx_status_from_iree(iree_status));

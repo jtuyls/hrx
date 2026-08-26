@@ -196,7 +196,11 @@ struct KmtApi {
   PFND3DKMT_DESTROYCONTEXT destroy_context = nullptr;
   PFND3DKMT_CREATEHWQUEUE create_hw_queue = nullptr;
   PFND3DKMT_DESTROYHWQUEUE destroy_hw_queue = nullptr;
+  PFND3DKMT_CREATESYNCHRONIZATIONOBJECT2 create_sync_object = nullptr;
+  PFND3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy_sync_object = nullptr;
   PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU wait_from_gpu = nullptr;
+  PFND3DKMT_SUBMITWAITFORSYNCOBJECTSTOHWQUEUE submit_wait_to_hw_queue = nullptr;
+  PFND3DKMT_SUBMITSIGNALSYNCOBJECTSTOHWQUEUE submit_signal_to_hw_queue = nullptr;
   PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait_from_cpu = nullptr;
   PFND3DKMT_SUBMITCOMMANDTOHWQUEUE submit_command_to_hw_queue = nullptr;
 
@@ -260,6 +264,8 @@ struct Context {
   void* progress_fence_cpu = nullptr;
   D3DGPU_VIRTUAL_ADDRESS progress_fence_gpu = 0;
   uint64_t next_fence_id = 1;
+  D3DKMT_HANDLE ordering_fence = 0;
+  uint64_t ordering_fence_value = 0;
   // Highest paging-queue fence ordered onto this hardware queue. Queue order
   // preserves that dependency for later submits, so only newly encountered
   // paging work needs another GPU wait.
@@ -520,10 +526,42 @@ bool PublishPathBCodeWrite(const KmtApi& api, const Device& device,
                            const CommandAperture& aperture, uint64_t offset,
                            uint64_t length, Error* out_error);
 
+// Publishes one logical instruction stream with the opcode-9 marker at its
+// final slot boundary. Unlike PublishPathBCodeWrite, this does not emit markers
+// for internal slot boundaries crossed by a single contiguous stream.
+bool PublishPathBCodeEndMarker(const KmtApi& api, const Device& device,
+                               Context* context,
+                               const CommandAperture& aperture, uint64_t offset,
+                               uint64_t length, Error* out_error);
+
+// Closes one logical instruction stream at its first slot boundary and waits
+// for the close to retire. Internal slots belong to the same stream and do not
+// require independent close markers.
+bool ReleasePathBCodeStream(const KmtApi& api, const Device& device,
+                            Context* context,
+                            const CommandAperture& aperture, uint64_t offset,
+                            uint64_t length, Error* out_error);
+
+// Queue-ordered form of ReleasePathBCodeStream. The caller must keep the
+// stream immutable until a later queue fence retires the close.
+bool QueuePathBCodeStreamRelease(const KmtApi& api, const Device& device,
+                                 Context* context,
+                                 const CommandAperture& aperture,
+                                 uint64_t offset, uint64_t length,
+                                 Error* out_error);
+
 bool ReleasePathBCodeRange(const KmtApi& api, const Device& device,
                            Context* context,
                            const CommandAperture& aperture, uint64_t offset,
                            uint64_t length, Error* out_error);
+
+// Queues the range-close markers without waiting on the CPU. The caller must
+// keep the range immutable until a later queue fence retires the close.
+bool QueuePathBCodeRangeRelease(const KmtApi& api, const Device& device,
+                                Context* context,
+                                const CommandAperture& aperture,
+                                uint64_t offset, uint64_t length,
+                                Error* out_error);
 
 // Path B: per-dispatch hwqueue_aie4-style submit. Reserve an 8-byte completion
 // slot, build the driver-negotiated private packet with the ERT packet inline,
@@ -548,6 +586,16 @@ bool SubmitPathB(const KmtApi& api, const Device& device, Context* context,
 bool WaitForPathBSubmits(const KmtApi& api, const Device& device,
                          Context* context, PathBPendingSubmit* pending,
                          size_t pending_count, Error* out_error);
+
+// Orders subsequent work on |waiting_context|'s HW queue after
+// |source_fence_value| on |source_context| without blocking the CPU.
+// Same-queue dependencies are already ordered and are a no-op.
+bool SignalContextOrderingFence(const KmtApi& api, Context* context,
+                                uint64_t* out_fence_value, Error* out_error);
+bool SubmitContextFenceWait(const KmtApi& api,
+                            const Context& waiting_context,
+                            const Context& source_context,
+                            uint64_t source_fence_value, Error* out_error);
 
 // Non-blocking completion poll for an issued (but not yet waited) path-B
 // submit: true once the HW progress fence has reached pending.fence_id.

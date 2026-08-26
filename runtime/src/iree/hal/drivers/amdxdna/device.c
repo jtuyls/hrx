@@ -407,6 +407,8 @@ typedef struct iree_hal_amdxdna_queue_execute_op_t {
   iree_hal_resource_set_t* binding_resource_set;
   iree_hal_semaphore_list_t signal_list;
   iree_hal_amdxdna_completion_batch_t* completion_batch;
+  iree_host_size_t native_wait_batch_count;
+  iree_hal_amdxdna_completion_batch_t** native_wait_batches;
 } iree_hal_amdxdna_queue_execute_op_t;
 
 static iree_hal_amdxdna_queue_execute_op_t*
@@ -419,6 +421,10 @@ iree_hal_amdxdna_queue_execute_op_retain(
 static void iree_hal_amdxdna_queue_execute_op_destroy(
     iree_hal_amdxdna_queue_execute_op_t* op) {
   if (!op) return;
+  for (iree_host_size_t i = 0; i < op->native_wait_batch_count; ++i) {
+    iree_hal_amdxdna_completion_batch_destroy(op->native_wait_batches[i]);
+  }
+  iree_allocator_free(op->host_allocator, op->native_wait_batches);
   iree_hal_semaphore_list_free(op->signal_list, op->host_allocator);
   iree_hal_amdxdna_completion_batch_destroy(op->completion_batch);
   iree_hal_resource_set_free(op->binding_resource_set);
@@ -476,7 +482,8 @@ static iree_status_t iree_hal_amdxdna_validate_queue_execute_binding_table(
 static iree_status_t iree_hal_amdxdna_queue_execute_op_create(
     iree_hal_amdxdna_device* device, iree_hal_command_buffer_t* command_buffer,
     iree_hal_buffer_binding_table_t binding_table,
-    iree_hal_execute_flags_t flags, iree_hal_semaphore_list_t signal_list,
+    iree_hal_execute_flags_t flags, iree_hal_semaphore_list_t wait_list,
+    iree_hal_semaphore_list_t signal_list,
     iree_hal_amdxdna_queue_execute_op_t** out_op) {
   *out_op = NULL;
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_validate_execute_flags(flags));
@@ -519,6 +526,11 @@ static iree_status_t iree_hal_amdxdna_queue_execute_op_create(
     status = iree_hal_semaphore_list_clone(&signal_list, device->host_allocator,
                                            &op->signal_list);
   }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_amdxdna_semaphore_list_retain_native_wait_batches(
+        wait_list, device->host_allocator, &op->native_wait_batch_count,
+        &op->native_wait_batches);
+  }
   if (iree_status_is_ok(status) &&
       device->native_caps.submit_completion_is_deferred &&
       command_buffer) {
@@ -539,6 +551,8 @@ static iree_status_t iree_hal_amdxdna_queue_execute_apply(
     iree_hal_buffer_binding_table_t binding_table,
     iree_hal_semaphore_list_t signal_list,
     iree_hal_amdxdna_completion_batch_t* completion_batch,
+    iree_host_size_t native_wait_batch_count,
+    iree_hal_amdxdna_completion_batch_t* const* native_wait_batches,
     bool* out_completion_submitted) {
   *out_completion_submitted = false;
   if (!command_buffer) {
@@ -566,6 +580,8 @@ static iree_status_t iree_hal_amdxdna_queue_execute_apply(
   if (iree_status_is_ok(status) && completion_batch) {
     iree_hal_amdxdna_direct_command_buffer_set_completion_batch(
         direct_command_buffer, completion_batch);
+    iree_hal_amdxdna_direct_command_buffer_set_native_wait_batches(
+        direct_command_buffer, native_wait_batch_count, native_wait_batches);
   }
   if (iree_status_is_ok(status)) {
     status = iree_hal_amdxdna_command_buffer_apply(
@@ -625,7 +641,8 @@ static iree_status_t iree_hal_amdxdna_queue_execute_op_fn(void* user_data) {
   if (iree_status_is_ok(status)) {
     status = iree_hal_amdxdna_queue_execute_apply(
         op->device, op->command_buffer, op->binding_table, op->signal_list,
-        op->completion_batch, &completion_submitted);
+        op->completion_batch, op->native_wait_batch_count,
+        op->native_wait_batches, &completion_submitted);
     if (completion_submitted) op->completion_batch = NULL;
   }
   if (!completion_cleanup_owned) {
@@ -671,32 +688,50 @@ static iree_status_t iree_hal_amdxdna_device_queue_execute(
   if (iree_status_is_ok(status)) {
     status = iree_hal_amdxdna_queue_execute_op_create(
         device, command_buffer, validated_binding_table, flags,
-        signal_semaphore_list, &op);
+        wait_semaphore_list, signal_semaphore_list, &op);
     if (iree_status_is_ok(status)) {
       bool completion_batch_owns_signal_list = false;
       iree_hal_semaphore_list_t async_signal_list = signal_semaphore_list;
       iree_hal_amdxdna_async_op_failure_fn_t failure_fn = NULL;
+      bool direct_ready_submit = false;
       if (op->completion_batch) {
+        // Classify unresolved waits before publishing this operation's signal.
+        // A timeline semaphore keeps one native producer record, and publishing
+        // the next value on the same semaphore replaces that record.
+        direct_ready_submit =
+            iree_hal_amdxdna_semaphore_list_is_ready_or_native_orderable(
+                wait_semaphore_list);
+      }
+      if (op->completion_batch) {
+        iree_hal_amdxdna_completion_batch_enable_native_issue(
+            op->completion_batch);
         iree_hal_amdxdna_completion_batch_publish_signals(op->completion_batch);
         async_signal_list = iree_hal_semaphore_list_empty();
         failure_fn = iree_hal_amdxdna_queue_execute_wait_failure_fn;
         completion_batch_owns_signal_list = true;
         signal_list_handled = true;
       }
-      bool direct_ready_submit = false;
-      if (op->completion_batch) {
-        direct_ready_submit =
-            iree_hal_amdxdna_semaphore_list_is_ready(wait_semaphore_list);
-      }
       if (direct_ready_submit) {
         status = iree_hal_amdxdna_queue_execute_issue_ready(op);
         op = NULL;
       } else {
-        status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
-            device->async_queue, wait_semaphore_list, async_signal_list,
-            iree_hal_amdxdna_queue_execute_op_fn, failure_fn,
-            iree_hal_amdxdna_queue_execute_op_release, op,
-            /*retained_resources=*/NULL, /*retained_resource_count=*/0);
+        iree_hal_semaphore_list_t issue_wait_list =
+            iree_hal_semaphore_list_empty();
+        bool issue_wait_available = false;
+        status =
+            iree_hal_amdxdna_semaphore_list_clone_native_issue_waits(
+                wait_semaphore_list, device->host_allocator,
+                &issue_wait_available, &issue_wait_list);
+        const iree_hal_semaphore_list_t enqueue_wait_list =
+            issue_wait_available ? issue_wait_list : wait_semaphore_list;
+        if (iree_status_is_ok(status)) {
+          status = iree_hal_amdxdna_async_queue_enqueue_with_failure_handler(
+              device->async_queue, enqueue_wait_list, async_signal_list,
+              iree_hal_amdxdna_queue_execute_op_fn, failure_fn,
+              iree_hal_amdxdna_queue_execute_op_release, op,
+              /*retained_resources=*/NULL, /*retained_resource_count=*/0);
+        }
+        iree_hal_semaphore_list_free(issue_wait_list, device->host_allocator);
         if (iree_status_is_ok(status)) {
           op = NULL;  // async queue owns op.
         } else if (op->completion_batch) {
