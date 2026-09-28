@@ -98,6 +98,7 @@ iree_cc_library(
     "command_buffer.h"
     "completion_queue.h"
     "context_cache.h"
+    "ctrlcode_elf.h"
     "device.h"
     "device_internal.h"
     "direct_command_buffer.h"
@@ -117,6 +118,7 @@ iree_cc_library(
     "command_buffer.c"
     "completion_queue.c"
     "context_cache.c"
+    "ctrlcode_elf.c"
     "device.c"
     "direct_command_buffer.c"
     "direct_command_buffer_chain_cache.c"
@@ -142,6 +144,7 @@ iree_cc_library(
     iree::hal::utils::device_spec_builder
     iree::hal::utils::files
     iree::hal::utils::resource_set
+    iree::schemas::amdxdna_elf_executable_def_c_fbs
     iree::schemas::amdxdna_xclbin_executable_def_c_fbs
     iree::schemas::pdi_executable_def_c_fbs
     ${_amdxdna_platform_deps}
@@ -389,6 +392,43 @@ iree_cc_test(
     iree::base::internal::flatcc::building
     iree::hal
     iree::schemas::pdi_executable_def_c_fbs
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    "driver=amdxdna"
+    "iree-build-requirement=runtime.hal.amdxdna"
+)
+endif()
+
+if(IREE_HAL_DRIVER_AMDXDNA AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Windows"))
+iree_cc_test(
+  NAME
+    ctrlcode_elf_test
+  SRCS
+    "ctrlcode_elf_test.cc"
+  DEPS
+    ::amdxdna
+    iree::base
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    "driver=amdxdna"
+    "iree-build-requirement=runtime.hal.amdxdna"
+)
+endif()
+
+if(IREE_HAL_DRIVER_AMDXDNA AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Windows"))
+iree_cc_test(
+  NAME
+    executable_elf_test
+  SRCS
+    "executable_elf_test.cc"
+  DEPS
+    ::amdxdna
+    iree::base
+    iree::base::internal::flatcc::building
+    iree::hal
+    iree::schemas::amdxdna_elf_executable_def_c_fbs
     iree::testing::gtest
     iree::testing::gtest_main
   LABELS

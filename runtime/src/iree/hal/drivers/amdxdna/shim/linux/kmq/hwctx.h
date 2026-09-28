@@ -77,7 +77,7 @@ struct hw_ctx {
          const std::string& cu_name, uint32_t n_rows, uint32_t n_cols);
   hw_ctx(device& dev, const std::vector<uint8_t>& pdi,
          const std::string& cu_name, uint32_t n_rows, uint32_t n_cols,
-         const std::map<std::string, uint32_t>& qos = {});
+         const std::map<std::string, uint32_t>& qos = {}, bool umq = false);
   ~hw_ctx();
   // no copying
   hw_ctx(const hw_ctx&) = delete;
@@ -92,8 +92,10 @@ struct hw_ctx {
   int create_ctx_on_device();
   void init_log_buf();
   void fini_log_buf() const;
-  void delete_ctx_on_device() const;
-  void delete_syncobj() const;
+  // Tear down the firmware context and clear m_handle so a second call is
+  // a no-op.
+  void delete_ctx_on_device();
+  void delete_syncobj();
 
   hw_q* get_hw_queue() const;
 

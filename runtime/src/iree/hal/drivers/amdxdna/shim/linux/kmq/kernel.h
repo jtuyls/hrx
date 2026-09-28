@@ -17,6 +17,9 @@ struct kernel {
   uint32_t m_op = 0;
   uint32_t m_arg_cnt = 0;
   uint32_t m_reg_idx = 0;
+  // START_DPU ert_dpu_data entries already written. The register map (opcode
+  // uint64) begins after these, not after a single hardcoded entry.
+  uint32_t m_dpu_count = 0;
   int m_init_errno = 0;
   std::vector<std::pair<std::string, uint64_t> > m_patching_args;
   std::vector<uint32_t> m_arg_reg_word_offsets;
@@ -30,7 +33,15 @@ struct kernel {
   void set_cu_idx(cuidx_t cu_idx);
   bo* get_exec_buf_bo() const;
 
-  int add_ctrl_bo(bo& bo_ctrl);
+  // `instruction_size` is the CERT-visible byte count (ctrlcode words). It
+  // must not use the GEM BO size: GET_BO_INFO can round the allocation up,
+  // and extra pages hang AIE4 START_DPU.
+  int add_ctrl_bo(bo& bo_ctrl, size_t instruction_size);
+  // Slices of `bo_ctrl`. count == 1 is chained=0 (KMD fill_direct_pkt).
+  // count > 1 is XRT's per-column countdown (KMD fill_indirect_pkt).
+  int add_dpu_columns(bo& bo_ctrl, size_t instruction_size,
+                      const uint16_t* uc_index, const uint32_t* byte_offset,
+                      const uint32_t* byte_size, uint32_t column_count);
   int add_arg_32(uint32_t val);
   int add_arg_64(uint64_t val);
   int update_arg_64(uint32_t arg_index, uint64_t val);

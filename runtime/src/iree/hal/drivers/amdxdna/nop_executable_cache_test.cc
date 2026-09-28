@@ -135,6 +135,8 @@ static iree_status_t MakeMinimalExecutable(
 TEST(NopExecutableCacheTest, CanPrepareAmdxdnaFormats) {
   EXPECT_TRUE(iree_hal_amdxdna_executable_format_supported(
       iree_make_cstring_view("amdxdna-pdi-fb")));
+  EXPECT_TRUE(iree_hal_amdxdna_executable_format_supported(
+      iree_make_cstring_view("amdxdna-elf-fb")));
   EXPECT_FALSE(iree_hal_amdxdna_executable_format_supported(
       iree_make_cstring_view("FOO?")));
 }

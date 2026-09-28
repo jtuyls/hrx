@@ -19,6 +19,7 @@ iree_cc_library(
     "bo_flags.h"
     "device.h"
     "fence.h"
+    "host_queue.h"
     "hwctx.h"
     "hwq.h"
     "kernel.h"

@@ -53,6 +53,7 @@ typedef enum iree_hal_amdxdna_native_c_command_opcode_t {
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU = 1,
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF = 2,
   IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN = 3,
+  IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU = 4,
 } iree_hal_amdxdna_native_c_command_opcode_t;
 
 typedef enum iree_hal_amdxdna_native_c_power_mode_t {
@@ -66,11 +67,14 @@ typedef enum iree_hal_amdxdna_native_c_power_mode_t {
 typedef enum iree_hal_amdxdna_native_c_context_image_type_t {
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_PDI = 0,
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN = 1,
+  // AIE4 START_DPU: create-context needs HSA/log BOs only. No PDI or xclbin.
+  IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_NONE = 2,
 } iree_hal_amdxdna_native_c_context_image_type_t;
 
 enum iree_hal_amdxdna_native_c_context_image_model_bits_t {
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI = 1u << 0,
   IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_XCLBIN = 1u << 1,
+  IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_NONE = 1u << 2,
 };
 
 enum iree_hal_amdxdna_native_c_dispatch_model_bits_t {
@@ -78,6 +82,7 @@ enum iree_hal_amdxdna_native_c_dispatch_model_bits_t {
   IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU = 1u << 1,
   IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF = 1u << 2,
   IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN = 1u << 3,
+  IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_DPU = 1u << 4,
 };
 
 enum iree_hal_amdxdna_native_c_completion_model_bits_t {
@@ -226,6 +231,9 @@ typedef struct iree_hal_amdxdna_native_c_context_image_t {
   iree_const_byte_span_t pdi;
   iree_const_byte_span_t xclbin;
   iree_string_view_t kernel_name;
+  // AIE4 empty-image contexts: column count from the ELF configuration note.
+  // 0 means "unset" (native layer uses 1 column).
+  uint32_t partition_cols;
 } iree_hal_amdxdna_native_c_context_image_t;
 
 iree_status_t iree_hal_amdxdna_native_device_c_resolve_options(
@@ -341,6 +349,25 @@ iree_status_t iree_hal_amdxdna_native_command_c_add_control_buffer(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_buffer_t* control_buffer,
     iree_device_size_t control_buffer_size);
+
+// One occupied column of a packed START_DPU instruction BO. Same layout as
+// iree_hal_amdxdna_ctrlcode_dpu_slice_t.
+typedef struct iree_hal_amdxdna_native_c_dpu_column_t {
+  uint16_t uc_index;
+  uint16_t reserved;
+  uint32_t byte_offset;
+  uint32_t byte_size;
+} iree_hal_amdxdna_native_c_dpu_column_t;
+
+// Emit one ert_dpu_data per occupied column (XRT fill_ert_aie_gen2_plus).
+// column_count > 1 sets chained so KMD uses fill_indirect_pkt. The opcode
+// uint64 is still add_arg_64 and lands after these entries.
+iree_status_t iree_hal_amdxdna_native_command_c_add_start_dpu_columns(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size,
+    const iree_hal_amdxdna_native_c_dpu_column_t* columns,
+    iree_host_size_t column_count);
 
 iree_status_t iree_hal_amdxdna_native_command_c_add_arg_32(
     iree_hal_amdxdna_native_command_t* command, uint32_t value);

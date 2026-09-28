@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <x86intrin.h>
 
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_set>
@@ -53,10 +55,60 @@ int map_parent_range(size_t size, void** out_ptr) {
   return 0;
 }
 
+int map_drm_bo(const shim_xdna::pdev& dev, void* addr, size_t size, int prot,
+               int flags, uint64_t offset, void** out_ptr);
+void unmap_drm_bo(const shim_xdna::pdev& dev, void* addr, size_t size);
+
+int map_drm_bo(const shim_xdna::pdev& dev, size_t size, int prot,
+               uint64_t offset, void** out_ptr, int* out_locked) {
+  if (out_locked) *out_locked = 0;
+  // xdna-driver src/shim/buffer.cpp mmap_ptr: reserve an anonymous VA, then
+  // MAP_FIXED the GEM mapping into it (MAP_SHARED|MAP_LOCKED). That is the
+  // address GET_BO_INFO returns as xdna_addr under PASID, and what XRT
+  // patch57_aie4 consumes as `paddr`. Do not use MAP_32BIT — it packs the
+  // 2GB DDR window into 0xc0xxxxxx (PCI hole).
+  long page = sysconf(_SC_PAGESIZE);
+  size_t reserve_sz = size;
+  if (page > 0) {
+    reserve_sz = (size + (size_t)page - 1) & ~((size_t)page - 1);
+  }
+  void* reserve = ::mmap(nullptr, reserve_sz, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (reserve != MAP_FAILED) {
+    int err = map_drm_bo(dev, reserve, size, prot,
+                         MAP_SHARED | MAP_LOCKED | MAP_FIXED, offset, out_ptr);
+    if (!err && *out_ptr == reserve) {
+      if (out_locked) *out_locked = 1;
+      return 0;
+    }
+    if (!err && *out_ptr && *out_ptr != reserve) {
+      unmap_drm_bo(dev, *out_ptr, size);
+    }
+    err = map_drm_bo(dev, reserve, size, prot, MAP_SHARED | MAP_FIXED, offset,
+                     out_ptr);
+    if (!err && *out_ptr == reserve) {
+      return 0;
+    }
+    if (!err && *out_ptr && *out_ptr != reserve) {
+      unmap_drm_bo(dev, *out_ptr, size);
+    }
+    munmap(reserve, reserve_sz);
+  }
+  int err = dev.try_mmap(nullptr, size, prot, MAP_SHARED | MAP_LOCKED, offset,
+                         out_ptr);
+  if (!err) {
+    if (out_locked) *out_locked = 1;
+    return 0;
+  }
+  if (err == ENOMEM || err == EAGAIN || err == EPERM || err == EINVAL) {
+    err = dev.try_mmap(nullptr, size, prot, MAP_SHARED, offset, out_ptr);
+  }
+  return err;
+}
+
 int map_drm_bo(const shim_xdna::pdev& dev, size_t size, int prot,
                uint64_t offset, void** out_ptr) {
-  return dev.try_mmap(nullptr, size, prot, MAP_SHARED | MAP_LOCKED, offset,
-                      out_ptr);
+  return map_drm_bo(dev, size, prot, offset, out_ptr, nullptr);
 }
 
 int map_drm_bo(const shim_xdna::pdev& dev, void* addr, size_t size, int prot,
@@ -164,10 +216,15 @@ inline int clflush_data(const void* base, size_t offset, size_t len) {
   const char* cur = (const char*)base;
   cur += offset;
   uintptr_t lastline = (uintptr_t)(cur + len - 1) | (cacheline_size - 1);
+  // CLFLUSH is not ordered vs younger loads/stores. The fences apply to every
+  // reused exec BO, AIE2P included. On AIE4, without them CERT can SVA-read
+  // the previous COMPLETED header (opcode 0) and never start the next job.
+  _mm_mfence();
   do {
     _mm_clflush(cur);
     cur += cacheline_size;
   } while (cur <= (const char*)lastline);
+  _mm_mfence();
   return 0;
 }
 
@@ -238,25 +295,37 @@ int bo::mmap_bo(size_t align) {
     return 0;
   }
 
+  int locked = 0;
+  int err = 0;
   if (a == 0) {
-    return map_drm_bo(m_pdev, m_aligned_size, PROT_READ | PROT_WRITE,
-                      m_drm_bo->m_map_offset, &m_aligned);
+    err = map_drm_bo(m_pdev, m_aligned_size, PROT_READ | PROT_WRITE,
+                     m_drm_bo->m_map_offset, &m_aligned, &locked);
+  } else {
+    /*
+     * Handle special alignment
+     * The first mmap() is just for reserved a range in user vritual address
+     * space. The second mmap() uses an aligned addr as the first argument in mmap
+     * syscall.
+     */
+    m_parent_size = align * 2 - 1;
+    err = map_parent_range(m_parent_size, &m_parent);
+    if (err) return err;
+    void* aligned = nullptr;
+    err = addr_align(m_parent, align, &aligned);
+    if (err) return err;
+    err = map_drm_bo(m_pdev, aligned, m_aligned_size, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_FIXED, m_drm_bo->m_map_offset, &m_aligned);
   }
-
-  /*
-   * Handle special alignment
-   * The first mmap() is just for reserved a range in user vritual address
-   * space. The second mmap() uses an aligned addr as the first argument in mmap
-   * syscall.
-   */
-  m_parent_size = align * 2 - 1;
-  int err = map_parent_range(m_parent_size, &m_parent);
   if (err) return err;
-  void* aligned = nullptr;
-  err = addr_align(m_parent, align, &aligned);
-  if (err) return err;
-  return map_drm_bo(m_pdev, aligned, m_aligned_size, PROT_READ | PROT_WRITE,
-                    MAP_SHARED | MAP_FIXED, m_drm_bo->m_map_offset, &m_aligned);
+  if (!locked && m_aligned) {
+    if (mlock(m_aligned, m_aligned_size) == 0) locked = 1;
+  }
+  amdxdna_drm_get_bo_info after = {};
+  if (get_drm_bo_info(m_pdev, m_drm_bo->m_handle, &after) == 0) {
+    m_drm_bo->m_xdna_addr = after.xdna_addr;
+    m_drm_bo->m_vaddr = after.vaddr;
+  }
+  return 0;
 }
 
 void bo::munmap_bo() {
@@ -507,13 +576,33 @@ int bo::bind_at(size_t pos, const bo& boh, size_t offset, size_t size) {
   if (offset > boh.m_aligned_size || size > boh.m_aligned_size - offset)
     return EINVAL;
 
-  if (!pos) m_args_map.clear();
+  // AIE2P reuses exec BOs and treats pos==0 as "new arg table". Keep keys at
+  // or above kExecBoInstructionArgKey so AIE4's instruction-BO reservation
+  // survives the first data-arg bind_at(0).
+  if (!pos) {
+    for (auto it = m_args_map.begin(); it != m_args_map.end();) {
+      if (it->first < kExecBoInstructionArgKey) {
+        it = m_args_map.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
 
-  if (boh.get_type() != AMDXDNA_BO_CMD) {
-    auto h = boh.get_drm_bo_handle();
+  // AIE2P CMD binds (control code, chain children) contribute only their
+  // nested arg handles. Pinning the CMD BO itself changes that exec arg
+  // list. AIE4 instruction BOs are also CMD, but they are reserved at
+  // kExecBoInstructionArgKey; XRT returns {self} for those, and leaving
+  // them out of EXEC_CMD drops HMM residency across a reused hwctx.
+  auto h = boh.get_drm_bo_handle();
+  const bool pin_self = boh.get_type() != AMDXDNA_BO_CMD ||
+                        pos >= kExecBoInstructionArgKey;
+  if (pin_self) {
     m_args_map[pos] = h;
     SHIM_DEBUG("Added arg BO %d to cmd BO %d", h, get_drm_bo_handle());
-  } else {
+  }
+
+  if (boh.get_type() == AMDXDNA_BO_CMD) {
     const size_t max_args_order = 6;
     const size_t max_args = 1 << max_args_order;
     size_t key = pos << max_args_order;
@@ -521,13 +610,9 @@ int bo::bind_at(size_t pos, const bo& boh, size_t offset, size_t size) {
     uint32_t arg_cnt = 0;
     int err = boh.get_arg_bo_handles(hs, max_args, &arg_cnt);
     if (err) return err;
-    std::string bohs;
-    for (int i = 0; i < arg_cnt; i++) {
+    for (uint32_t i = 0; i < arg_cnt; i++) {
       m_args_map[key + i] = hs[i];
-      bohs += std::to_string(hs[i]) + " ";
     }
-    SHIM_DEBUG("Added arg BO %s to cmd BO %d", bohs.c_str(),
-               get_drm_bo_handle());
   }
   return 0;
 }

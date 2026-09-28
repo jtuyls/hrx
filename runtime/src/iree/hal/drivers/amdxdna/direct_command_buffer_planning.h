@@ -89,6 +89,20 @@ bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
                                         size_t patch_count,
                                         const uint64_t* args, size_t arg_count);
 
+// Sentinel `arg_idx` for AIE4 `control-code-*` relocs: patch with the
+// instruction-buffer device address instead of a dispatch binding.
+#define IREE_HAL_AMDXDNA_PATCH_ARG_CONTROL_CODE UINT32_MAX
+
+// AIE4 (npu / MDS) BD patch: same triples as apply_patch_table, but the address
+// is written as XRT patch57_aie4 (low 32 in bd[1], high 25 in bd[0]). The 2GB
+// DDR window is added here. `control_code_addr` is the instruction BO device
+// address used when a triple's arg_idx is
+// IREE_HAL_AMDXDNA_PATCH_ARG_CONTROL_CODE (0 if unused).
+bool iree_hal_amdxdna_apply_patch_table_aie4(
+    uint32_t* ctrl_code, size_t ctrl_words, const uint32_t* patches,
+    size_t patch_count, const uint64_t* args, size_t arg_count,
+    uint64_t control_code_addr);
+
 // Rewrites only dynamic words in `ctrl_code` using immutable `template_code` as
 // the source of truth. This is intended for cached command-chain control-code
 // BOs: constants and buffer-descriptor addresses may change per dispatch, but

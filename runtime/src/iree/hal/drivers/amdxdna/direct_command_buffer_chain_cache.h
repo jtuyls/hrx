@@ -77,6 +77,11 @@ typedef struct iree_hal_amdxdna_chain_cmd_t {
   iree_host_size_t src_constant_count;
   iree_hal_amdxdna_native_c_cu_index_t src_cu_idx;
   bool src_use_native_partial_elf;
+  // Executable-owned occupied-column slices of src_asm_inst. Not copied.
+  // Valid while the recording executable is alive (flush builds the packet
+  // before that ref is dropped).
+  const iree_hal_amdxdna_ctrlcode_dpu_slice_t* dpu_slices;
+  iree_host_size_t dpu_slice_count;
   bool built;
   // False when metadata was refreshed for a device-visible hit but the native
   // child command still holds older bound-buffer pointers. Safe until the next

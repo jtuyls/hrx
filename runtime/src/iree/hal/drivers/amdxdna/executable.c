@@ -10,9 +10,12 @@
 #include "iree/base/api.h"
 #include "iree/base/internal/flatcc/parsing.h"
 #include "iree/hal/drivers/amdxdna/context_cache.h"
+#include "iree/hal/drivers/amdxdna/ctrlcode_elf.h"
 #include "iree/hal/drivers/amdxdna/executable_internal.h"
 #include "iree/hal/drivers/amdxdna/util.h"
 #include "iree/hal/drivers/amdxdna/xclbin_util.h"
+#include "iree/schemas/amdxdna_elf_executable_def_reader.h"
+#include "iree/schemas/amdxdna_elf_executable_def_verifier.h"
 #include "iree/schemas/amdxdna_xclbin_executable_def_reader.h"
 #include "iree/schemas/amdxdna_xclbin_executable_def_verifier.h"
 #include "iree/schemas/pdi_executable_def_reader.h"
@@ -28,6 +31,8 @@ static const iree_string_view_t kAmdxdnaXclbinExecutableFormat = {
     "amdxdna-xclbin-fb", 17};
 static const iree_string_view_t kAmdxdnaXclbinExecutableCompatFormat = {
     "amdaie-amdxdna-xclbin-fb", 24};
+static const iree_string_view_t kAmdxdnaElfExecutableFormat = {
+    "amdxdna-elf-fb", 14};
 
 iree_string_view_t iree_hal_amdxdna_executable_format(void) {
   return kAmdxdnaPdiExecutableFormat;
@@ -40,7 +45,8 @@ bool iree_hal_amdxdna_executable_format_supported(
          iree_string_view_equal(executable_format,
                                 kAmdxdnaXclbinExecutableFormat) ||
          iree_string_view_equal(executable_format,
-                                kAmdxdnaXclbinExecutableCompatFormat);
+                                kAmdxdnaXclbinExecutableCompatFormat) ||
+         iree_string_view_equal(executable_format, kAmdxdnaElfExecutableFormat);
 }
 
 iree_hal_amdxdna_executable* iree_hal_amdxdna_executable_cast(
@@ -81,7 +87,8 @@ iree_status_t iree_hal_amdxdna_executable_preload_contexts(
         device,
         iree_make_const_byte_span(params->pdi.data, params->pdi.count),
         iree_make_const_byte_span(params->xclbin.data, params->xclbin.count),
-        params->kernel_name, &context_ref, &context_lease);
+        params->kernel_name, params->partition_cols, &context_ref,
+        &context_lease);
     iree_hal_amdxdna_native_c_cu_index_t cu_idx;
     memset(&cu_idx, 0, sizeof(cu_idx));
     if (iree_status_is_ok(status)) {
@@ -192,6 +199,9 @@ static void iree_hal_amdxdna_kernel_params_deinitialize(
   iree_allocator_free(host_allocator, params->constant_patch_runlist);
   params->constant_patch_runlist = NULL;
   params->constant_patch_runlist_count = 0;
+  iree_allocator_free(host_allocator, params->dpu_slices);
+  params->dpu_slices = NULL;
+  params->dpu_slice_count = 0;
   iree_allocator_free(host_allocator, (void*)params->kernel_name.data);
   params->kernel_name = iree_string_view_empty();
   iree_hal_amdxdna_context_cache_lease_release(params->cached_context_lease);
@@ -513,6 +523,82 @@ static iree_status_t iree_hal_amdxdna_xclbin_flatbuffer_verify(
   return iree_ok_status();
 }
 
+static iree_status_t iree_hal_amdxdna_elf_flatbuffer_verify(
+    iree_const_byte_span_t flatbuffer_data) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  if (!flatbuffer_data.data || flatbuffer_data.data_length < 16) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "flatbuffer data is not present or less than 16 bytes (%zu total)",
+        flatbuffer_data.data_length);
+  }
+
+  int verify_ret = iree_hal_amdxdna_elf_ExecutableDef_verify_as_root(
+      flatbuffer_data.data, flatbuffer_data.data_length);
+  if (verify_ret != flatcc_verify_ok) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "flatbuffer verification failed: %s",
+                            flatcc_verify_error_string(verify_ret));
+  }
+
+  iree_hal_amdxdna_elf_ExecutableDef_table_t executable_def =
+      iree_hal_amdxdna_elf_ExecutableDef_as_root(flatbuffer_data.data);
+  iree_hal_amdxdna_elf_ModuleDef_vec_t modules =
+      iree_hal_amdxdna_elf_ExecutableDef_modules_get(executable_def);
+  size_t module_count = iree_hal_amdxdna_elf_ModuleDef_vec_len(modules);
+  if (module_count == 0) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "no ELF module present");
+  }
+  for (size_t i = 0; i < module_count; ++i) {
+    iree_hal_amdxdna_elf_ModuleDef_table_t module =
+        iree_hal_amdxdna_elf_ModuleDef_vec_at(modules, i);
+    flatbuffers_uint8_vec_t bytes =
+        iree_hal_amdxdna_elf_ModuleDef_elf_get(module);
+    if (!bytes || flatbuffers_uint8_vec_len(bytes) == 0) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "executable ELF module %zu is empty", i);
+    }
+  }
+
+  iree_hal_amdxdna_elf_ExportDef_vec_t exports =
+      iree_hal_amdxdna_elf_ExecutableDef_exports_get(executable_def);
+  size_t export_count = iree_hal_amdxdna_elf_ExportDef_vec_len(exports);
+  if (export_count == 0) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "no exports found in the executable");
+  }
+  for (size_t i = 0; i < export_count; ++i) {
+    iree_hal_amdxdna_elf_ExportDef_table_t export_def =
+        iree_hal_amdxdna_elf_ExportDef_vec_at(exports, i);
+    flatbuffers_string_t name =
+        iree_hal_amdxdna_elf_ExportDef_name_get(export_def);
+    if (!name || flatbuffers_string_len(name) == 0) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "executable export %zu has no name", i);
+    }
+    uint32_t module_ordinal =
+        iree_hal_amdxdna_elf_ExportDef_module_ordinal_get(export_def);
+    if ((size_t)module_ordinal >= module_count) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "export %zu module ordinal %u out of range; executable only contains "
+          "%zu modules",
+          i, module_ordinal, module_count);
+    }
+  }
+
+  IREE_TRACE_ZONE_END(z0);
+  return iree_ok_status();
+}
+
 iree_status_t iree_hal_amdxdna_native_executable_infer_format(
     iree_const_byte_span_t executable_data,
     iree_host_size_t executable_format_capacity, char* executable_format,
@@ -523,8 +609,14 @@ iree_status_t iree_hal_amdxdna_native_executable_infer_format(
   if (!iree_status_is_ok(status)) {
     iree_status_free(status);
     status = iree_hal_amdxdna_xclbin_flatbuffer_verify(executable_data);
-    if (!iree_status_is_ok(status)) return status;
-    format = kAmdxdnaXclbinExecutableFormat;
+    if (!iree_status_is_ok(status)) {
+      iree_status_free(status);
+      status = iree_hal_amdxdna_elf_flatbuffer_verify(executable_data);
+      if (!iree_status_is_ok(status)) return status;
+      format = kAmdxdnaElfExecutableFormat;
+    } else {
+      format = kAmdxdnaXclbinExecutableFormat;
+    }
   }
 
   if (format.size >= executable_format_capacity) {
@@ -839,6 +931,100 @@ static iree_status_t iree_hal_amdxdna_xclbin_executable_create(
   return iree_ok_status();
 }
 
+static iree_status_t iree_hal_amdxdna_elf_executable_create(
+    iree_const_byte_span_t executable_data, iree_allocator_t host_allocator,
+    iree_hal_executable_t** out_executable) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  *out_executable = NULL;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_elf_flatbuffer_verify(executable_data));
+
+  iree_hal_amdxdna_elf_ExecutableDef_table_t executable_def =
+      iree_hal_amdxdna_elf_ExecutableDef_as_root(executable_data.data);
+  iree_hal_amdxdna_elf_ModuleDef_vec_t modules_vec =
+      iree_hal_amdxdna_elf_ExecutableDef_modules_get(executable_def);
+  iree_hal_amdxdna_elf_ExportDef_vec_t exports_vec =
+      iree_hal_amdxdna_elf_ExecutableDef_exports_get(executable_def);
+  iree_host_size_t export_count =
+      iree_hal_amdxdna_elf_ExportDef_vec_len(exports_vec);
+
+  iree_hal_amdxdna_executable* executable = NULL;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_amdxdna_executable_allocate(host_allocator, export_count,
+                                               &executable));
+
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t export_ordinal = 0; export_ordinal < export_count;
+       ++export_ordinal) {
+    iree_hal_amdxdna_elf_ExportDef_table_t export_def =
+        iree_hal_amdxdna_elf_ExportDef_vec_at(exports_vec, export_ordinal);
+    iree_hal_amdxdna_kernel_params_t* params =
+        &executable->entry_points[export_ordinal];
+    flatbuffers_string_t name =
+        iree_hal_amdxdna_elf_ExportDef_name_get(export_def);
+    status = iree_hal_amdxdna_copy_string_view(
+        host_allocator,
+        iree_make_string_view(name, flatbuffers_string_len(name)),
+        &params->kernel_name);
+    if (!iree_status_is_ok(status)) break;
+
+    uint32_t module_ordinal =
+        iree_hal_amdxdna_elf_ExportDef_module_ordinal_get(export_def);
+    iree_hal_amdxdna_elf_ModuleDef_table_t module_def =
+        iree_hal_amdxdna_elf_ModuleDef_vec_at(modules_vec, module_ordinal);
+    flatbuffers_uint8_vec_t elf_fb =
+        iree_hal_amdxdna_elf_ModuleDef_elf_get(module_def);
+    iree_hal_amdxdna_ctrlcode_elf_t parsed_elf;
+    memset(&parsed_elf, 0, sizeof(parsed_elf));
+    status = iree_hal_amdxdna_ctrlcode_elf_parse(
+        iree_make_const_byte_span(elf_fb, flatbuffers_uint8_vec_len(elf_fb)),
+        host_allocator, &parsed_elf);
+    if (!iree_status_is_ok(status)) break;
+    if (parsed_elf.ctrl_word_count == 0) {
+      iree_hal_amdxdna_ctrlcode_elf_deinitialize(host_allocator, &parsed_elf);
+      status = iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "AELF export %" PRIhsz " has no control code",
+                                export_ordinal);
+      break;
+    }
+
+    status = iree_hal_amdxdna_kernel_params_allocate_runlists(host_allocator,
+                                                              params, 1);
+    if (!iree_status_is_ok(status)) {
+      iree_hal_amdxdna_ctrlcode_elf_deinitialize(host_allocator, &parsed_elf);
+      break;
+    }
+    params->asm_inst_runlist[0].data = parsed_elf.ctrl_words;
+    params->asm_inst_runlist[0].count = parsed_elf.ctrl_word_count;
+    parsed_elf.ctrl_words = NULL;
+    parsed_elf.ctrl_word_count = 0;
+    params->patch_runlist[0].data = parsed_elf.patches;
+    params->patch_runlist[0].count = parsed_elf.patch_count;
+    parsed_elf.patches = NULL;
+    parsed_elf.patch_count = 0;
+    params->n_pdi_loads = 0;
+    params->n_reconfigure_runs = 0;
+    params->partition_cols = parsed_elf.partition_cols;
+    params->dpu_slices = parsed_elf.dpu_slices;
+    params->dpu_slice_count = parsed_elf.dpu_slice_count;
+    parsed_elf.dpu_slices = NULL;
+    parsed_elf.dpu_slice_count = 0;
+    iree_hal_amdxdna_ctrlcode_elf_deinitialize(host_allocator, &parsed_elf);
+  }
+
+  if (!iree_status_is_ok(status)) {
+    iree_hal_amdxdna_executable_deinitialize(executable);
+    iree_allocator_free(host_allocator, executable);
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  *out_executable = (iree_hal_executable_t*)executable;
+  IREE_TRACE_ZONE_END(z0);
+  return iree_ok_status();
+}
+
 iree_status_t iree_hal_amdxdna_native_executable_create(
     iree_hal_amdxdna_native_device_t* native_device,
     const iree_hal_executable_load_params_t* load_params,
@@ -862,6 +1048,14 @@ iree_status_t iree_hal_amdxdna_native_executable_create(
         load_params->executable_data, host_allocator, out_executable);
   }
   iree_status_free(xclbin_status);
+
+  iree_status_t elf_status =
+      iree_hal_amdxdna_elf_flatbuffer_verify(load_params->executable_data);
+  if (iree_status_is_ok(elf_status)) {
+    return iree_hal_amdxdna_elf_executable_create(
+        load_params->executable_data, host_allocator, out_executable);
+  }
+  iree_status_free(elf_status);
   return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                           "unrecognized amdxdna executable image");
 }

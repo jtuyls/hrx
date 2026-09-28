@@ -21,6 +21,7 @@ extern "C" {
 #define AMDXDNA_INVALID_CTX_HANDLE 0
 #define AMDXDNA_INVALID_BO_HANDLE 0
 #define AMDXDNA_INVALID_FENCE_HANDLE 0
+#define AMDXDNA_INVALID_DOORBELL_OFFSET (~0U)
 
 /*
  * The interface can grow/extend over time.
@@ -108,7 +109,7 @@ struct amdxdna_qos_info {
  * @handle: Returned hardware context handle.
  * @syncobj_handle: The drm timeline syncobj handle for command completion
  * notification.
- * @pad: Structure padding.
+ * @pad: Structure padding. Present on older AIE2P DKMS; ignored by 2.26+.
  */
 struct amdxdna_drm_create_hwctx {
   __u64 ext;
@@ -622,8 +623,12 @@ struct amdxdna_drm_set_state {
 #define DRM_IOCTL_AMDXDNA_EXEC_CMD \
   DRM_IOWR(DRM_COMMAND_BASE + DRM_AMDXDNA_EXEC_CMD, struct amdxdna_drm_exec_cmd)
 
+// Older AIE2P DKMS encoded WAIT_CMD as IOWR. xdna-driver 2.26 uses IOW. The
+// shim tries IOWR first and falls back to IOW on ENOTTY.
 #define DRM_IOCTL_AMDXDNA_WAIT_CMD \
   DRM_IOWR(DRM_COMMAND_BASE + DRM_AMDXDNA_WAIT_CMD, struct amdxdna_drm_wait_cmd)
+#define DRM_IOCTL_AMDXDNA_WAIT_CMD_WRITEONLY \
+  DRM_IOW(DRM_COMMAND_BASE + DRM_AMDXDNA_WAIT_CMD, struct amdxdna_drm_wait_cmd)
 
 #define DRM_IOCTL_AMDXDNA_GET_INFO \
   DRM_IOWR(DRM_COMMAND_BASE + DRM_AMDXDNA_GET_INFO, struct amdxdna_drm_get_info)

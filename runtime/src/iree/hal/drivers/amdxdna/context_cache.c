@@ -29,6 +29,7 @@ typedef struct iree_hal_amdxdna_context_cache_entry_t {
   iree_byte_span_t pdi;
   iree_byte_span_t xclbin;
   iree_string_view_t kernel_name;
+  uint32_t partition_cols;
   iree_hal_amdxdna_native_context_ref_t* context_ref;
   iree_host_size_t lease_count;
   iree_hal_amdxdna_context_cache_lease_t* leases;
@@ -118,7 +119,8 @@ bool iree_hal_amdxdna_context_cache_key_equal(
     const iree_hal_amdxdna_context_cache_key_t* rhs) {
   return iree_hal_amdxdna_byte_spans_equal(lhs->pdi, rhs->pdi) &&
          iree_hal_amdxdna_byte_spans_equal(lhs->xclbin, rhs->xclbin) &&
-         iree_string_view_equal(lhs->kernel_name, rhs->kernel_name);
+         iree_string_view_equal(lhs->kernel_name, rhs->kernel_name) &&
+         lhs->partition_cols == rhs->partition_cols;
 }
 
 static iree_status_t iree_hal_amdxdna_context_cache_copy_bytes(
@@ -326,12 +328,16 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
     iree_hal_amdxdna_native_device_t* native_device,
     uint32_t context_image_models, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref,
     iree_hal_amdxdna_context_cache_lease_t** out_lease) {
   IREE_ASSERT_ARGUMENT(context_cache);
   if (out_context_ref) *out_context_ref = NULL;
   if (out_lease) *out_lease = NULL;
-  if (pdi.data_length == 0 && xclbin.data_length == 0) {
+  const bool allow_empty_context =
+      (context_image_models &
+       IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_NONE) != 0;
+  if (pdi.data_length == 0 && xclbin.data_length == 0 && !allow_empty_context) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "control-packet context cache requires context "
                             "PDI or xclbin data");
@@ -354,6 +360,8 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
       xclbin.data_length != 0 &&
       (context_image_models &
        IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_XCLBIN);
+  const bool use_empty_context =
+      pdi.data_length == 0 && xclbin.data_length == 0 && allow_empty_context;
   iree_const_byte_span_t key_pdi = iree_const_byte_span_empty();
   iree_const_byte_span_t key_xclbin = iree_const_byte_span_empty();
   iree_string_view_t key_kernel_name = iree_string_view_empty();
@@ -362,7 +370,12 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
   context_image.pdi = pdi;
   context_image.xclbin = xclbin;
   context_image.kernel_name = kernel_name;
-  if (use_xclbin_context) {
+  context_image.partition_cols = partition_cols;
+  if (use_empty_context) {
+    context_image.type = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_NONE;
+    context_image.xclbin = iree_const_byte_span_empty();
+    context_image.pdi = iree_const_byte_span_empty();
+  } else if (use_xclbin_context) {
     key_xclbin = xclbin;
     context_image.type = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN;
   } else {
@@ -382,6 +395,7 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
       /*.pdi=*/key_pdi,
       /*.xclbin=*/key_xclbin,
       /*.kernel_name=*/key_kernel_name,
+      /*.partition_cols=*/partition_cols,
   };
 
   iree_slim_mutex_lock(&context_cache->mutex);
@@ -395,6 +409,7 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
         iree_make_const_byte_span(entry->xclbin.data,
                                   entry->xclbin.data_length),
         /*.kernel_name=*/entry->kernel_name,
+        /*.partition_cols=*/entry->partition_cols,
     };
     if (iree_hal_amdxdna_context_cache_key_equal(&entry_key, &request_key)) {
       // Cache hit: promote to MRU (front) so the LRU eviction order stays
@@ -513,6 +528,7 @@ static iree_status_t iree_hal_amdxdna_context_cache_get_or_create_internal(
   }
   if (iree_status_is_ok(status)) {
     entry->context_ref = context_ref;
+    entry->partition_cols = partition_cols;
     entry->next = context_cache->head;
     context_cache->head = entry;
     context_cache->count++;
@@ -557,11 +573,12 @@ iree_status_t iree_hal_amdxdna_context_cache_get_or_create(
     iree_hal_amdxdna_native_device_t* native_device,
     uint32_t context_image_models, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref) {
   IREE_ASSERT_ARGUMENT(out_context_ref);
   return iree_hal_amdxdna_context_cache_get_or_create_internal(
       context_cache, native_device, context_image_models, pdi, xclbin,
-      kernel_name, out_context_ref, NULL);
+      kernel_name, partition_cols, out_context_ref, NULL);
 }
 
 iree_status_t iree_hal_amdxdna_context_cache_pin(
@@ -569,12 +586,13 @@ iree_status_t iree_hal_amdxdna_context_cache_pin(
     iree_hal_amdxdna_native_device_t* native_device,
     uint32_t context_image_models, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref,
     iree_hal_amdxdna_context_cache_lease_t** out_lease) {
   IREE_ASSERT_ARGUMENT(out_lease);
   return iree_hal_amdxdna_context_cache_get_or_create_internal(
       context_cache, native_device, context_image_models, pdi, xclbin,
-      kernel_name, out_context_ref, out_lease);
+      kernel_name, partition_cols, out_context_ref, out_lease);
 }
 
 iree_hal_amdxdna_native_context_ref_t*
@@ -618,22 +636,24 @@ void iree_hal_amdxdna_context_cache_lease_release(
 iree_status_t iree_hal_amdxdna_device_get_or_create_context(
     iree_hal_amdxdna_device* device, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref) {
   IREE_ASSERT_ARGUMENT(device);
   return iree_hal_amdxdna_context_cache_get_or_create(
       device->context_cache, device->native_device,
       device->native_caps.context_image_models, pdi, xclbin, kernel_name,
-      out_context_ref);
+      partition_cols, out_context_ref);
 }
 
 iree_status_t iree_hal_amdxdna_device_pin_context(
     iree_hal_amdxdna_device* device, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref,
     iree_hal_amdxdna_context_cache_lease_t** out_lease) {
   IREE_ASSERT_ARGUMENT(device);
   return iree_hal_amdxdna_context_cache_pin(
       device->context_cache, device->native_device,
       device->native_caps.context_image_models, pdi, xclbin, kernel_name,
-      out_context_ref, out_lease);
+      partition_cols, out_context_ref, out_lease);
 }

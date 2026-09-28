@@ -147,7 +147,7 @@ class ContextCachePolicyTest : public ::testing::Test {
     return iree_hal_amdxdna_context_cache_get_or_create(
         cache_, nullptr, IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI,
         iree_make_const_byte_span(&key, 1), iree_const_byte_span_empty(),
-        IREE_SV("MLIR_AIE"), out_context_ref);
+        IREE_SV("MLIR_AIE"), /*partition_cols=*/0, out_context_ref);
   }
 
   iree_status_t Pin(uint8_t key,
@@ -155,7 +155,7 @@ class ContextCachePolicyTest : public ::testing::Test {
     return iree_hal_amdxdna_context_cache_pin(
         cache_, nullptr, IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI,
         iree_make_const_byte_span(&key, 1), iree_const_byte_span_empty(),
-        IREE_SV("MLIR_AIE"), nullptr, out_lease);
+        IREE_SV("MLIR_AIE"), /*partition_cols=*/0, nullptr, out_lease);
   }
 
   iree_hal_amdxdna_native_context_ref_t* GetAndExpectOk(uint8_t key) {
@@ -485,7 +485,8 @@ TEST_F(ContextCachePolicyTest, CachedImageBytesSumsCachedImages) {
   iree_hal_amdxdna_native_context_ref_t* a = nullptr;
   iree_status_t status = iree_hal_amdxdna_context_cache_get_or_create(
       cache_, nullptr, IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI,
-      Bytes(pdi_a), iree_const_byte_span_empty(), IREE_SV("MLIR_AIE"), &a);
+      Bytes(pdi_a), iree_const_byte_span_empty(), IREE_SV("MLIR_AIE"),
+      /*partition_cols=*/0, &a);
   EXPECT_TRUE(iree_status_is_ok(status));
   iree_status_ignore(status);
   factory_.ReleaseCaller(a);
@@ -494,7 +495,8 @@ TEST_F(ContextCachePolicyTest, CachedImageBytesSumsCachedImages) {
   iree_hal_amdxdna_native_context_ref_t* b = nullptr;
   status = iree_hal_amdxdna_context_cache_get_or_create(
       cache_, nullptr, IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI,
-      Bytes(pdi_b), iree_const_byte_span_empty(), IREE_SV("MLIR_AIE"), &b);
+      Bytes(pdi_b), iree_const_byte_span_empty(), IREE_SV("MLIR_AIE"),
+      /*partition_cols=*/0, &b);
   EXPECT_TRUE(iree_status_is_ok(status));
   iree_status_ignore(status);
   factory_.ReleaseCaller(b);
@@ -515,7 +517,7 @@ TEST_F(ContextCachePolicyTest,
     iree_status_t status = iree_hal_amdxdna_context_cache_get_or_create(
         cache_, nullptr, IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI,
         Bytes(pdi), iree_const_byte_span_empty(), IREE_SV("MLIR_AIE"),
-        &context_ref);
+        /*partition_cols=*/0, &context_ref);
     EXPECT_TRUE(iree_status_is_ok(status));
     iree_status_ignore(status);
     factory_.ReleaseCaller(context_ref);

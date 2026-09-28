@@ -17,6 +17,7 @@
 namespace {
 
 constexpr uint64_t kDdrAieAddrOffset = 0x80000000ULL;
+constexpr uint64_t kAie4DdrWindow = 0x80000000ULL;
 constexpr uint32_t kWrite32ConstantSentinel = 0xA1EC0000u;
 
 // --- iree_hal_amdxdna_txn_op_size --------------------------------------------
@@ -287,6 +288,41 @@ TEST(BuildHostPatchTableTest, RejectsTrailingTransactionData) {
 }
 
 // --- iree_hal_amdxdna_apply_patch_table --------------------------------------
+
+TEST(ApplyPatchTableAie4Test, WritesPatch57IntoBd0AndBd1) {
+  std::vector<uint32_t> ctrl(8, 0);
+  std::vector<uint32_t> patches = {/*offset=*/0u, /*arg_idx=*/0u,
+                                   /*arg_plus=*/0x10u};
+  uint64_t args[] = {0x1000u};
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table_aie4(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1, 0));
+  const uint64_t base = 0x1000u + 0x10u + kAie4DdrWindow;
+  EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base));
+  EXPECT_EQ(ctrl[0] & 0x1FFFFFFu, static_cast<uint32_t>(base >> 32));
+}
+
+TEST(ApplyPatchTableAie4Test, PreservesBd0ControlBits) {
+  std::vector<uint32_t> ctrl(8, 0);
+  ctrl[0] = 0xFE000000u;
+  std::vector<uint32_t> patches = {0u, 0u, 0u};
+  uint64_t args[] = {0u};
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table_aie4(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1, 0));
+  EXPECT_EQ(ctrl[0] & 0xFE000000u, 0xFE000000u);
+}
+
+TEST(ApplyPatchTableAie4Test, PatchesControlCodeSentinel) {
+  std::vector<uint32_t> ctrl(8, 0);
+  std::vector<uint32_t> patches = {
+      0u, IREE_HAL_AMDXDNA_PATCH_ARG_CONTROL_CODE, 0x20u};
+  uint64_t args[] = {0xdeadu};
+  EXPECT_TRUE(iree_hal_amdxdna_apply_patch_table_aie4(
+      ctrl.data(), ctrl.size(), patches.data(), patches.size(), args, 1,
+      0x1000u));
+  const uint64_t base = 0x1000u + 0x20u + kAie4DdrWindow;
+  EXPECT_EQ(ctrl[1], static_cast<uint32_t>(base));
+  EXPECT_EQ(ctrl[0] & 0x1FFFFFFu, static_cast<uint32_t>(base >> 32));
+}
 
 TEST(ApplyPatchTableTest, WritesShimDmaAddressIntoDescriptor) {
   std::vector<uint32_t> ctrl(8,

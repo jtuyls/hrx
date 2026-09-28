@@ -7,10 +7,12 @@
 #include "kernel.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 
 #include "amdxdna_accel.h"
 #include "bo.h"
+#include "host_queue.h"
 #include "device.h"
 
 #define MAX_EXEC_BO_SIZE 4096
@@ -26,6 +28,16 @@ int check_pkt_count_capacity(const kernel& k, uint32_t n) {
     return E2BIG;
   }
   return 0;
+}
+
+uint32_t* kernel_regmap(kernel& k) {
+  if (k.m_op == ERT_START_DPU) {
+    const uint32_t entries = k.m_dpu_count ? k.m_dpu_count : 1;
+    return k.m_cmd_pkt->data + k.m_cmd_pkt->extra_cu_masks +
+           entries * static_cast<uint32_t>(sizeof(amdxdna_cmd_start_dpu) /
+                                           sizeof(uint32_t));
+  }
+  return get_ert_regmap_begin(k.m_cmd_pkt);
 }
 
 }  // namespace
@@ -50,6 +62,7 @@ int kernel::reset() {
   std::memset(m_cmd_pkt, 0, m_cmd_size);
   m_arg_cnt = 0;
   m_reg_idx = 0;
+  m_dpu_count = 0;
   m_patching_args.clear();
   m_arg_reg_word_offsets.clear();
   m_arg_reg_word_counts.clear();
@@ -70,7 +83,13 @@ void kernel::set_cu_idx(cuidx_t cu_idx) {
   m_cmd_pkt->cu_mask = 0x1 << cu_idx.index;
 }
 
-int kernel::add_ctrl_bo(bo& bo_ctrl) {
+int kernel::add_ctrl_bo(bo& bo_ctrl, size_t instruction_size) {
+  if (instruction_size == 0 || instruction_size > bo_ctrl.size() ||
+      (instruction_size % sizeof(uint32_t)) != 0) {
+    return EINVAL;
+  }
+  if (instruction_size > UINT32_MAX) return E2BIG;
+  const uint32_t instr_bytes = static_cast<uint32_t>(instruction_size);
   ert_start_kernel_cmd* cmd_packet =
       reinterpret_cast<ert_start_kernel_cmd*>(m_exec_buf_bo->map());
   switch (m_op) {
@@ -81,28 +100,77 @@ int kernel::add_ctrl_bo(bo& bo_ctrl) {
       if (err) return err;
       ert_npu_data* npu_data = get_ert_npu_data(cmd_packet);
       npu_data->instruction_buffer = bo_ctrl.get_paddr();
-      npu_data->instruction_buffer_size = bo_ctrl.size();
+      npu_data->instruction_buffer_size = instr_bytes;
       npu_data->instruction_prop_count = 0;
       return 0;
     }
     case ERT_START_DPU: {
-      int err = inc_pkt_count(sizeof(ert_dpu_data));
+      // One column (or a caller that has not split columns): KMD
+      // fill_direct_pkt. Multi-column ELFs use add_dpu_columns.
+      int err = inc_pkt_count(sizeof(amdxdna_cmd_start_dpu));
       if (err) return err;
-      ert_dpu_data* dpu_data = get_ert_dpu_data(cmd_packet);
-      dpu_data->instruction_buffer = bo_ctrl.get_paddr();
-      dpu_data->instruction_buffer_size = bo_ctrl.size();
-      dpu_data->chained = 0;
-      return 0;
+      auto* dpu = reinterpret_cast<amdxdna_cmd_start_dpu*>(
+          cmd_packet->data + cmd_packet->extra_cu_masks);
+      dpu->dtrace_buffer = 0;
+      dpu->instruction_buffer = bo_ctrl.get_paddr();
+      dpu->instruction_buffer_size = instr_bytes;
+      dpu->uc_index = 0;
+      dpu->chained = 0;
+      m_dpu_count = 1;
+      return m_exec_buf_bo->bind_at(kExecBoInstructionArgKey, bo_ctrl, 0,
+                                    instr_bytes);
     }
     default:
       return EINVAL;
   }
 }
 
+int kernel::add_dpu_columns(bo& bo_ctrl, size_t instruction_size,
+                            const uint16_t* uc_index,
+                            const uint32_t* byte_offset,
+                            const uint32_t* byte_size,
+                            uint32_t column_count) {
+  if (m_op != ERT_START_DPU) return EINVAL;
+  if (column_count == 0 || column_count > HSA_MAX_LEVEL1_INDIRECT_ENTRIES) {
+    return EINVAL;
+  }
+  if (!uc_index || !byte_offset || !byte_size) return EINVAL;
+  if (instruction_size == 0 || instruction_size > bo_ctrl.size() ||
+      (instruction_size % sizeof(uint32_t)) != 0) {
+    return EINVAL;
+  }
+  if (instruction_size > UINT32_MAX) return E2BIG;
+  if (m_dpu_count != 0) return EINVAL;
+  const uint64_t base = bo_ctrl.get_paddr();
+  ert_start_kernel_cmd* cmd_packet =
+      reinterpret_cast<ert_start_kernel_cmd*>(m_exec_buf_bo->map());
+  auto* dpu = reinterpret_cast<amdxdna_cmd_start_dpu*>(
+      cmd_packet->data + cmd_packet->extra_cu_masks);
+  for (uint32_t i = 0; i < column_count; ++i) {
+    if (uc_index[i] >= HSA_MAX_LEVEL1_INDIRECT_ENTRIES) return EINVAL;
+    const uint64_t end =
+        (uint64_t)byte_offset[i] + (uint64_t)byte_size[i];
+    if (byte_size[i] == 0 || (byte_size[i] % sizeof(uint32_t)) != 0 ||
+        end > instruction_size) {
+      return EINVAL;
+    }
+    int err = inc_pkt_count(sizeof(amdxdna_cmd_start_dpu));
+    if (err) return err;
+    dpu[i].dtrace_buffer = 0;
+    dpu[i].instruction_buffer = base + byte_offset[i];
+    dpu[i].instruction_buffer_size = byte_size[i];
+    dpu[i].uc_index = uc_index[i];
+    dpu[i].chained = static_cast<uint16_t>(column_count - 1 - i);
+  }
+  m_dpu_count = column_count;
+  return m_exec_buf_bo->bind_at(kExecBoInstructionArgKey, bo_ctrl, 0,
+                                instruction_size);
+}
+
 int kernel::add_arg_32(uint32_t val) {
   int err = inc_pkt_count(sizeof(val));
   if (err) return err;
-  auto args = get_ert_regmap_begin(m_cmd_pkt);
+  auto args = kernel_regmap(*this);
   m_arg_reg_word_offsets.push_back(m_reg_idx);
   m_arg_reg_word_counts.push_back(1);
   args[m_reg_idx++] = val;
@@ -113,7 +181,7 @@ int kernel::add_arg_32(uint32_t val) {
 int kernel::add_arg_64(uint64_t val) {
   int err = inc_pkt_count(sizeof(val));
   if (err) return err;
-  auto args = get_ert_regmap_begin(m_cmd_pkt);
+  auto args = kernel_regmap(*this);
   m_arg_reg_word_offsets.push_back(m_reg_idx);
   m_arg_reg_word_counts.push_back(2);
   args[m_reg_idx++] = val;
@@ -132,7 +200,7 @@ int kernel::update_arg_64(uint32_t arg_index, uint64_t val) {
   }
   uint32_t word_index = m_arg_reg_word_offsets[arg_index];
   if (word_index + 1 >= m_reg_idx) return ERANGE;
-  auto args = get_ert_regmap_begin(m_cmd_pkt);
+  auto args = kernel_regmap(*this);
   args[word_index] = val;
   args[word_index + 1] = val >> 32;
   return 0;

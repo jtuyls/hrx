@@ -7,9 +7,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "fence.h"
+#include "host_queue.h"
 #include "hwctx.h"
 
 namespace shim_xdna {
@@ -42,11 +44,31 @@ struct hw_q {
   int submit_signal(const fence_handle*, uint64_t* out_state);
   void bind_hwctx(const hw_ctx* ctx);
   void unbind_hwctx();
-  // Returns 0 on success or the failing errno from the EXEC_CMD ioctl.
+  // Allocate the AIE4 user-mode host queue BO. CREATE_HWCTX consumes
+  // m_queue_boh. Returns 0 or an errno.
+  int init_umq();
+  // Map the doorbell returned by CREATE_HWCTX. A missing doorbell is not an
+  // error: submit then uses DRM_IOCTL_AMDXDNA_EXEC_CMD (kernel-mode).
+  int map_doorbell(uint32_t doorbell_offset);
+  // Returns 0 on success or the failing errno from the EXEC_CMD ioctl / UMQ
+  // submit.
   int issue_command(bo*);
   uint64_t exec_cmd_count() const {
     return m_exec_cmd_count.load(std::memory_order_relaxed);
   }
+
+ private:
+  std::unique_ptr<bo> m_umq_bo;
+  volatile struct host_queue_header* m_umq_hdr = nullptr;
+  volatile struct host_queue_packet* m_umq_pkt = nullptr;
+  volatile struct host_indirect_data* m_umq_indirect_buf = nullptr;
+  uint64_t m_indirect_paddr = 0;
+  volatile uint32_t* m_doorbell = nullptr;
+  size_t m_doorbell_map_size = 0;
+  uint32_t m_umq_slots = 0;
+
+  int issue_umq_exec_buf(bo* cmd_bo);
+  int get_next_umq_slot(uint32_t* out_slot);
 };
 
 int poll_command(bo*);

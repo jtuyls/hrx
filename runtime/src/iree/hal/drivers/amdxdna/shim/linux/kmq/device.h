@@ -36,12 +36,14 @@ struct pdev {
   mutable int m_dev_fd = -1;
   mutable std::unique_ptr<bo> m_dev_heap_bo;
   int m_init_errno = 0;
+  bool m_is_aie4 = false;
 
   pdev();
   explicit pdev(const std::filesystem::path& device_path);
   ~pdev();
 
   int init_errno() const;
+  bool is_aie4() const { return m_is_aie4; }
   int open_device(const std::filesystem::path& device_path);
   // Returns 0 on success or the failing errno for recoverable ioctl failures.
   int try_ioctl(unsigned long cmd, void* arg) const;
@@ -70,6 +72,7 @@ struct device {
                     const std::filesystem::path& device_path,
                     std::unique_ptr<device>* out_device);
   int init_errno() const;
+  bool is_aie4() const { return m_pdev.is_aie4(); }
 
   const pdev& get_pdev() const;
 
@@ -86,6 +89,13 @@ struct device {
                         std::unique_ptr<hw_ctx>* out_context);
   int create_hw_context(const std::vector<uint8_t>& pdi,
                         const std::string& cu_name,
+                        bool* out_context_pool_exhausted,
+                        std::unique_ptr<hw_ctx>* out_context);
+  // AIE4 / UMQ: allocate a host queue BO, skip CONFIG_CU when PDI is empty.
+  // `partition_cols` is XRT elf.get_partition_size(); 0 means 1 column.
+  int create_hw_context(const std::vector<uint8_t>& pdi,
+                        const std::string& cu_name, bool umq,
+                        uint32_t partition_cols,
                         bool* out_context_pool_exhausted,
                         std::unique_ptr<hw_ctx>* out_context);
 

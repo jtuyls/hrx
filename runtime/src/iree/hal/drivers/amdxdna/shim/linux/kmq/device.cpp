@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -52,7 +53,8 @@ int import_fd_checked(pid_t pid, int ehdl, int* out_fd) {
 // Device memory heap needs to be within one 64MB page. The maximum size is
 // 64MB. The native backend publishes this allocation-domain budget so retained
 // command code and context images can be bounded without a KMD free-space
-// query.
+// query. KMQ (AIE2P) allocates the heap on open; UMQ/AIE4 does not — XRT's
+// pdev_umq::on_first_open is a no-op and the 2.26 driver rejects DEV_HEAP.
 const size_t dev_mem_size = (64 << 20);
 
 std::mutex shared_pdev_mutex;
@@ -109,6 +111,33 @@ std::string read_first_line(const std::filesystem::path& path) {
   std::string line;
   if (file.is_open()) std::getline(file, line);
   return line;
+}
+
+uint32_t parse_sysfs_hex(const std::filesystem::path& path) {
+  const std::string line = read_first_line(path);
+  if (line.empty()) return 0;
+  return static_cast<uint32_t>(std::strtoul(line.c_str(), nullptr, 0));
+}
+
+// Compute-function PCI IDs from public xdna-driver (PF 0x17f2/0x1b0b omitted).
+bool pci_ids_are_aie4_umq(uint32_t vendor, uint32_t device_id) {
+  if (vendor != 0x1022) return false;
+  switch (device_id) {
+    case 0x17f1:
+    case 0x17f3:
+    case 0x1b0a:
+    case 0x1b0c:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool accel_path_is_aie4_umq(const std::filesystem::path& device_path) {
+  const auto sysfs = std::filesystem::path("/sys/class/accel") /
+                     device_path.filename() / "device";
+  return pci_ids_are_aie4_umq(parse_sysfs_hex(sysfs / "vendor"),
+                              parse_sysfs_hex(sysfs / "device"));
 }
 
 int try_ioctl_fd(int fd, unsigned long cmd, void* arg) {
@@ -191,6 +220,11 @@ int pdev::open_device(const std::filesystem::path& device_path) {
     return errno;
   }
   SHIM_DEBUG("Device opened, fd=%d", m_dev_fd);
+  if (accel_path_is_aie4_umq(device_path)) {
+    m_is_aie4 = true;
+    SHIM_DEBUG("UMQ/AIE4 device: skipping DEV_HEAP");
+    return 0;
+  }
   int err =
       bo::create(*this, dev_mem_size, AMDXDNA_BO_DEV_HEAP, &m_dev_heap_bo);
   if (err) {
@@ -393,7 +427,8 @@ int device::create_hw_context(const std::vector<uint8_t>& pdi,
   *out_context_pool_exhausted = false;
   out_context->reset();
   std::unique_ptr<hw_ctx> new_context =
-      std::make_unique<hw_ctx>(*this, pdi, cu_name, n_rows, n_cols, qos);
+      std::make_unique<hw_ctx>(*this, pdi, cu_name, n_rows, n_cols, qos,
+                               /*umq=*/false);
   int err = new_context->init_errno();
   if (err) {
     const int create_err = new_context->context_create_errno();
@@ -414,6 +449,34 @@ int device::create_hw_context(const std::vector<uint8_t>& pdi,
                               std::unique_ptr<hw_ctx>* out_context) {
   return create_hw_context(pdi, cu_name, {}, out_context_pool_exhausted,
                            out_context);
+}
+
+int device::create_hw_context(const std::vector<uint8_t>& pdi,
+                              const std::string& cu_name, bool umq,
+                              uint32_t partition_cols,
+                              bool* out_context_pool_exhausted,
+                              std::unique_ptr<hw_ctx>* out_context) {
+  *out_context_pool_exhausted = false;
+  out_context->reset();
+  // Empty-PDI AIE4: column count comes from the ELF configuration note
+  // (XRT `elf.get_partition_size()`). Full-array AIE metadata is a device
+  // capability, not the default empty-context size.
+  uint32_t ctx_cols = n_cols;
+  if (umq && pdi.empty()) {
+    ctx_cols = partition_cols ? partition_cols : 1u;
+  }
+  std::map<std::string, uint32_t> qos;
+  std::unique_ptr<hw_ctx> new_context = std::make_unique<hw_ctx>(
+      *this, pdi, cu_name, n_rows, ctx_cols, qos, umq);
+  int err = new_context->init_errno();
+  if (err) {
+    const int create_err = new_context->context_create_errno();
+    *out_context_pool_exhausted =
+        create_err == ENOENT || create_err == ENOSPC || create_err == EINVAL;
+    return err;
+  }
+  *out_context = std::move(new_context);
+  return 0;
 }
 
 int device::alloc_bo(uint32_t ctx_id, size_t size, shim_amdxdna_bo_flags flags,

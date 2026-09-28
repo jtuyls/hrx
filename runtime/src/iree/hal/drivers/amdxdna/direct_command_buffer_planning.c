@@ -10,10 +10,11 @@
 #include <string.h>
 
 // AIE-visible DDR address offset added to every shim-DMA buffer address.
-// Validated for npu4 / AIE2P_STRIX_B0 (the only target the chained path is
-// enabled for); other AIE generations may use a different offset / BD address
-// layout. This is an AIE DMA address ABI, not a native queue command window.
+// AIE2P uses the 48-bit bd[1]/bd[2] split; AIE4 patch57 writes bd[1]/bd[0]
+// and adds the same 2GB window. Linux PASID/SVA uses mmap VA + window as a
+// 48-bit address. Windows KMD rewrites GpuVa+window to SPA+window.
 static const uint64_t iree_hal_amdxdna_ddr_aie_addr_offset = 0x80000000ULL;
+
 // AIEC RTP lowering emits amdaie.npu.write32 values tagged with this sentinel;
 // the HAL replaces the low bits with the corresponding dispatch constant before
 // handing the transaction to firmware.
@@ -372,6 +373,42 @@ bool iree_hal_amdxdna_apply_patch_table(uint32_t* ctrl_code, size_t ctrl_words,
     bd2 = (bd2 & 0xFFFF0000) | (uint32_t)(base >> 32);
     iree_hal_amdxdna_write_u32(b + offset + 4, bd1);
     iree_hal_amdxdna_write_u32(b + offset + 8, bd2);
+  }
+  return true;
+}
+
+bool iree_hal_amdxdna_apply_patch_table_aie4(
+    uint32_t* ctrl_code, size_t ctrl_words, const uint32_t* patches,
+    size_t patch_count, const uint64_t* args, size_t arg_count,
+    uint64_t control_code_addr) {
+  if (patch_count % 3 != 0) return false;
+  if (patch_count && !patches) return false;
+  uint8_t* b = (uint8_t*)ctrl_code;
+  size_t total = ctrl_words * sizeof(uint32_t);
+  for (size_t i = 0; i < patch_count; i += 3) {
+    uint32_t offset = patches[i];
+    uint32_t arg_idx = patches[i + 1];
+    uint32_t arg_plus = patches[i + 2];
+    uint64_t patch_va = 0;
+    if (arg_idx == IREE_HAL_AMDXDNA_PATCH_ARG_CONTROL_CODE) {
+      patch_va = control_code_addr;
+    } else if (arg_idx >= arg_count) {
+      return false;
+    } else {
+      patch_va = args[arg_idx];
+    }
+    if ((size_t)offset + 8 > total || (offset & 0x3u) != 0) {
+      return false;
+    }
+    uint32_t bd0 = iree_hal_amdxdna_read_u32(b + offset);
+    uint32_t bd1 = iree_hal_amdxdna_read_u32(b + offset + 4);
+    uint64_t baked = ((uint64_t)(bd0 & 0x1FFFFFFu) << 32) | (uint64_t)bd1;
+    uint64_t base =
+        baked + patch_va + arg_plus + iree_hal_amdxdna_ddr_aie_addr_offset;
+    bd1 = (uint32_t)base;
+    bd0 = (bd0 & 0xFE000000u) | (uint32_t)((base >> 32) & 0x1FFFFFFu);
+    iree_hal_amdxdna_write_u32(b + offset, bd0);
+    iree_hal_amdxdna_write_u32(b + offset + 4, bd1);
   }
   return true;
 }

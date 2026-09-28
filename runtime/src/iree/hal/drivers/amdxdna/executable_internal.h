@@ -13,6 +13,7 @@
 #include "iree/base/api.h"
 #include "iree/base/threading/mutex.h"
 #include "iree/base/tracing.h"
+#include "iree/hal/drivers/amdxdna/ctrlcode_elf.h"
 #include "iree/hal/drivers/amdxdna/direct_command_buffer_planning.h"
 #include "iree/hal/drivers/amdxdna/executable.h"
 #include "iree/hal/drivers/amdxdna/native.h"
@@ -33,9 +34,10 @@ typedef struct iree_hal_amdxdna_u32_list_t {
 typedef struct iree_hal_amdxdna_kernel_params_t {
   // Raw PDI context image from amdxdna-pdi-fb or extracted from an XADX
   // xclbin's AIE_PARTITION section for native drivers that consume PDI.
+  // Empty for amdxdna-elf-fb (AIE4 START_DPU creates a context with no image).
   iree_hal_amdxdna_u8_list_t pdi;
   // AXLF/xclbin context wrapper from amdxdna-xclbin-fb for native
-  // drivers that consume an xclbin-shaped context blob.
+  // drivers that consume an xclbin-shaped context blob. Empty for AELF.
   iree_hal_amdxdna_u8_list_t xclbin;
   iree_hal_amdxdna_u32_list_t* asm_inst_runlist;
   iree_host_size_t asm_inst_runlist_count;
@@ -57,6 +59,14 @@ typedef struct iree_hal_amdxdna_kernel_params_t {
   // Written under the owning executable's context_mutex when native caps request
   // this compatibility path.
   iree_hal_amdxdna_context_cache_lease_t* cached_context_lease;
+  // AIE4 ELF `.note.xrt.configuration` column count (XRT partition_size). 0
+  // means the note was absent; native create then uses a 1-column empty ctx.
+  uint32_t partition_cols;
+  // Paged ELF occupied-column slices of asm_inst_runlist[0]. Owned here.
+  // Count 0 or 1 submits one direct START_DPU packet; count > 1 is XRT's
+  // per-column ert_dpu_data chain.
+  iree_hal_amdxdna_ctrlcode_dpu_slice_t* dpu_slices;
+  iree_host_size_t dpu_slice_count;
   iree_hal_amdxdna_native_c_cu_index_t cached_cu_index;
   bool cached_context_valid;
   IREE_TRACE(iree_string_view_t source_filename;)

@@ -56,6 +56,8 @@ typedef struct iree_hal_amdxdna_context_cache_key_t {
   iree_const_byte_span_t pdi;
   iree_const_byte_span_t xclbin;
   iree_string_view_t kernel_name;
+  // AIE4 empty-context column count. 0 for PDI/xclbin images.
+  uint32_t partition_cols;
 } iree_hal_amdxdna_context_cache_key_t;
 
 // Returns true when a context cached under `lhs` may be safely reused to
@@ -108,11 +110,13 @@ void iree_hal_amdxdna_context_cache_reclaim(
 // Implements lookup/create independently of the HAL device wrapper. Exported
 // for hermetic cache-policy tests; production callers use
 // iree_hal_amdxdna_device_get_or_create_context below.
+// `partition_cols` distinguishes empty AIE4 contexts; pass 0 for PDI/xclbin.
 iree_status_t iree_hal_amdxdna_context_cache_get_or_create(
     iree_hal_amdxdna_device_context_cache_t* context_cache,
     iree_hal_amdxdna_native_device_t* native_device,
     uint32_t context_image_models, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref);
 
 // Like get_or_create, but returns a lease. Unleased LRU entries are evicted
@@ -126,6 +130,7 @@ iree_status_t iree_hal_amdxdna_context_cache_pin(
     iree_hal_amdxdna_native_device_t* native_device,
     uint32_t context_image_models, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref,
     iree_hal_amdxdna_context_cache_lease_t** out_lease);
 
@@ -139,19 +144,20 @@ iree_hal_amdxdna_context_cache_lease_retain_context(
 void iree_hal_amdxdna_context_cache_lease_release(
     iree_hal_amdxdna_context_cache_lease_t* lease);
 
-// Returns a native context for the (non-empty) control-packet bootstrap
-// `pdi`/`xclbin` and CU/export name, creating and caching it on first use. A
-// cached PDI context is reused when PDI + kernel name match; an xclbin-native
-// context is keyed by xclbin content because that backend repatches control
-// streams per dispatch.
+// Returns a native context for the control-packet bootstrap `pdi`/`xclbin`
+// and CU/export name, creating and caching it on first use. PDI, xclbin, and
+// empty AIE4 START_DPU contexts are keyed by image bytes, name, and
+// `partition_cols`.
 iree_status_t iree_hal_amdxdna_device_get_or_create_context(
     iree_hal_amdxdna_device* device, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref);
 
 iree_status_t iree_hal_amdxdna_device_pin_context(
     iree_hal_amdxdna_device* device, iree_const_byte_span_t pdi,
     iree_const_byte_span_t xclbin, iree_string_view_t kernel_name,
+    uint32_t partition_cols,
     iree_hal_amdxdna_native_context_ref_t** out_context_ref,
     iree_hal_amdxdna_context_cache_lease_t** out_lease);
 

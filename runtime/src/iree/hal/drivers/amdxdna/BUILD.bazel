@@ -95,6 +95,7 @@ iree_runtime_cc_library(
         "command_buffer.c",
         "completion_queue.c",
         "context_cache.c",
+        "ctrlcode_elf.c",
         "device.c",
         "direct_command_buffer.c",
         "direct_command_buffer_chain_cache.c",
@@ -113,6 +114,7 @@ iree_runtime_cc_library(
         "completion_queue.h",
         "dispatch.h",
         "context_cache.h",
+        "ctrlcode_elf.h",
         "device.h",
         "device_internal.h",
         "direct_command_buffer.h",
@@ -143,6 +145,7 @@ iree_runtime_cc_library(
         "//runtime/src/iree/hal/utils:device_spec_builder",
         "//runtime/src/iree/hal/utils:files",
         "//runtime/src/iree/hal/utils:resource_set",
+        "//runtime/src/iree/schemas:amdxdna_elf_executable_def_c_fbs",
         "//runtime/src/iree/schemas:amdxdna_xclbin_executable_def_c_fbs",
         "//runtime/src/iree/schemas:pdi_executable_def_c_fbs",
     ] + _AMDXDNA_NATIVE_DEPS,
@@ -335,6 +338,35 @@ iree_runtime_cc_test(
         "//runtime/src/iree/base/internal/flatcc:building",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/schemas:pdi_executable_def_c_fbs",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+iree_runtime_cc_test(
+    name = "ctrlcode_elf_test",
+    srcs = ["ctrlcode_elf_test.cc"],
+    tags = _AMDXDNA_UNIT_TEST_TAGS,
+    target_compatible_with = _AMDXDNA_COMPATIBLE_WITH,
+    deps = [
+        ":amdxdna",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+iree_runtime_cc_test(
+    name = "executable_elf_test",
+    srcs = ["executable_elf_test.cc"],
+    tags = _AMDXDNA_UNIT_TEST_TAGS,
+    target_compatible_with = _AMDXDNA_COMPATIBLE_WITH,
+    deps = [
+        ":amdxdna",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal/flatcc:building",
+        "//runtime/src/iree/hal",
+        "//runtime/src/iree/schemas:amdxdna_elf_executable_def_c_fbs",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
     ],

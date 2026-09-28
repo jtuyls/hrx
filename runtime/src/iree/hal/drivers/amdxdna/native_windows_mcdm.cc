@@ -259,6 +259,8 @@ const WindowsMcdmOpcodeHandler& windows_mcdm_opcode_handler(
       return kStartNpuPartialElf;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN:
       return kCommandChain;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU:
+      break;
   }
   return kStartCu;
 }
@@ -306,6 +308,10 @@ iree_status_t from_c_command_opcode(
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN:
       *out_opcode = IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN;
       return iree_ok_status();
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU:
+      return iree_make_status(
+          IREE_STATUS_UNIMPLEMENTED,
+          "amdxdna Windows MCDM does not support START_DPU");
   }
   return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                           "unknown amdxdna native command opcode");
@@ -321,6 +327,10 @@ iree_status_t from_c_context_image_type(
     case IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN:
       *out_type = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_XCLBIN;
       return iree_ok_status();
+    case IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_NONE:
+      return iree_make_status(
+          IREE_STATUS_UNIMPLEMENTED,
+          "amdxdna Windows MCDM does not support empty AIE4 context images");
   }
   return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                           "unknown amdxdna native context image type");
@@ -4658,6 +4668,7 @@ extern "C" iree_status_t iree_hal_amdxdna_native_device_c_create_context_ref(
   native_image.pdi = image->pdi;
   native_image.xclbin = image->xclbin;
   native_image.kernel_name = image->kernel_name;
+  native_image.partition_cols = image->partition_cols;
   iree_hal_amdxdna_native_context_t* raw_context = nullptr;
   IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_device_create_context(
       device, &native_image, out_context_pool_exhausted, &raw_context));
@@ -4784,6 +4795,22 @@ extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_control_buffer(
     iree_device_size_t control_buffer_size) {
   return iree_hal_amdxdna_native_command_add_control_buffer(
       command, control_buffer, control_buffer_size);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_start_dpu_columns(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size,
+    const iree_hal_amdxdna_native_c_dpu_column_t* columns,
+    iree_host_size_t column_count) {
+  (void)command;
+  (void)control_buffer;
+  (void)control_buffer_size;
+  (void)columns;
+  (void)column_count;
+  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
+                          "amdxdna Windows START_DPU column packets are not "
+                          "implemented");
 }
 
 extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_arg_32(

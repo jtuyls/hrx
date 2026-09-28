@@ -46,6 +46,7 @@ struct iree_hal_amdxdna_native_device_t {
   // the architecture is unrecognized. See query_caps.
   uint32_t hardware_context_budget = 0;
   std::atomic<iree_host_size_t> live_context_image_bytes{0};
+  bool is_aie4 = false;
   std::mutex command_pool_mutex;
   std::vector<std::unique_ptr<shim_xdna::kernel>> start_npu_command_pool;
 
@@ -88,6 +89,15 @@ struct iree_hal_amdxdna_native_command_t {
   iree_hal_amdxdna_native_c_command_opcode_t opcode;
   std::unique_ptr<shim_xdna::kernel> kernel;
   bool has_bound_buffers = false;
+  // Snapshot of the compiled ERT header. CERT completion overwrites the whole
+  // header word with just the terminal state, so reuse must restore opcode,
+  // count, and type before flipping state back to NEW.
+  uint32_t compiled_header = 0;
+  // Full exec-BO copy taken once after compile. CERT's SVA completion write
+  // is the header, but restoring only that word still leaves a reuse hole if
+  // firmware clobbers payload/cu_mask; XRT keeps the compiled packet intact
+  // and only rewrites the header/state on start().
+  std::vector<uint8_t> compiled_exec;
 
   iree_hal_amdxdna_native_command_t(
       iree_hal_amdxdna_native_device_t* device,
@@ -214,6 +224,10 @@ bool is_xdna2_pci_revision(const driver_stack_info_t& info) {
     default:
       return false;
   }
+}
+
+bool device_is_aie4(const iree_hal_amdxdna_native_device_t* device) {
+  return device && device->is_aie4;
 }
 
 firmware_version_t query_firmware_version(const shim_xdna::pdev& pdev) {
@@ -392,7 +406,18 @@ shim_xdna::power_mode to_shim_power_mode(
   return shim_xdna::power_mode::default_mode;
 }
 
-uint32_t to_shim_buffer_flags(iree_hal_amdxdna_native_buffer_c_type_t type) {
+uint32_t to_shim_buffer_flags(iree_hal_amdxdna_native_buffer_c_type_t type,
+                              bool umq) {
+  // UMQ/AIE4 has no DEV_HEAP. XRT instruction BOs are CACHEABLE, which
+  // xdna-driver maps to AMDXDNA_BO_CMD when heap is absent. HRX maps
+  // EXECBUF to CMD; HOST_ONLY stays SHARE for data BOs.
+  if (umq) {
+    if (type == IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_INSTRUCTION ||
+        type == IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_CACHEABLE) {
+      return AMDXDNA_BO_FLAGS_EXECBUF;
+    }
+    return AMDXDNA_BO_FLAGS_HOST_ONLY;
+  }
   switch (type) {
     case IREE_HAL_AMDXDNA_NATIVE_BUFFER_TYPE_HOST_ONLY:
       return AMDXDNA_BO_FLAGS_HOST_ONLY;
@@ -420,6 +445,8 @@ uint32_t to_ert_opcode(iree_hal_amdxdna_native_c_command_opcode_t opcode) {
       return ERT_START_CU;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU:
       return ERT_START_NPU;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU:
+      return ERT_START_DPU;
     case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_NPU_PARTIAL_ELF:
       IREE_ASSERT_UNREACHABLE(
           "Linux KMQ rejects PARTIAL_ELF before opcode conversion");
@@ -555,11 +582,21 @@ iree_status_t iree_hal_amdxdna_native_device_create(
       host_allocator, sizeof(*device), reinterpret_cast<void**>(&device)));
   device = new (device) iree_hal_amdxdna_native_device_t(
       host_allocator, std::move(shim_device), resolved_device_path);
+  device->is_aie4 = device->shim_device->is_aie4();
   const driver_stack_info_t driver_stack_info = query_driver_stack_info(device);
   record_driver_stack_info(device, driver_stack_info);
-  device->command_chain_status = select_command_chain_status(driver_stack_info);
-  device->supports_command_chain =
-      command_chain_enabled(device->command_chain_status);
+  if (device->is_aie4) {
+    // ERT_CMD_CHAIN is the AIE2P parent packet. AIE4 uses per-column
+    // ert_dpu_data inside one START_DPU command.
+    device->command_chain_status =
+        IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_UNIDENTIFIED_STACK;
+    device->supports_command_chain = false;
+  } else {
+    device->command_chain_status =
+        select_command_chain_status(driver_stack_info);
+    device->supports_command_chain =
+        command_chain_enabled(device->command_chain_status);
+  }
   // Resolve the per-architecture hardware-context budget once. query_npu_arch()
   // reads sysfs, so cache it here rather than on every query_caps() call.
   const std::string npu_arch = shim_xdna::query_npu_arch();
@@ -641,29 +678,42 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.max_shared_code_memory_bytes = kSharedCodeMemoryBytes;
   caps.shared_code_memory_miss_reserve_bytes =
       kSharedCodeMemoryMissReserveBytes;
-  caps.context_image_models = IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI;
-  // START_NPU is used for command-chain children and is correct on Linux KMQ.
-  // Do not advertise PARTIAL_ELF here: its resident-instruction path currently
-  // produces wrong results for kernels with per-dispatch moving I/O. The
-  // command dirty hooks below only sync exec BO mutations; they do not make the
-  // PARTIAL_ELF resident-instruction model correct on Linux.
-  caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_CU |
-                         IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU;
-  if (device->supports_command_chain) {
-    caps.dispatch_models |=
-        IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
+  if (device_is_aie4(device)) {
+    caps.context_image_models =
+        IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_NONE;
+    caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_DPU;
+    caps.max_command_chain_slots = 0;
+    caps.default_dispatch_opcode =
+        IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU;
+  } else {
+    caps.context_image_models =
+        IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_PDI;
+    // START_NPU is used for command-chain children and is correct on Linux KMQ.
+    // Do not advertise PARTIAL_ELF here: its resident-instruction path currently
+    // produces wrong results for kernels with per-dispatch moving I/O. The
+    // command dirty hooks below only sync exec BO mutations; they do not make
+    // the PARTIAL_ELF resident-instruction model correct on Linux.
+    caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_CU |
+                           IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_NPU;
+    if (device->supports_command_chain) {
+      caps.dispatch_models |=
+          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
+    }
+    caps.default_dispatch_opcode =
+        IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU;
   }
   caps.completion_models =
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_NATIVE_FENCE;
   caps.supports_host_buffer_reuse = true;
   caps.native_owns_control_code_publication = false;
+  // CERT overwrites the ERT header on AIE4 completion. Issue restores it
+  // before EXEC_CMD. The single-command cache will not reuse an in-flight
+  // exec BO, so a second overlapped submit allocates another command.
   caps.submit_completion_is_deferred = true;
   caps.supports_external_buffer_import = false;
   caps.supports_external_buffer_export = false;
   caps.supports_real_multi_queue = false;
-  caps.default_dispatch_opcode =
-      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_CU;
   caps.command_chain_status = device->command_chain_status;
   caps.driver_stack = device->driver_stack;
   *out_caps = caps;
@@ -681,15 +731,16 @@ iree_status_t iree_hal_amdxdna_native_device_alloc_buffer(
 
   std::unique_ptr<shim_xdna::bo> bo;
   const size_t host_size = static_cast<size_t>(size);
-  const int err =
-      device->shim_device->alloc_bo(host_size, to_shim_buffer_flags(type), &bo);
+  const uint32_t flags =
+      to_shim_buffer_flags(type, device_is_aie4(device));
+  const int err = device->shim_device->alloc_bo(host_size, flags, &bo);
   if (err != 0) {
     const int normalized_err = err < 0 ? -err : err;
     return iree_make_status(
         iree_hal_amdxdna_native_linux_bo_allocation_status_code(normalized_err),
         "amdxdna native BO allocation failed: type=%d size=%" PRIu64
         " flags=0x%08x errno %d",
-        (int)type, (uint64_t)size, to_shim_buffer_flags(type), normalized_err);
+        (int)type, (uint64_t)size, flags, normalized_err);
   }
   *out_buffer = new iree_hal_amdxdna_native_buffer_t(std::move(bo));
   return iree_ok_status();
@@ -706,8 +757,17 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   IREE_ASSERT_ARGUMENT(out_context);
   *out_context_pool_exhausted = false;
   *out_context = nullptr;
-  if (IREE_UNLIKELY(image->type !=
-                    IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_PDI)) {
+  const bool is_aie4 = device_is_aie4(device);
+  if (is_aie4) {
+    if (IREE_UNLIKELY(image->type !=
+                      IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_NONE)) {
+      return iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "amdxdna Linux AIE4 context creation requires an empty context "
+          "image (no PDI/xclbin)");
+    }
+  } else if (IREE_UNLIKELY(image->type !=
+                           IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_TYPE_PDI)) {
     return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
                             "amdxdna Linux KMQ context creation requires a "
                             "PDI context image");
@@ -719,7 +779,7 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   }
 
   std::vector<uint8_t> pdi_vector;
-  if (pdi.data_length != 0) {
+  if (!is_aie4 && pdi.data_length != 0) {
     pdi_vector.assign(pdi.data, pdi.data + pdi.data_length);
   }
   std::string kernel_name_string;
@@ -728,9 +788,14 @@ iree_status_t iree_hal_amdxdna_native_device_create_context(
   }
 
   std::unique_ptr<shim_xdna::hw_ctx> shim_context;
-  const int err = device->shim_device->create_hw_context(
-      pdi_vector, kernel_name_string, out_context_pool_exhausted,
-      &shim_context);
+  const int err =
+      is_aie4 ? device->shim_device->create_hw_context(
+                    pdi_vector, kernel_name_string, /*umq=*/true,
+                    image->partition_cols, out_context_pool_exhausted,
+                    &shim_context)
+              : device->shim_device->create_hw_context(
+                    pdi_vector, kernel_name_string, out_context_pool_exhausted,
+                    &shim_context);
   if (err != 0) {
     return iree_hal_amdxdna_status_from_errno(
         err, "amdxdna hardware context creation failed");
@@ -877,6 +942,13 @@ iree_status_t iree_hal_amdxdna_native_command_create(
         "amdxdna Linux KMQ does not support START_NPU_PARTIAL_ELF; "
         "PARTIAL_ELF dispatch is not advertised");
   }
+  if (opcode == IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU &&
+      !device_is_aie4(device)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "amdxdna Linux KMQ does not support START_DPU; "
+        "AIE4 DPU dispatch requires a UMQ AIE4 device");
+  }
   if (opcode == IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN &&
       !device->supports_command_chain) {
     return iree_make_status(
@@ -927,6 +999,8 @@ iree_status_t iree_hal_amdxdna_native_command_reset(
     iree_hal_amdxdna_native_command_t* command) {
   IREE_ASSERT_ARGUMENT(command);
   command->has_bound_buffers = false;
+  command->compiled_header = 0;
+  command->compiled_exec.clear();
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->reset(), "amdxdna native command reset failed");
 }
@@ -943,10 +1017,63 @@ iree_status_t iree_hal_amdxdna_native_command_add_control_buffer(
     iree_hal_amdxdna_native_command_t* command,
     iree_hal_amdxdna_native_buffer_t* control_buffer,
     iree_device_size_t control_buffer_size) {
-  (void)control_buffer_size;
+  if (IREE_UNLIKELY(!control_buffer || control_buffer_size == 0)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna Linux KMQ instruction buffer is empty");
+  }
+  if (IREE_UNLIKELY(control_buffer_size >
+                    iree_hal_amdxdna_native_buffer_size(control_buffer))) {
+    return iree_make_status(
+        IREE_STATUS_OUT_OF_RANGE,
+        "amdxdna Linux KMQ instruction byte count exceeds BO size");
+  }
+  if (IREE_UNLIKELY(control_buffer_size % sizeof(uint32_t) != 0)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "amdxdna Linux KMQ instruction byte count is not word aligned");
+  }
   return iree_hal_amdxdna_status_from_errno(
-      command->kernel->add_ctrl_bo(*control_buffer->bo),
+      command->kernel->add_ctrl_bo(*control_buffer->bo,
+                                   static_cast<size_t>(control_buffer_size)),
       "amdxdna native command control-buffer argument failed");
+}
+
+iree_status_t iree_hal_amdxdna_native_command_add_start_dpu_columns(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size,
+    const iree_hal_amdxdna_native_c_dpu_column_t* columns,
+    iree_host_size_t column_count) {
+  if (IREE_UNLIKELY(!control_buffer || control_buffer_size == 0 || !columns ||
+                    column_count == 0)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "amdxdna Linux KMQ START_DPU columns are empty");
+  }
+  if (IREE_UNLIKELY(column_count > std::numeric_limits<uint32_t>::max())) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "amdxdna Linux KMQ START_DPU column count is too "
+                            "large");
+  }
+  if (IREE_UNLIKELY(control_buffer_size >
+                    iree_hal_amdxdna_native_buffer_size(control_buffer))) {
+    return iree_make_status(
+        IREE_STATUS_OUT_OF_RANGE,
+        "amdxdna Linux KMQ instruction byte count exceeds BO size");
+  }
+  std::vector<uint16_t> uc_index(column_count);
+  std::vector<uint32_t> byte_offset(column_count);
+  std::vector<uint32_t> byte_size(column_count);
+  for (iree_host_size_t i = 0; i < column_count; ++i) {
+    uc_index[i] = columns[i].uc_index;
+    byte_offset[i] = columns[i].byte_offset;
+    byte_size[i] = columns[i].byte_size;
+  }
+  return iree_hal_amdxdna_status_from_errno(
+      command->kernel->add_dpu_columns(
+          *control_buffer->bo, static_cast<size_t>(control_buffer_size),
+          uc_index.data(), byte_offset.data(), byte_size.data(),
+          static_cast<uint32_t>(column_count)),
+      "amdxdna native START_DPU column packet failed");
 }
 
 iree_status_t iree_hal_amdxdna_native_command_add_arg_32(
@@ -1020,10 +1147,48 @@ iree_status_t iree_hal_amdxdna_native_command_reset_bound_buffers(
       "command BO tables");
 }
 
-iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
+static void iree_hal_amdxdna_native_command_restore_ert_header(
     iree_hal_amdxdna_native_command_t* command) {
   ert_packet* packet = command_packet(command);
-  packet->state = ERT_CMD_STATE_NEW;
+  // AIE2P rewrites kernel-arg VAs in this packet on cache reuse, then calls
+  // mark_code_dirty. A full snapshot would put the previous dispatch's args
+  // back. Only START_DPU's packet is stable across reuse (args live in the
+  // instruction BO); CERT clobbers that header.
+  if (command->opcode !=
+      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU) {
+    packet->state = ERT_CMD_STATE_NEW;
+    return;
+  }
+  shim_xdna::bo* exec_bo = command->kernel->get_exec_buf_bo();
+  void* mapped = exec_bo ? exec_bo->map() : nullptr;
+  const size_t exec_size = exec_bo ? exec_bo->size() : 0;
+  // XRT caches the compiled header on the first start and writes that word
+  // back on every later start. CERT DMA-writes COMPLETED as the whole header
+  // (opcode/count become 0), so a state-nibble RMW is not enough. Snapshot
+  // the whole exec BO while opcode is still the compiled START_DPU.
+  if (command->compiled_exec.empty() && mapped && exec_size != 0 &&
+      packet->opcode != 0) {
+    command->compiled_header = packet->header;
+    command->compiled_exec.resize(exec_size);
+    std::memcpy(command->compiled_exec.data(), mapped, exec_size);
+  }
+  if (!command->compiled_exec.empty() && mapped &&
+      command->compiled_exec.size() <= exec_size) {
+    std::memcpy(mapped, command->compiled_exec.data(),
+                command->compiled_exec.size());
+    packet->header =
+        (command->compiled_header & ~0xFu) | ERT_CMD_STATE_NEW;
+  } else if (command->compiled_header != 0) {
+    packet->header =
+        (command->compiled_header & ~0xFu) | ERT_CMD_STATE_NEW;
+  } else {
+    packet->state = ERT_CMD_STATE_NEW;
+  }
+}
+
+iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
+    iree_hal_amdxdna_native_command_t* command) {
+  iree_hal_amdxdna_native_command_restore_ert_header(command);
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->get_exec_buf_bo()->sync(
           shim_xdna::direction::host2device),
@@ -1032,8 +1197,7 @@ iree_status_t iree_hal_amdxdna_native_command_mark_chain_dirty(
 
 iree_status_t iree_hal_amdxdna_native_command_mark_code_dirty(
     iree_hal_amdxdna_native_command_t* command) {
-  ert_packet* packet = command_packet(command);
-  packet->state = ERT_CMD_STATE_NEW;
+  iree_hal_amdxdna_native_command_restore_ert_header(command);
   return iree_hal_amdxdna_status_from_errno(
       command->kernel->get_exec_buf_bo()->sync(
           shim_xdna::direction::host2device),
@@ -1099,8 +1263,28 @@ static iree_status_t iree_hal_amdxdna_native_queue_issue(
     iree_hal_amdxdna_native_queue_t* queue,
     iree_hal_amdxdna_native_command_t* command) {
   ert_packet* packet = command_packet(command);
-  packet->state = ERT_CMD_STATE_NEW;
+  if (command->opcode ==
+      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU) {
+    iree_hal_amdxdna_native_command_restore_ert_header(command);
+  } else {
+    // AIE2P: remember the compiled header while opcode is intact, then put
+    // that word back with state NEW. Do not copy the payload; cache reuse
+    // has already written this dispatch's arg VAs.
+    if (packet->opcode != 0) {
+      command->compiled_header = packet->header;
+    }
+    if (command->compiled_header != 0) {
+      packet->header =
+          (command->compiled_header & ~0xFu) | ERT_CMD_STATE_NEW;
+    }
+  }
   shim_xdna::bo* exec_bo = command->kernel->get_exec_buf_bo();
+  // CMD BOs are not host-coherent. Restore writes opcode/count back after
+  // CERT clobbered the word; clflush so CERT's SVA read of the ERT BO sees
+  // START_DPU rather than the completed header (opcode 0) still in DRAM.
+  IREE_RETURN_IF_ERROR(iree_hal_amdxdna_status_from_errno(
+      exec_bo->sync(shim_xdna::direction::host2device),
+      "amdxdna native command exec-buffer sync failed"));
   if (const int err = queue->hwq->issue_command(exec_bo)) {
     return iree_hal_amdxdna_status_from_errno(
         err, "amdxdna native command submit failed");
@@ -1108,13 +1292,22 @@ static iree_status_t iree_hal_amdxdna_native_queue_issue(
   return iree_ok_status();
 }
 
+// Bound START_DPU WAIT_CMD so a hung AIE4 job cannot pin the host until
+// process kill. Medusa TDR typically fires first (~8s); this is the HAL
+// backstop if CERT hangs without a timeout state.
+static constexpr uint32_t kAmdxdnaStartDpuWaitTimeoutMs = 20000;
+
 // Block on one already-issued command and translate its terminal ERT state.
 static iree_status_t iree_hal_amdxdna_native_queue_wait_issued(
     iree_hal_amdxdna_native_queue_t* queue,
     iree_hal_amdxdna_native_command_t* command, iree_string_view_t label) {
   ert_packet* packet = command_packet(command);
   shim_xdna::bo* exec_bo = command->kernel->get_exec_buf_bo();
-  const int rc = queue->hwq->wait_command(exec_bo, 0);
+  const uint32_t timeout_ms =
+      command->opcode == IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_START_DPU
+          ? kAmdxdnaStartDpuWaitTimeoutMs
+          : 0;
+  const int rc = queue->hwq->wait_command(exec_bo, timeout_ms);
   if (rc < 0) {
     return iree_hal_amdxdna_status_from_errno(
         rc, "amdxdna native command wait failed");
@@ -1124,7 +1317,20 @@ static iree_status_t iree_hal_amdxdna_native_queue_wait_issued(
                             "amdxdna %.*s timed out",
                             static_cast<int>(label.size), label.data);
   }
+  // WAIT_CMD means host-queue read_index advanced. Success still requires
+  // CERT to write ERT_CMD_STATE_COMPLETED through completion_signal (SVA);
+  // KMD job_complete() does not. TDR writes TIMEOUT/ABORT through the kernel
+  // vmap of the same cmd BO. clflush so either writer is visible here.
+  (void)exec_bo->sync(shim_xdna::direction::device2host);
   if (packet->state == ERT_CMD_STATE_COMPLETED) return iree_ok_status();
+  if (packet->state == ERT_CMD_STATE_TIMEOUT) {
+    return iree_make_status(
+        IREE_STATUS_DEADLINE_EXCEEDED,
+        "amdxdna %.*s timed out: ert state %u health version=%u npu_gen=%u "
+        "ctx_error_type=%u",
+        static_cast<int>(label.size), label.data, packet->state,
+        packet->data[0], packet->data[1], packet->data[4]);
+  }
 
   if (command->opcode ==
       IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_OPCODE_COMMAND_CHAIN) {
@@ -1182,16 +1388,15 @@ iree_status_t iree_hal_amdxdna_native_queue_submit_all_and_wait(
         iree_hal_amdxdna_native_queue_wait_issued(queue, commands[i], label);
     if (!iree_status_is_ok(earlier_status)) {
       iree_status_ignore(wait_status);
-      if (!iree_status_is_ok(issue_status)) iree_status_ignore(issue_status);
-      return earlier_status;
+      wait_status = earlier_status;
+      break;
     }
   }
   if (!iree_status_is_ok(wait_status)) {
     if (!iree_status_is_ok(issue_status)) iree_status_ignore(issue_status);
     return wait_status;
   }
-  if (!iree_status_is_ok(issue_status)) return issue_status;
-  return iree_ok_status();
+  return issue_status;
 }
 
 struct iree_hal_amdxdna_native_submission_t {
@@ -1584,6 +1789,16 @@ extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_control_buffer(
     iree_device_size_t control_buffer_size) {
   return iree_hal_amdxdna_native_command_add_control_buffer(
       command, control_buffer, control_buffer_size);
+}
+
+extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_start_dpu_columns(
+    iree_hal_amdxdna_native_command_t* command,
+    iree_hal_amdxdna_native_buffer_t* control_buffer,
+    iree_device_size_t control_buffer_size,
+    const iree_hal_amdxdna_native_c_dpu_column_t* columns,
+    iree_host_size_t column_count) {
+  return iree_hal_amdxdna_native_command_add_start_dpu_columns(
+      command, control_buffer, control_buffer_size, columns, column_count);
 }
 
 extern "C" iree_status_t iree_hal_amdxdna_native_command_c_add_arg_32(

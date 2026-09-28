@@ -14,6 +14,11 @@
 
 namespace shim_xdna {
 
+// EXEC_CMD arg-map keys below this are ordinary kernel arguments. AIE4 binds
+// the instruction BO here so bind_at(pos=0) — AIE2P's "start of a new arg
+// table" — does not drop it.
+enum : size_t { kExecBoInstructionArgKey = 0x100 };
+
 // direction - direction of sync operation
 enum class direction {
   host2device = AMDXDNA_BO_SYNC_TO_DEVICE,

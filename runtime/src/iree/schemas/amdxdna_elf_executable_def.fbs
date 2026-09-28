@@ -1,0 +1,32 @@
+// Copyright 2026 The IREE Authors
+//
+// Licensed under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+namespace iree.hal.amdxdna.elf;
+
+// 'amdxdna ELF executable' wrapping a vendor ctrlcode ELF (HIP-style).
+file_identifier "AELF";
+file_extension "aelf";
+
+// One exported kernel. `module_ordinal` indexes `ExecutableDef.modules`.
+// `binding_count` is the number of dispatch buffer bindings (3 for vadd).
+table ExportDef {
+  module_ordinal:uint32;
+  name:string;
+  binding_count:uint32;
+}
+
+// One vendor ctrlcode ELF. The HAL parses `.ctrltext` / `.rela.dyn` at
+// executable prepare time; this field is uninterpreted blob storage.
+table ModuleDef {
+  elf:[uint8];
+}
+
+table ExecutableDef {
+  exports:[ExportDef];
+  modules:[ModuleDef];
+}
+
+root_type ExecutableDef;
